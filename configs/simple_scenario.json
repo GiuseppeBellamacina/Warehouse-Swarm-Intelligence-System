@@ -49,7 +49,7 @@
   "agents": {
     "scouts": {
       "count": 3,
-      "spawn_location": { "x": 6, "y": 6 },
+      "spawn_location": { "x": 25, "y": 25 },
       "parameters": {
         "vision_radius": 7,
         "communication_radius": 20,
@@ -60,7 +60,7 @@
     },
     "coordinators": {
       "count": 1,
-      "spawn_location": { "x": 6, "y": 6 },
+      "spawn_location": { "x": 25, "y": 25 },
       "parameters": {
         "vision_radius": 10,
         "communication_radius": 25,
@@ -71,7 +71,7 @@
     },
     "retrievers": {
       "count": 2,
-      "spawn_location": { "x": 6, "y": 6 },
+      "spawn_location": { "x": 25, "y": 25 },
       "parameters": {
         "vision_radius": 5,
         "communication_radius": 15,

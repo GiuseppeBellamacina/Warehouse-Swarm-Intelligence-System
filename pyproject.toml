@@ -5,10 +5,10 @@ description = "Multi-Agent Warehouse Object Retrieval System with Swarm Intellig
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mesa>=3.0.0",
     "networkx>=3.0",
     "numpy>=1.26.0",
     "scipy>=1.11.0",
+    "pandas>=2.0.0",
     "fastapi>=0.109.0",
     "uvicorn[standard]>=0.27.0",
     "python-socketio>=5.11.0",
@@ -25,6 +25,7 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "black>=24.0.0",
     "ruff>=0.2.0",
+    "isort>=8.0.0",
     "ipython>=8.20.0",
 ]
 
@@ -42,8 +43,3 @@ target-version = ["py311"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-asyncio_mode = "auto"

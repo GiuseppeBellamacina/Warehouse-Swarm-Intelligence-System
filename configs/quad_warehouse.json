@@ -1,0 +1,204 @@
+{
+  "simulation": {
+    "grid_width": 25,
+    "grid_height": 25,
+    "timestep_duration_ms": 50,
+    "max_steps": 5000,
+    "seed": 42
+  },
+  "warehouse": {
+    "position": {
+      "x": 1,
+      "y": 1
+    },
+    "width": 2,
+    "height": 2,
+    "warehouse_cells": [
+      { "x": 2, "y": 2 },
+      { "x": 3, "y": 2 },
+      { "x": 2, "y": 3 },
+      { "x": 3, "y": 3 },
+      { "x": 21, "y": 2 },
+      { "x": 22, "y": 2 },
+      { "x": 21, "y": 3 },
+      { "x": 22, "y": 3 },
+      { "x": 2, "y": 21 },
+      { "x": 3, "y": 21 },
+      { "x": 2, "y": 22 },
+      { "x": 3, "y": 22 },
+      { "x": 21, "y": 21 },
+      { "x": 22, "y": 21 },
+      { "x": 21, "y": 22 },
+      { "x": 22, "y": 22 }
+    ],
+    "entrances": [
+      { "x": 2, "y": 5, "direction": "south" },
+      { "x": 21, "y": 5, "direction": "south" },
+      { "x": 2, "y": 19, "direction": "north" },
+      { "x": 21, "y": 19, "direction": "north" }
+    ],
+    "exits": [
+      { "x": 3, "y": 5, "direction": "south" },
+      { "x": 22, "y": 5, "direction": "south" },
+      { "x": 3, "y": 19, "direction": "north" },
+      { "x": 22, "y": 19, "direction": "north" }
+    ],
+    "recharge_rate": 5.0
+  },
+  "obstacles": [
+    {
+      "type": "wall",
+      "start": { "x": 1, "y": 1 },
+      "end": { "x": 4, "y": 1 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 1, "y": 1 },
+      "end": { "x": 1, "y": 4 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 4, "y": 1 },
+      "end": { "x": 4, "y": 4 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 1, "y": 4 },
+      "end": { "x": 4, "y": 4 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 20, "y": 1 },
+      "end": { "x": 23, "y": 1 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 20, "y": 1 },
+      "end": { "x": 20, "y": 4 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 23, "y": 1 },
+      "end": { "x": 23, "y": 4 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 20, "y": 4 },
+      "end": { "x": 23, "y": 4 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 1, "y": 20 },
+      "end": { "x": 4, "y": 20 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 1, "y": 20 },
+      "end": { "x": 1, "y": 23 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 4, "y": 20 },
+      "end": { "x": 4, "y": 23 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 1, "y": 23 },
+      "end": { "x": 4, "y": 23 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 20, "y": 20 },
+      "end": { "x": 23, "y": 20 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 20, "y": 20 },
+      "end": { "x": 20, "y": 23 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 23, "y": 20 },
+      "end": { "x": 23, "y": 23 }
+    },
+    {
+      "type": "wall",
+      "start": { "x": 20, "y": 23 },
+      "end": { "x": 23, "y": 23 }
+    },
+    {
+      "type": "box",
+      "top_left": { "x": 7, "y": 5 },
+      "width": 2,
+      "height": 6
+    },
+    {
+      "type": "box",
+      "top_left": { "x": 16, "y": 5 },
+      "width": 2,
+      "height": 6
+    },
+    {
+      "type": "box",
+      "top_left": { "x": 7, "y": 14 },
+      "width": 2,
+      "height": 6
+    },
+    {
+      "type": "box",
+      "top_left": { "x": 16, "y": 14 },
+      "width": 2,
+      "height": 6
+    }
+  ],
+  "objects": {
+    "count": 20,
+    "spawn_zones": [
+      {
+        "x_range": [6, 19],
+        "y_range": [6, 19],
+        "probability": 1.0
+      }
+    ]
+  },
+  "agents": {
+    "scouts": {
+      "count": 4,
+      "spawn_location": { "x": 12, "y": 12 },
+      "parameters": {
+        "vision_radius": 5,
+        "communication_radius": 15,
+        "max_energy": 100.0,
+        "speed": 1.5,
+        "carrying_capacity": 0
+      }
+    },
+    "coordinators": {
+      "count": 2,
+      "spawn_location": { "x": 12, "y": 12 },
+      "parameters": {
+        "vision_radius": 7,
+        "communication_radius": 20,
+        "max_energy": 120.0,
+        "speed": 1.0,
+        "carrying_capacity": 0
+      }
+    },
+    "retrievers": {
+      "count": 4,
+      "spawn_location": { "x": 12, "y": 12 },
+      "parameters": {
+        "vision_radius": 4,
+        "communication_radius": 12,
+        "max_energy": 100.0,
+        "speed": 1.0,
+        "carrying_capacity": 2
+      }
+    }
+  },
+  "logging": {
+    "enabled": true,
+    "log_interval": 10,
+    "metrics": ["coverage", "energy", "objects_retrieved"]
+  }
+}

@@ -27,8 +27,29 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onReset,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [configName, setConfigName] = useState<string>("simple");
+  const [configName, setConfigName] = useState<string>("simple_scenario");
+  const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load available configs on mount
+  React.useEffect(() => {
+    const loadConfigs = async () => {
+      try {
+        const response = await fetch("http://localhost:8000/api/configs");
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableConfigs(data.configs || []);
+          // Set default if available
+          if (data.configs && data.configs.length > 0) {
+            setConfigName(data.configs[0]);
+          }
+        }
+      } catch (error) {
+        console.error("Error loading configs:", error);
+      }
+    };
+    loadConfigs();
+  }, []);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -47,7 +68,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     try {
       // Load directly from backend
       const response = await fetch(
-        `http://localhost:8000/configs/${configName}_scenario.json`,
+        `http://localhost:8000/configs/${configName}.json`,
       );
 
       if (!response.ok) {
@@ -102,12 +123,21 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               className="flex-1 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
               disabled={isRunning}
             >
-              <option value="simple">Simple (50x50, 10 objects)</option>
-              <option value="complex">Complex (100x100, 30 objects)</option>
+              {availableConfigs.length > 0 ? (
+                availableConfigs.map((config) => (
+                  <option key={config} value={config}>
+                    {config
+                      .replace(/_/g, " ")
+                      .replace(/\b\w/g, (l) => l.toUpperCase())}
+                  </option>
+                ))
+              ) : (
+                <option value="">Loading...</option>
+              )}
             </select>
             <button
               onClick={handleLoadExample}
-              disabled={isRunning || !connected}
+              disabled={isRunning || !connected || !configName}
               className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-4 py-2 rounded font-medium transition"
             >
               Load

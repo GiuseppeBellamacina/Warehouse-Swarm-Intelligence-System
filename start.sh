@@ -4,8 +4,11 @@ echo "Starting Warehouse Swarm Intelligence System"
 echo "=========================================="
 echo ""
 
+# Save the root directory path
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 echo "Starting Backend Server..."
-cd "$(dirname "$0")"
+cd "$ROOT_DIR"
 uv run python -m backend.api.main &
 BACKEND_PID=$!
 
@@ -14,7 +17,7 @@ sleep 5
 
 echo ""
 echo "Starting Frontend Development Server..."
-cd frontend
+cd "$ROOT_DIR/frontend"
 bun run dev &
 FRONTEND_PID=$!
 
