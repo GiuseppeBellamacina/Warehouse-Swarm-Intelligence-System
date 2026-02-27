@@ -3,13 +3,17 @@ Simulation manager for running simulations in background
 """
 
 import asyncio
+import random
 import traceback
-from typing import Optional, Tuple
+from typing import Optional, Set, Tuple
+
+import numpy as np
 
 from backend.agents.coordinator_agent import CoordinatorAgent
 from backend.agents.retriever_agent import RetrieverAgent
 from backend.agents.scout_agent import ScoutAgent
 from backend.config.schemas import ScenarioConfig
+from backend.core.grid_manager import CellType
 from backend.core.warehouse_model import WarehouseModel
 
 
@@ -25,6 +29,69 @@ class SimulationManager:
         self.config: Optional[ScenarioConfig] = None
         self.simulation_task: Optional[asyncio.Task] = None
         self.update_rate = 30  # Updates per second
+        self.occupied_spawn_positions: Set[Tuple[int, int]] = set()
+
+    def _find_random_spawn_position(self, center: Optional[Tuple[int, int]] = None, max_radius: int = 10, max_attempts: int = 100) -> Optional[Tuple[int, int]]:
+        """
+        Find a random valid spawn position near a center point
+        
+        Args:
+            center: Center position for spawn area (default: grid center)
+            max_radius: Maximum distance from center
+            max_attempts: Maximum number of attempts to find a valid position
+            
+        Returns:
+            Valid spawn position or None if not found
+        """
+        if not self.model:
+            return None
+        
+        # Default to grid center
+        if center is None:
+            center = (self.model.grid.width // 2, self.model.grid.height // 2)
+        
+        for _ in range(max_attempts):
+            # Random offset within radius
+            offset_x = random.randint(-max_radius, max_radius)
+            offset_y = random.randint(-max_radius, max_radius)
+            
+            x = center[0] + offset_x
+            y = center[1] + offset_y
+            
+            # Check bounds
+            if x < 0 or x >= self.model.grid.width or y < 0 or y >= self.model.grid.height:
+                continue
+                
+            pos = (x, y)
+            
+            # Check if position is valid and not occupied
+            if (pos not in self.occupied_spawn_positions and
+                self.model.grid.is_walkable(x, y) and
+                self.model.grid.is_cell_empty(pos)):
+                
+                # Mark as occupied
+                self.occupied_spawn_positions.add(pos)
+                return pos
+        
+        # Fallback: try to find any free cell near center
+        print("Warning: Could not find random spawn near center, searching systematically...")
+        for radius in range(max_radius, max_radius + 5):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    x = center[0] + dx
+                    y = center[1] + dy
+                    
+                    if x < 0 or x >= self.model.grid.width or y < 0 or y >= self.model.grid.height:
+                        continue
+                    
+                    pos = (x, y)
+                    if (pos not in self.occupied_spawn_positions and
+                        self.model.grid.is_walkable(x, y) and
+                        self.model.grid.is_cell_empty(pos)):
+                        self.occupied_spawn_positions.add(pos)
+                        return pos
+        
+        return None
 
     def initialize_simulation(self, config: ScenarioConfig) -> None:
         """
@@ -37,6 +104,9 @@ class SimulationManager:
 
         # Create model
         self.model = WarehouseModel(config)
+        
+        # Reset occupied spawn positions
+        self.occupied_spawn_positions = set()
 
         # Spawn scout agents
         scout_config = config.agents.scouts
@@ -50,11 +120,23 @@ class SimulationManager:
                 speed=scout_config.parameters.speed,
             )
 
-            spawn_pos = (scout_config.spawn_location.x, scout_config.spawn_location.y)
-            free_pos = self._find_free_cell_near(spawn_pos)
+            # Use random spawn if no spawn_location specified
+            if scout_config.spawn_location is None:
+                free_pos = self._find_random_spawn_position()
+            else:
+                spawn_pos = (scout_config.spawn_location.x, scout_config.spawn_location.y)
+                free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
+            
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
+                
+                # Give each scout a different initial exploration direction
+                angle = (2 * 3.14159 * i) / scout_config.count  # Distribute in circle
+                agent.previous_direction = (int(round(10 * np.cos(angle))), int(round(10 * np.sin(angle))))
+                
+                # Initial perception to populate local map
+                agent.step_sense()
             else:
                 print(f"Warning: Could not find free cell for scout {i}")
 
@@ -71,11 +153,19 @@ class SimulationManager:
                 speed=coord_config.parameters.speed,
             )
 
-            spawn_pos = (coord_config.spawn_location.x, coord_config.spawn_location.y)
-            free_pos = self._find_free_cell_near(spawn_pos)
+            # Use random spawn if no spawn_location specified
+            if coord_config.spawn_location is None:
+                free_pos = self._find_random_spawn_position()
+            else:
+                spawn_pos = (coord_config.spawn_location.x, coord_config.spawn_location.y)
+                free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
+            
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
+                
+                # Initial perception to populate local map
+                agent.step_sense()
             else:
                 print(f"Warning: Could not find free cell for coordinator {i}")
 
@@ -93,11 +183,19 @@ class SimulationManager:
                 carrying_capacity=retr_config.parameters.carrying_capacity,
             )
 
-            spawn_pos = (retr_config.spawn_location.x, retr_config.spawn_location.y)
-            free_pos = self._find_free_cell_near(spawn_pos)
+            # Use random spawn if no spawn_location specified
+            if retr_config.spawn_location is None:
+                free_pos = self._find_random_spawn_position()
+            else:
+                spawn_pos = (retr_config.spawn_location.x, retr_config.spawn_location.y)
+                free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
+            
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
+                
+                # Initial perception to populate local map
+                agent.step_sense()
             else:
                 print(f"Warning: Could not find free cell for retriever {i}")
 
@@ -107,13 +205,14 @@ class SimulationManager:
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve")
 
-    def _find_free_cell_near(self, target_pos: Tuple[int, int], max_radius: int = 5) -> Optional[Tuple[int, int]]:
+    def _find_free_cell_near(self, target_pos: Tuple[int, int], max_radius: int = 10, spread: bool = True) -> Optional[Tuple[int, int]]:
         """
-        Find a free cell near the target position
+        Find a free cell near the target position with better distribution
         
         Args:
             target_pos: Desired position
             max_radius: Maximum search radius
+            spread: If True, prefer positions further from target for better distribution
             
         Returns:
             Free cell position or None if not found
@@ -124,17 +223,16 @@ class SimulationManager:
         x, y = target_pos
         
         # Check if target itself is free
-        if self.model.grid.is_cell_empty(target_pos):
+        if self.model.grid.is_cell_empty(target_pos) and self.model.grid.is_walkable(*target_pos):
             return target_pos
+        
+        # Collect all valid positions
+        candidates = []
         
         # Search in expanding radius
         for radius in range(1, max_radius + 1):
             for dx in range(-radius, radius + 1):
                 for dy in range(-radius, radius + 1):
-                    # Only check cells at current radius distance
-                    if abs(dx) != radius and abs(dy) != radius:
-                        continue
-                    
                     check_pos = (x + dx, y + dy)
                     
                     # Skip if out of bounds
@@ -143,9 +241,23 @@ class SimulationManager:
                     
                     # Check if cell is empty and walkable
                     if self.model.grid.is_cell_empty(check_pos) and self.model.grid.is_walkable(*check_pos):
-                        return check_pos
+                        # Calculate actual distance
+                        dist = abs(dx) + abs(dy)  # Manhattan distance
+                        candidates.append((check_pos, dist))
         
-        return None
+        if not candidates:
+            return None
+        
+        # If spread is True, prefer positions further away to distribute agents
+        if spread:
+            # Sort by distance descending (furthest first)
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            # Return one from the furthest positions to spread agents out
+            return candidates[0][0] if candidates else None
+        else:
+            # Return closest available position
+            candidates.sort(key=lambda x: x[1])
+            return candidates[0][0] if candidates else None
 
     async def start_simulation(self, ws_manager) -> None:
         """
@@ -163,17 +275,26 @@ class SimulationManager:
         self.is_running = True
         self.is_paused = False
 
-        print("Starting simulation...")
+        print("\n" + "="*60)
+        print("SIMULATION STARTING")
+        print(f"  Agents: {len(self.model.scouts)} scouts, {len(self.model.coordinators)} coordinators, {len(self.model.retrievers)} retrievers")
+        print(f"  Target: Retrieve {self.model.total_objects} objects")
+        print(f"  Grid: {self.model.grid.width}x{self.model.grid.height}")
+        print("="*60 + "\n")
 
         try:
             # Run simulation loop
             await self._simulation_loop(ws_manager)
         except Exception as e:
-            print(f"Simulation error: {e}")
+            print(f"\n!!! SIMULATION ERROR: {e} !!!\n")
             traceback.print_exc()
         finally:
             self.is_running = False
-            print("Simulation ended")
+            print("\n" + "="*60)
+            print("SIMULATION ENDED")
+            if self.model:
+                print(f"  Final Stats: {self.model.objects_retrieved}/{self.model.total_objects} objects retrieved in {self.model.current_step} steps")
+            print("="*60 + "\n")
 
     async def _simulation_loop(self, ws_manager) -> None:
         """
@@ -191,6 +312,10 @@ class SimulationManager:
             if not self.is_paused:
                 # Step simulation
                 self.model.step()
+                
+                # Periodic status report every 100 steps
+                if self.model.current_step % 100 == 0:
+                    print(f"\n=== STEP {self.model.current_step} === Progress: {self.model.objects_retrieved}/{self.model.total_objects} objects retrieved ===")
 
                 # Get state and broadcast
                 state = self.get_simulation_state()
@@ -234,6 +359,19 @@ class SimulationManager:
         if self.config:
             self.initialize_simulation(self.config)
         print("Simulation reset")
+    
+    def set_speed(self, speed: float) -> None:
+        """
+        Set simulation speed
+        
+        Args:
+            speed: Speed multiplier (0.1 to 10.0, where 1.0 is normal speed)
+        """
+        # Clamp speed between 0.1 and 10.0
+        speed = max(0.1, min(10.0, speed))
+        # Base rate is 30 updates per second at 1.0 speed
+        self.update_rate = 30 * speed
+        print(f"Simulation speed set to {speed}x (update_rate: {self.update_rate:.1f} Hz)")
 
     def get_simulation_state(self) -> dict:
         """
@@ -251,6 +389,14 @@ class SimulationManager:
             return state
 
         # Add grid info for initial setup
+        # Collect all warehouse cells from the grid
+        warehouse_cells = []
+        for x in range(self.model.grid.width):
+            for y in range(self.model.grid.height):
+                cell_type = self.model.grid.get_cell_type(x, y)
+                if cell_type == CellType.WAREHOUSE:
+                    warehouse_cells.append({"x": x, "y": y})
+        
         state["grid"] = {
             "width": self.model.grid.width,
             "height": self.model.grid.height,
@@ -259,6 +405,7 @@ class SimulationManager:
                 "y": self.model.warehouse_position[1],
                 "width": self.config.warehouse.width,
                 "height": self.config.warehouse.height,
+                "cells": warehouse_cells,  # All warehouse cells
                 "entrances": [{"x": e.x, "y": e.y} for e in self.config.warehouse.entrances],
                 "exits": [
                     {"x": e.x, "y": e.y}

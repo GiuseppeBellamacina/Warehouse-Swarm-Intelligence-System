@@ -279,6 +279,23 @@ async def reset_simulation():
     return {"status": "reset"}
 
 
+@app.post("/api/simulation/speed")
+async def set_simulation_speed(speed: float):
+    """
+    Set simulation speed
+    
+    Args:
+        speed: Speed multiplier (0.1 to 10.0, where 1.0 is normal speed)
+    """
+    # Validate speed
+    if speed < 0.1 or speed > 10.0:
+        raise HTTPException(status_code=400, detail="Speed must be between 0.1 and 10.0")
+    
+    sim_manager.set_speed(speed)
+    
+    return {"status": "success", "speed": speed, "update_rate": sim_manager.update_rate}
+
+
 @app.get("/api/simulation/status")
 async def get_simulation_status():
     """Get current simulation status"""

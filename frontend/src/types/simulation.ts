@@ -5,6 +5,14 @@ export interface Position {
   y: number;
 }
 
+export interface AgentMessage {
+  step: number;
+  direction: "sent" | "received";
+  type: string;
+  details: string;
+  targets: number[];
+}
+
 export interface Agent {
   id: number;
   role: "scout" | "coordinator" | "retriever";
@@ -13,6 +21,10 @@ export interface Agent {
   energy: number;
   state: string;
   carrying: number;
+  vision_radius: number;
+  communication_radius: number;
+  recent_messages: AgentMessage[];
+  path: Position[];
 }
 
 export interface SimObject {
@@ -31,6 +43,7 @@ export interface Warehouse {
   y: number;
   width: number;
   height: number;
+  cells?: Position[]; // Optional: individual warehouse cells for multi-zone warehouses
   entrances: Position[];
   exits: Position[];
 }

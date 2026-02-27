@@ -152,6 +152,23 @@ export const useSimulation = () => {
     }
   }, []);
 
+  const setSimulationSpeed = useCallback(async (speed: number) => {
+    try {
+      const response = await fetch(
+        `${BACKEND_URL}/api/simulation/speed?speed=${speed}`,
+        {
+          method: "POST",
+        },
+      );
+      if (!response.ok) {
+        throw new Error("Failed to set simulation speed");
+      }
+      console.log(`Simulation speed set to ${speed}x`);
+    } catch (error) {
+      console.error("Error setting simulation speed:", error);
+    }
+  }, []);
+
   return {
     state,
     connected,
@@ -163,5 +180,6 @@ export const useSimulation = () => {
     resumeSimulation,
     stopSimulation,
     resetSimulation,
+    setSimulationSpeed,
   };
 };

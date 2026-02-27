@@ -63,6 +63,17 @@ class ObjectClaimMessage(Message):
     remaining_energy: float
 
 
+@dataclass
+class RetrieverEventMessage(Message):
+    """Event notification from retriever to coordinators"""
+
+    retriever_id: int
+    event_type: str  # "object_picked", "object_delivered", "task_completed", "idle", "busy"
+    position: Tuple[int, int]
+    object_position: Optional[Tuple[int, int]] = None
+    carrying_count: int = 0
+
+
 class CommunicationManager:
     """
     Manages agent-to-agent communication via proximity-based message passing

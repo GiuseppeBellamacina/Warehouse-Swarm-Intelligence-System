@@ -347,6 +347,10 @@ class WarehouseModel(Model):
                     "energy": getattr(agent, "energy", 0),
                     "state": state,
                     "carrying": getattr(agent, "carrying_objects", 0),
+                    "vision_radius": getattr(agent, "vision_radius", 5),
+                    "communication_radius": getattr(agent, "communication_radius", 10),
+                    "recent_messages": getattr(agent, "recent_messages", []),
+                    "path": [{"x": p[0], "y": p[1]} for p in getattr(agent, "path", [])] if getattr(agent, "path", None) else [],
                 }
                 agents_data.append(agent_data)
 

@@ -6,6 +6,7 @@ import { GridCanvas } from "./components/GridCanvas";
 import { ControlPanel } from "./components/ControlPanel";
 import { MetricsDisplay } from "./components/MetricsDisplay";
 import { MapEditor } from "./components/MapEditor";
+import { AgentList } from "./components/AgentList";
 import "./index.css";
 
 type ViewMode = "simulation" | "editor";
@@ -22,9 +23,11 @@ function App() {
     resumeSimulation,
     stopSimulation,
     resetSimulation,
+    setSimulationSpeed,
   } = useSimulation();
 
   const [viewMode, setViewMode] = useState<ViewMode>("simulation");
+  const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
@@ -39,24 +42,27 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-        {/* Left Sidebar - Controls */}
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
+        {/* Left Sidebar - Agent List */}
         <div className="xl:col-span-1">
-          <ControlPanel
-            connected={connected}
-            isRunning={isRunning}
-            isPaused={isPaused}
-            onStart={startSimulation}
-            onUpload={uploadConfig}
-            onPause={pauseSimulation}
-            onResume={resumeSimulation}
-            onStop={stopSimulation}
-            onReset={resetSimulation}
-          />
+          {state && state.agents && state.agents.length > 0 ? (
+            <AgentList
+              agents={state.agents}
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={setSelectedAgentId}
+            />
+          ) : (
+            <div className="bg-gray-800 rounded-lg p-4 h-full">
+              <h2 className="text-xl font-bold mb-4">Agents</h2>
+              <div className="text-center text-gray-500 py-8">
+                No active agents
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Center - Visualization or Editor */}
-        <div className="xl:col-span-2">
+        <div className="xl:col-span-3">
           {/* Tab Selector */}
           <div className="flex gap-2 mb-4">
             <button
@@ -86,7 +92,12 @@ function App() {
             <div className="bg-gray-800 rounded-lg p-6">
               <h2 className="text-2xl font-bold mb-4">Simulation View</h2>
               {state && state.grid ? (
-                <GridCanvas state={state} width={800} height={800} />
+                <GridCanvas
+                  state={state}
+                  width={700}
+                  height={700}
+                  selectedAgentId={selectedAgentId}
+                />
               ) : (
                 <div className="flex items-center justify-center h-96 border border-gray-700 rounded-lg bg-gray-900">
                   <div className="text-center">
@@ -118,8 +129,20 @@ function App() {
           )}
         </div>
 
-        {/* Right Sidebar - Metrics */}
-        <div className="xl:col-span-1">
+        {/* Right Sidebar - Controls & Metrics */}
+        <div className="xl:col-span-1 space-y-6">
+          <ControlPanel
+            connected={connected}
+            isRunning={isRunning}
+            isPaused={isPaused}
+            onStart={startSimulation}
+            onUpload={uploadConfig}
+            onPause={pauseSimulation}
+            onResume={resumeSimulation}
+            onStop={stopSimulation}
+            onReset={resetSimulation}
+            onSpeedChange={setSimulationSpeed}
+          />
           <MetricsDisplay state={state} />
         </div>
       </div>

@@ -77,7 +77,7 @@ class AgentConfig(BaseModel):
     """Agent configuration"""
 
     count: int = Field(ge=0, default=5)
-    spawn_location: Position
+    spawn_location: Optional[Position] = None
     parameters: AgentParameters = Field(default_factory=AgentParameters)
     exploration_strategy: Literal["frontier", "random", "potential_field"] = "frontier"
     decision_model: Literal["utility", "rule_based"] = "utility"

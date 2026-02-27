@@ -13,6 +13,7 @@ interface ControlPanelProps {
   onResume: () => void;
   onStop: () => void;
   onReset: () => void;
+  onSpeedChange: (speed: number) => void;
 }
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -25,10 +26,12 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onResume,
   onStop,
   onReset,
+  onSpeedChange,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [configName, setConfigName] = useState<string>("simple_scenario");
   const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
+  const [speed, setSpeed] = useState<number>(1.0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load available configs on mount
@@ -50,6 +53,12 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     };
     loadConfigs();
   }, []);
+
+  const handleSpeedChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newSpeed = parseFloat(event.target.value);
+    setSpeed(newSpeed);
+    onSpeedChange(newSpeed);
+  };
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -213,6 +222,39 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           >
             Reset
           </button>
+        </div>
+      </div>
+
+      {/* Speed Control */}
+      <div className="border-t border-gray-700 pt-4">
+        <h3 className="text-lg font-semibold mb-3">Simulation Speed</h3>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-400">0.1x (Slow)</span>
+            <span className="text-white font-medium">{speed.toFixed(1)}x</span>
+            <span className="text-gray-400">10x (Fast)</span>
+          </div>
+          <input
+            type="range"
+            min="0.1"
+            max="10"
+            step="0.1"
+            value={speed}
+            onChange={handleSpeedChange}
+            disabled={!connected}
+            className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50
+                     [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 
+                     [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:cursor-pointer
+                     [&::-webkit-slider-thumb]:hover:bg-blue-600 [&::-webkit-slider-thumb]:transition
+                     [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full 
+                     [&::-moz-range-thumb]:bg-blue-500 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer
+                     [&::-moz-range-thumb]:hover:bg-blue-600 [&::-moz-range-thumb]:transition"
+          />
+          <div className="flex justify-between text-xs text-gray-500">
+            <span>Slower</span>
+            <span>Normal (1x)</span>
+            <span>Faster</span>
+          </div>
         </div>
       </div>
 
