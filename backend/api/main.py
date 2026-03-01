@@ -125,39 +125,27 @@ async def get_config(config_name: str):
         raise HTTPException(status_code=500, detail=f"Error reading config: {str(e)}")
 
 
-@app.post("/api/simulation/start")
-async def start_simulation(request: StartSimulationRequest):
+@app.post("/api/simulation/load")
+async def load_simulation_endpoint(request: StartSimulationRequest):
     """
-    Start a new simulation with given configuration
+    Load a simulation configuration: initialize agents/grid and broadcast step 0.
+    The simulation loop does NOT start — call /api/simulation/start to run it.
 
     Args:
         request: Configuration dictionary
 
     Returns:
-        Success message
+        Loaded status message
     """
     try:
-        print("[DEBUG] Received start simulation request")
-        print(f"[DEBUG] Config keys: {request.config.keys()}")
-
-        # Parse configuration
-        print("[DEBUG] Parsing configuration with ConfigLoader...")
+        print("[DEBUG] Received load simulation request")
         config = ConfigLoader.load_from_dict(request.config)
-        print("[DEBUG] Configuration parsed successfully")
-
-        # Initialize simulation
-        print("[DEBUG] Initializing simulation...")
-        sim_manager.initialize_simulation(config)
-        print("[DEBUG] Simulation initialized successfully")
-
-        # Start simulation in background
-        print("[DEBUG] Starting simulation task...")
-        sim_manager.simulation_task = asyncio.create_task(sim_manager.start_simulation(ws_manager))
-        print("[DEBUG] Simulation task started")
-
+        print("[DEBUG] Configuration parsed — initializing and broadcasting step 0...")
+        await sim_manager.load_simulation(config, ws_manager)
+        print("[DEBUG] Step 0 broadcast complete")
         return {
-            "status": "started",
-            "message": "Simulation started successfully",
+            "status": "loaded",
+            "message": "Simulation loaded. Press Start to begin.",
             "agents": {
                 "scouts": config.agents.scouts.count,
                 "coordinators": config.agents.coordinators.count,
@@ -172,15 +160,35 @@ async def start_simulation(request: StartSimulationRequest):
     except ValueError as e:
         print(f"[ERROR] Validation error: {str(e)}")
         import traceback
-
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] Unexpected error starting simulation: {str(e)}")
+        print(f"[ERROR] Unexpected error loading simulation: {str(e)}")
         import traceback
-
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to start simulation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to load simulation: {str(e)}")
+
+
+@app.post("/api/simulation/start")
+async def start_simulation():
+    """
+    Start the simulation loop. The simulation must be loaded first via /api/simulation/load.
+
+    Returns:
+        Success message
+    """
+    if not sim_manager.model:
+        raise HTTPException(
+            status_code=400,
+            detail="No simulation loaded. Call /api/simulation/load first.",
+        )
+    if sim_manager.is_running:
+        raise HTTPException(status_code=400, detail="Simulation is already running")
+
+    print("[DEBUG] Starting simulation loop...")
+    sim_manager.simulation_task = asyncio.create_task(sim_manager.start_simulation(ws_manager))
+    print("[DEBUG] Simulation loop task created")
+    return {"status": "started", "message": "Simulation running"}
 
 
 @app.post("/api/simulation/upload")
@@ -202,13 +210,12 @@ async def upload_configuration(file: UploadFile = File(...)):
         # Parse configuration
         config = ConfigLoader.load_from_dict(config_dict)
 
-        # Initialize and start simulation
-        sim_manager.initialize_simulation(config)
-        sim_manager.simulation_task = asyncio.create_task(sim_manager.start_simulation(ws_manager))
+        # Load (init + broadcast step 0) without starting the loop
+        await sim_manager.load_simulation(config, ws_manager)
 
         return {
-            "status": "started",
-            "message": f"Configuration loaded from {file.filename}",
+            "status": "loaded",
+            "message": f"Configuration loaded from {file.filename}. Press Start to begin.",
             "agents": {
                 "scouts": config.agents.scouts.count,
                 "coordinators": config.agents.coordinators.count,
@@ -268,12 +275,15 @@ async def stop_simulation():
 
 @app.post("/api/simulation/reset")
 async def reset_simulation():
-    """Reset the simulation to initial state"""
+    """Reset the simulation to initial state and broadcast step 0"""
     if not sim_manager.config:
         raise HTTPException(status_code=400, detail="No configuration loaded")
 
     sim_manager.reset_simulation()
 
+    # Broadcast the fresh step-0 state before sending the reset event
+    state = sim_manager.get_simulation_state()
+    await ws_manager.broadcast_state(state)
     await ws_manager.broadcast_event("simulation_reset", {})
 
     return {"status": "reset"}

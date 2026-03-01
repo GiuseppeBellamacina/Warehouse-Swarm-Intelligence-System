@@ -205,6 +205,21 @@ class SimulationManager:
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve")
 
+    async def load_simulation(self, config: ScenarioConfig, ws_manager) -> None:
+        """
+        Initialize simulation and broadcast step 0 without starting the loop.
+        The client will see the initial grid state and can then call start_simulation.
+
+        Args:
+            config: Scenario configuration
+            ws_manager: WebSocket manager for broadcasting the initial state
+        """
+        self.initialize_simulation(config)
+        self.is_running = False
+        self.is_paused = False
+        state = self.get_simulation_state()
+        await ws_manager.broadcast_state(state)
+
     def _find_free_cell_near(self, target_pos: Tuple[int, int], max_radius: int = 10, spread: bool = True) -> Optional[Tuple[int, int]]:
         """
         Find a free cell near the target position with better distribution

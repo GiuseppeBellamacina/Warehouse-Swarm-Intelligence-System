@@ -11,6 +11,7 @@ export const useSimulation = () => {
   const [connected, setConnected] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
@@ -58,9 +59,11 @@ export const useSimulation = () => {
     });
 
     socket.on("simulation_reset", () => {
-      setState(null);
+      // Step 0 state is broadcast by the backend before this event,
+      // so keep isLoaded=true so the user can press Start again.
       setIsRunning(false);
       setIsPaused(false);
+      setIsLoaded(true);
     });
 
     return () => {
@@ -68,21 +71,40 @@ export const useSimulation = () => {
     };
   }, []);
 
-  const startSimulation = useCallback(async (config: SimulationConfig) => {
+  /** Load a config: initialises backend + broadcasts step 0, does NOT start the loop */
+  const loadConfig = useCallback(async (config: SimulationConfig) => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/simulation/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to load simulation");
+      }
+      const result = await response.json();
+      console.log("Simulation loaded:", result);
+      setIsLoaded(true);
+      setIsRunning(false);
+      setIsPaused(false);
+      return result;
+    } catch (error) {
+      console.error("Error loading simulation:", error);
+      throw error;
+    }
+  }, []);
+
+  /** Start the simulation loop (requires prior call to loadConfig) */
+  const startSimulation = useCallback(async () => {
     try {
       const response = await fetch(`${BACKEND_URL}/api/simulation/start`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ config }),
       });
-
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.detail || "Failed to start simulation");
       }
-
       const result = await response.json();
       console.log("Simulation started:", result);
       setIsRunning(true);
@@ -109,8 +131,10 @@ export const useSimulation = () => {
       }
 
       const result = await response.json();
-      console.log("Configuration uploaded:", result);
-      setIsRunning(true);
+      console.log("Configuration loaded from file:", result);
+      setIsLoaded(true);
+      setIsRunning(false);
+      setIsPaused(false);
       return result;
     } catch (error) {
       console.error("Error uploading configuration:", error);
@@ -146,7 +170,8 @@ export const useSimulation = () => {
   const resetSimulation = useCallback(async () => {
     try {
       await fetch(`${BACKEND_URL}/api/simulation/reset`, { method: "POST" });
-      setState(null);
+      // The backend broadcasts step 0 state + simulation_reset event;
+      // we let the socket handlers update isLoaded/isRunning.
     } catch (error) {
       console.error("Error resetting simulation:", error);
     }
@@ -174,6 +199,8 @@ export const useSimulation = () => {
     connected,
     isRunning,
     isPaused,
+    isLoaded,
+    loadConfig,
     startSimulation,
     uploadConfig,
     pauseSimulation,

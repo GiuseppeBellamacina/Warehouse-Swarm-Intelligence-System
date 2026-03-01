@@ -1,22 +1,39 @@
 // Grid Canvas Component for visualization
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import { SimulationState } from "../types/simulation";
 
 interface GridCanvasProps {
   state: SimulationState;
-  width?: number;
-  height?: number;
   selectedAgentId?: number | null;
 }
 
 export const GridCanvas: React.FC<GridCanvasProps> = ({
   state,
-  width = 800,
-  height = 800,
   selectedAgentId = null,
 }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [size, setSize] = useState({ w: 400, h: 400 });
+
+  // Auto-size: observe container and update canvas dimensions
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          // Use the smaller dimension to keep the grid square
+          const side = Math.floor(Math.min(width, height));
+          setSize({ w: side, h: side });
+        }
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const { w: width, h: height } = size;
 
   useEffect(() => {
     if (!canvasRef.current || !state || !state.grid) return;
@@ -72,9 +89,8 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     if (state.grid.warehouse) {
       const wh = state.grid.warehouse;
 
-      // Draw all warehouse cells
       if (wh.cells && wh.cells.length > 0) {
-        ctx.fillStyle = "rgba(59, 130, 246, 0.3)"; // Blue
+        ctx.fillStyle = "rgba(59, 130, 246, 0.3)";
         wh.cells.forEach((cell: { x: number; y: number }) => {
           ctx.fillRect(
             cell.x * cellWidth,
@@ -83,8 +99,6 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
             cellHeight,
           );
         });
-
-        // Draw borders for each cell
         ctx.strokeStyle = "rgba(59, 130, 246, 0.5)";
         ctx.lineWidth = 1;
         wh.cells.forEach((cell: { x: number; y: number }) => {
@@ -96,8 +110,7 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
           );
         });
       } else {
-        // Fallback to old rectangle drawing if no cells provided
-        ctx.fillStyle = "rgba(59, 130, 246, 0.3)"; // Blue
+        ctx.fillStyle = "rgba(59, 130, 246, 0.3)";
         ctx.fillRect(
           wh.x * cellWidth,
           wh.y * cellHeight,
@@ -114,7 +127,6 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         );
       }
 
-      // Draw entrances (green)
       ctx.fillStyle = "#10b981";
       wh.entrances.forEach((entrance) => {
         ctx.fillRect(
@@ -125,7 +137,6 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         );
       });
 
-      // Draw exits (red)
       ctx.fillStyle = "#ef4444";
       wh.exits.forEach((exit) => {
         ctx.fillRect(
@@ -138,32 +149,24 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     }
 
     // Draw obstacles
-    ctx.fillStyle = "#4a4a4a"; // Dark gray for walls
+    ctx.fillStyle = "#4a4a4a";
     state.grid.obstacles.forEach((obstacle) => {
       if (obstacle.type === "wall") {
         const { start, end } = obstacle.data;
-
-        // Draw filled cells for wall segments using Bresenham's line algorithm
-        const x0 = start.x;
-        const y0 = start.y;
-        const x1 = end.x;
-        const y1 = end.y;
-
-        const dx = Math.abs(x1 - x0);
-        const dy = Math.abs(y1 - y0);
-        const sx = x0 < x1 ? 1 : -1;
-        const sy = y0 < y1 ? 1 : -1;
-        let err = dx - dy;
-
-        let x = x0;
-        let y = y0;
-
+        const x0 = start.x,
+          y0 = start.y,
+          x1 = end.x,
+          y1 = end.y;
+        const dx = Math.abs(x1 - x0),
+          dy = Math.abs(y1 - y0);
+        const sx = x0 < x1 ? 1 : -1,
+          sy = y0 < y1 ? 1 : -1;
+        let err = dx - dy,
+          x = x0,
+          y = y0;
         while (true) {
-          // Draw filled cell
           ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
-
           if (x === x1 && y === y1) break;
-
           const e2 = 2 * err;
           if (e2 > -dy) {
             err -= dy;
@@ -185,12 +188,11 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       }
     });
 
-    // Draw selected agent vision and communication radii
+    // Draw selected agent vision / comm radii
     if (selectedAgent) {
       const centerX = (selectedAgent.x + 0.5) * cellWidth;
       const centerY = (selectedAgent.y + 0.5) * cellHeight;
 
-      // Draw communication radius (outer circle - green)
       ctx.strokeStyle = "rgba(34, 197, 94, 0.4)";
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 5]);
@@ -204,7 +206,6 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       );
       ctx.stroke();
 
-      // Draw vision radius (inner circle - blue)
       ctx.strokeStyle = "rgba(59, 130, 246, 0.6)";
       ctx.lineWidth = 2;
       ctx.setLineDash([3, 3]);
@@ -217,38 +218,29 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         2 * Math.PI,
       );
       ctx.stroke();
-
-      // Reset line dash
       ctx.setLineDash([]);
 
-      // Draw agent's path in purple
       if (selectedAgent.path && selectedAgent.path.length > 0) {
-        ctx.strokeStyle = "rgba(168, 85, 247, 0.8)"; // Purple
+        ctx.strokeStyle = "rgba(168, 85, 247, 0.8)";
         ctx.lineWidth = 3;
-        ctx.setLineDash([]);
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-
         ctx.beginPath();
-        // Start from agent's current position
         ctx.moveTo(centerX, centerY);
-
-        // Draw line through each path waypoint
-        selectedAgent.path.forEach((waypoint) => {
-          const wpX = (waypoint.x + 0.5) * cellWidth;
-          const wpY = (waypoint.y + 0.5) * cellHeight;
-          ctx.lineTo(wpX, wpY);
+        selectedAgent.path.forEach((wp) => {
+          ctx.lineTo((wp.x + 0.5) * cellWidth, (wp.y + 0.5) * cellHeight);
         });
-
         ctx.stroke();
-
-        // Draw waypoint markers
         ctx.fillStyle = "rgba(168, 85, 247, 0.6)";
-        selectedAgent.path.forEach((waypoint) => {
-          const wpX = (waypoint.x + 0.5) * cellWidth;
-          const wpY = (waypoint.y + 0.5) * cellHeight;
+        selectedAgent.path.forEach((wp) => {
           ctx.beginPath();
-          ctx.arc(wpX, wpY, 3, 0, 2 * Math.PI);
+          ctx.arc(
+            (wp.x + 0.5) * cellWidth,
+            (wp.y + 0.5) * cellHeight,
+            3,
+            0,
+            2 * Math.PI,
+          );
           ctx.fill();
         });
       }
@@ -257,7 +249,7 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     // Draw objects
     state.objects.forEach((obj) => {
       if (!obj.retrieved) {
-        ctx.fillStyle = "#facc15"; // Yellow
+        ctx.fillStyle = "#facc15";
         ctx.beginPath();
         ctx.arc(
           (obj.x + 0.5) * cellWidth,
@@ -275,11 +267,9 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       const centerX = (agent.x + 0.5) * cellWidth;
       const centerY = (agent.y + 0.5) * cellHeight;
       const radius = Math.min(cellWidth, cellHeight) * 0.4;
-
       const isSelected = agent.id === selectedAgentId;
       const isInCommRange = agentsInCommRange.has(agent.id);
 
-      // Highlight selected agent with glow
       if (isSelected) {
         ctx.strokeStyle = "rgba(255, 255, 0, 0.6)";
         ctx.lineWidth = 3;
@@ -287,8 +277,6 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         ctx.arc(centerX, centerY, radius * 1.5, 0, 2 * Math.PI);
         ctx.stroke();
       }
-
-      // Highlight agents in communication range with ring
       if (isInCommRange) {
         ctx.strokeStyle = "rgba(34, 197, 94, 0.8)";
         ctx.lineWidth = 2;
@@ -297,41 +285,27 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         ctx.stroke();
       }
 
-      // Agent color based on role
       let color = "#fff";
-      if (agent.role === "scout") {
-        color = "#22c55e"; // Green
-      } else if (agent.role === "coordinator") {
-        color = "#3b82f6"; // Blue
-      } else if (agent.role === "retriever") {
-        color = "#f97316"; // Orange
-      }
+      if (agent.role === "scout") color = "#22c55e";
+      else if (agent.role === "coordinator") color = "#3b82f6";
+      else if (agent.role === "retriever") color = "#f97316";
 
-      // Draw agent body
       ctx.fillStyle = color;
-
       if (agent.role === "scout") {
-        // Draw circle for scouts
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
         ctx.fill();
       } else if (agent.role === "coordinator") {
-        // Draw hexagon for coordinators
         ctx.beginPath();
         for (let i = 0; i < 6; i++) {
           const angle = (Math.PI / 3) * i;
           const x = centerX + radius * Math.cos(angle);
           const y = centerY + radius * Math.sin(angle);
-          if (i === 0) {
-            ctx.moveTo(x, y);
-          } else {
-            ctx.lineTo(x, y);
-          }
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
         }
         ctx.closePath();
         ctx.fill();
       } else if (agent.role === "retriever") {
-        // Draw square for retrievers
         ctx.fillRect(
           centerX - radius,
           centerY - radius,
@@ -340,22 +314,16 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         );
       }
 
-      // Draw energy bar
+      // Energy bar
       const barWidth = cellWidth * 0.8;
-      const barHeight = 3;
       const barX = agent.x * cellWidth + cellWidth * 0.1;
       const barY = (agent.y + 0.9) * cellHeight;
-
       ctx.fillStyle = "#334155";
-      ctx.fillRect(barX, barY, barWidth, barHeight);
+      ctx.fillRect(barX, barY, barWidth, 3);
+      const ep = agent.energy / 100;
+      ctx.fillStyle = ep > 0.5 ? "#22c55e" : ep > 0.25 ? "#facc15" : "#ef4444";
+      ctx.fillRect(barX, barY, barWidth * ep, 3);
 
-      const energyPct = agent.energy / 100;
-      const energyColor =
-        energyPct > 0.5 ? "#22c55e" : energyPct > 0.25 ? "#facc15" : "#ef4444";
-      ctx.fillStyle = energyColor;
-      ctx.fillRect(barX, barY, barWidth * energyPct, barHeight);
-
-      // Draw carrying indicator
       if (agent.carrying > 0) {
         ctx.fillStyle = "#facc15";
         ctx.font = `${cellHeight * 0.3}px Arial`;
@@ -366,12 +334,17 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
   }, [state, width, height, selectedAgentId]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      width={width}
-      height={height}
-      className="border border-gray-700 rounded-lg"
-      style={{ backgroundColor: "#1a1a1a" }}
-    />
+    <div
+      ref={containerRef}
+      className="w-full h-full flex items-center justify-center"
+    >
+      <canvas
+        ref={canvasRef}
+        width={width}
+        height={height}
+        className="border border-gray-700 rounded-lg"
+        style={{ backgroundColor: "#1a1a1a" }}
+      />
+    </div>
   );
 };
