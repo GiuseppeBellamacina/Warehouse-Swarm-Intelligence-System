@@ -68,10 +68,32 @@ class RetrieverEventMessage(Message):
     """Event notification from retriever to coordinators"""
 
     retriever_id: int
-    event_type: str  # "object_picked", "object_delivered", "task_completed", "idle", "busy"
+    event_type: str  # "object_picked", "object_delivered", "task_completed", "idle", "busy", "object_spotted"
     position: Tuple[int, int]
     object_position: Optional[Tuple[int, int]] = None
     carrying_count: int = 0
+
+
+@dataclass
+class TaskStatusMessage(Message):
+    """Retriever declares its current task queue to coordinators (anti-race-condition)"""
+
+    retriever_id: int
+    task_queue: List[Tuple[int, int]]   # ordered list of assigned object positions
+    carrying_objects: int
+    energy_level: float
+    position: Tuple[int, int]
+
+
+@dataclass
+class CoordinatorSyncMessage(Message):
+    """Coordinator shares full knowledge state with another coordinator on contact"""
+
+    sender_coordinator_id: int
+    known_objects: Dict             # {(x,y): value} — unassigned discovered objects
+    assigned_tasks: Dict            # {retriever_id: obj_pos} — current assignments
+    retriever_states: Dict          # {retriever_id: state_str}
+    objects_being_collected: List   # list of (x,y) positions
 
 
 class CommunicationManager:

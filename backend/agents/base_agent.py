@@ -107,6 +107,8 @@ class BaseAgent(Agent):
         self.communication_message = None  # Message to send if communicating
         self.recent_messages: List[dict] = []  # Track recent messages for UI display
         self.max_messages = 10  # Keep last 10 messages
+        # Messages collected this step — drained exactly once in step_communicate
+        self._step_messages: list = []
 
     @property
     def energy_percentage(self) -> float:
@@ -187,26 +189,42 @@ class BaseAgent(Agent):
                 if cell_type == CellType.OBJECT:
                     self.known_objects[(x, y)] = 1.0
 
-                # Track discovered warehouses
-                if cell_type == CellType.WAREHOUSE and (x, y) not in self.known_warehouses:
+                # Track discovered warehouses (entrance cells are navigation targets)
+                if cell_type in (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                ) and (x, y) not in self.known_warehouses:
                     self.known_warehouses.append((x, y))
 
     def get_closest_warehouse(self) -> Optional[Tuple[int, int]]:
         """
-        Get the closest known warehouse position
+        Get the closest known warehouse *entrance* position.
 
         Returns:
-            Closest warehouse position or None
+            Closest entrance position or None
         """
-        if not self.pos or not self.known_warehouses:
+        if not self.pos:
             return self.model.warehouse_position
 
         pos_tuple = pos_to_tuple(self.pos)
-        closest = min(
-            self.known_warehouses,
+
+        # Prefer entrance cells if we know some
+        entrances = [
+            wh for wh in self.known_warehouses
+            if self.model.grid.get_cell_type(*wh) in (
+                CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT
+            )
+        ]
+        candidates = entrances if entrances else self.known_warehouses
+
+        if not candidates:
+            return self.model.warehouse_position
+
+        return min(
+            candidates,
             key=lambda wh: abs(wh[0] - pos_tuple[0]) + abs(wh[1] - pos_tuple[1]),
         )
-        return closest
 
     def get_nearby_agents(self, radius: Optional[float] = None) -> List[Agent]:
         """
@@ -274,16 +292,17 @@ class BaseAgent(Agent):
         return len(nearby)
 
     def process_received_messages(self) -> None:
-        """Process messages received from other agents"""
-        messages = self.model.comm_manager.get_messages(self.unique_id)
-
-        for message in messages:
+        """
+        Process messages received this step.
+        Uses self._step_messages which was drained exactly once in step_communicate.
+        Subclasses call super() then iterate self._step_messages for their own types.
+        """
+        for message in self._step_messages:
             if isinstance(message, MapDataMessage):
                 # Merge received map data
                 self.local_map = MapSharingSystem.apply_shared_map_data(
                     self.local_map, message.explored_cells
                 )
-
                 # Extract object locations from shared data
                 for x, y, cell_type in message.explored_cells:
                     if cell_type == CellType.OBJECT:
@@ -484,9 +503,12 @@ class BaseAgent(Agent):
         self.update_local_map(visible)
 
     def step_communicate(self) -> None:
-        """Stage 1: Process received messages from other agents"""
-        # Only process incoming messages, don't send yet
-        # Sending happens in step_act based on decision
+        """Stage 1: Drain mailbox once, share map, process messages."""
+        # Drain mailbox exactly ONCE — subclasses must NOT call get_messages() again
+        self._step_messages = self.model.comm_manager.get_messages(self.unique_id)
+        # Proactively share map data with all agents in communication radius
+        self.communicate_with_nearby_agents()
+        # Process all received messages (subclasses extend this)
         self.process_received_messages()
 
     def step_decide(self) -> None:

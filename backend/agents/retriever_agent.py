@@ -2,12 +2,16 @@
 Retriever Agent - Heavy lifter for object collection and delivery
 """
 
-from typing import List, Optional, Tuple, TYPE_CHECKING
+import random
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
 from backend.algorithms.pathfinding import AStarPathfinder
-from backend.core.communication import TaskAssignmentMessage, RetrieverEventMessage
-from backend.core.decision_maker import ActionType, UtilityFunctions
+from backend.core.communication import (
+    RetrieverEventMessage,
+    TaskAssignmentMessage,
+    TaskStatusMessage,
+)
 from backend.core.grid_manager import CellType
 
 if TYPE_CHECKING:
@@ -16,13 +20,17 @@ if TYPE_CHECKING:
 
 class RetrieverAgent(BaseAgent):
     """
-    Retriever agent specialized in object collection and delivery
+    Retriever agent: collects objects and delivers to warehouse.
 
-    Characteristics:
-    - Carrying capacity for objects
-    - Moderate speed
-    - Utility-based decision making (retrieve vs recharge vs deliver)
-    - Receives task assignments from coordinators
+    Rules:
+    - NEVER decides autonomously to retrieve an object; only follows task_queue
+      assigned by coordinator.
+    - Always declares task_queue to nearby coordinators so they don't over-assign.
+    - Enters warehouse ONLY through entrance cell, exits ONLY through exit cell.
+    - Deposits at deposit_cell (nearest WH interior cell to entrance).
+    - Recharges at recharge_cell (farthest WH interior cell from entrance).
+    - When idle (no tasks), wanders locally via A* — does NOT return to warehouse.
+    - Reports newly spotted objects to coordinator (coordinator decides pickup).
     """
 
     def __init__(
@@ -45,7 +53,7 @@ class RetrieverAgent(BaseAgent):
             speed=speed,
             energy_consumption={
                 "base": 0.1,
-                "move": 0.6,  # Higher cost (heavier when carrying)
+                "move": 0.6,
                 "communicate": 0.2,
             },
         )
@@ -55,489 +63,453 @@ class RetrieverAgent(BaseAgent):
         self.state = AgentState.IDLE
         self.pathfinder = AStarPathfinder(model.grid)
 
-        # Task assignment from coordinator
-        self.assigned_target: Optional[Tuple[int, int]] = None
+        # Ordered task queue assigned by coordinator (list of object positions)
+        self.task_queue: List[Tuple[int, int]] = []
 
-        # Event tracking for communication
-        self.pending_events: List[str] = []  # Events to communicate to coordinators
+        # Warehouse navigation sub-phases
+        # Possible values: None | "approach" | "deposit_cell" | "recharge_cell" | "exit"
+        self._wh_step: Optional[str] = None
+        self._wh_station: Optional[Dict[str, Any]] = None
 
-        # Setup decision making
-        self._setup_decision_maker()
+        # Pending events to report to coordinator
+        self.pending_events: List[str] = []
 
-    def _setup_decision_maker(self) -> None:
-        """Setup utility functions for decision making"""
-        self.decision_maker.register_utility_function(
-            ActionType.RETRIEVE, UtilityFunctions.retrieve_utility
-        )
-        self.decision_maker.register_utility_function(
-            ActionType.RECHARGE, UtilityFunctions.recharge_utility
-        )
-        self.decision_maker.register_utility_function(
-            ActionType.DELIVER, UtilityFunctions.deliver_utility
-        )
-        self.decision_maker.register_utility_function(
-            ActionType.EXPLORE, UtilityFunctions.explore_utility
-        )
+        # Newly spotted objects to report (coordinator decides whether to assign them)
+        self.newly_spotted_objects: List[Tuple[int, int]] = []
+
+        # Exploration target when idle
+        self._explore_target: Optional[Tuple[int, int]] = None
+        self._explore_steps: int = 0  # steps since last new explore target
+
+    # ------------------------------------------------------------------
+    # Sense
+    # ------------------------------------------------------------------
+
+    def step_sense(self) -> None:
+        """Perceive, track new objects for reporting to coordinator."""
+        old_objects = set(self.known_objects.keys())
+        super().step_sense()
+        new_objects = set(self.known_objects.keys())
+        # Queue newly visible objects for coordinator notification
+        for pos in new_objects - old_objects:
+            if pos not in self.task_queue:
+                self.newly_spotted_objects.append(pos)
+
+    # ------------------------------------------------------------------
+    # Communicate  (base class: map share + mailbox drain)
+    # ------------------------------------------------------------------
 
     def process_received_messages(self) -> None:
-        """Process task assignments from coordinators"""
+        """Handle TaskAssignmentMessage from coordinator."""
         super().process_received_messages()
 
-        messages = self.model.comm_manager.get_messages(self.unique_id)
-
-        for message in messages:
+        for message in self._step_messages:
             if isinstance(message, TaskAssignmentMessage):
                 if message.target_id == self.unique_id:
-                    # Received task assignment
-                    if message.task_type == "retrieve":
-                        print(f"[RETRIEVER {self.unique_id}] <- [COORD {message.sender_id}]: Received task to retrieve object at {message.target_position} (priority={message.priority:.2f})")
-                        
-                        # Log message for UI
+                    target = message.target_position
+                    if target is None:
+                        continue
+                    # Add to task queue only if not already there and not picked up
+                    if target not in self.task_queue and target in self.known_objects:
+                        self.task_queue.append(target)
+                        print(
+                            f"[RETRIEVER {self.unique_id}] <- [COORD "
+                            f"{message.sender_id}]: queued task {target} "
+                            f"(queue depth={len(self.task_queue)})"
+                        )
                         self.log_message(
                             direction="received",
                             message_type="task_assignment",
-                            details=f"Retrieve at {message.target_position} (priority={message.priority:.2f})",
-                            target_ids=[message.sender_id]
+                            details=f"Retrieve at {target}",
+                            target_ids=[message.sender_id],
                         )
-                        
-                        self.assigned_target = message.target_position
-                        # Add to known objects
-                        if message.target_position:
-                            self.known_objects[message.target_position] = message.priority
-                        # Register event: now busy with assigned task
-                        self.pending_events.append("busy")
+                    elif target not in self.known_objects:
+                        # Coordinator told us about an object we don't know
+                        self.known_objects[target] = message.priority
+                        if target not in self.task_queue:
+                            self.task_queue.append(target)
+                        print(
+                            f"[RETRIEVER {self.unique_id}] <- [COORD "
+                            f"{message.sender_id}]: queued unknown task {target}"
+                        )
+
+    # ------------------------------------------------------------------
+    # Decide
+    # ------------------------------------------------------------------
 
     def step_decide(self) -> None:
-        """Decide next action using utility-based decision making"""
-        # Reset communication flag
+        """Priority-based decision: communicate > deliver > recharge > retrieve > explore."""
         self.should_communicate_this_step = False
-        
-        # Priority 0: Communicate pending events to coordinators if any
-        if self.pending_events:
-            # Check if there are coordinators nearby
-            nearby = self.get_nearby_agents(self.communication_radius)
-            coordinators = [
-                a for a in nearby 
-                if hasattr(a, "role") and getattr(a, "role", None) == "coordinator"
-            ]
-            
-            if coordinators:
-                # Communicate instead of move this step
-                self.should_communicate_this_step = True
-                return
-        
-        # Build context for decision making
-        context = {
-            "position": self.pos,
-            "energy": self.energy,
-            "max_energy": self.max_energy,
-            "carrying": self.carrying_objects,
-            "carrying_capacity": self.carrying_capacity,
-            "warehouse_position": self.get_closest_warehouse(),
-            "known_objects": list(self.known_objects.items()),
-            "frontiers": [],  # Not used for retrievers
-        }
 
-        # Priority 1: Deliver if carrying objects
-        if self.carrying_objects > 0:
-            closest_wh = self.get_closest_warehouse()
-            if closest_wh:
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                dist = abs(closest_wh[0] - my_pos[0]) + abs(closest_wh[1] - my_pos[1])
-                # Only log every 10 steps to reduce spam
-                if self.model.current_step % 10 == 0:
-                    print(f"[RETRIEVER {self.unique_id}] STATE: Carrying {self.carrying_objects} object(s), heading to warehouse at {closest_wh} (distance: {dist})")
-            self.state = AgentState.DELIVERING
-            self.target_position = closest_wh
+        # ---- P0: Flag status communication to any nearby coordinator ----
+        # Does NOT return — the retriever still evaluates and executes other
+        # priorities this step. Communication happens at the start of step_act.
+        nearby = self.get_nearby_agents(self.communication_radius)
+        coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
+        if coordinators:
+            self.should_communicate_this_step = True
+
+        # ---- P1: Deliver if carrying objects and warehouse sequence not started ----
+        if self.carrying_objects > 0 and self._wh_step is None:
+            self._start_warehouse_sequence("deliver")
             return
 
-        # Priority 2: Recharge if low energy (consider distance to warehouse + current task)
-        if self.pos:
-            pos_tuple = pos_to_tuple(self.pos)
-            warehouse_pos = self.get_closest_warehouse()
-            if warehouse_pos:
-                distance_to_warehouse = abs(warehouse_pos[0] - pos_tuple[0]) + abs(
-                    warehouse_pos[1] - pos_tuple[1]
-                )
-                
-                # Calculate total energy needed for round trip if we have a target
-                energy_for_return = distance_to_warehouse * self.energy_consumption["move"] * 1.5
-                
-                if self.state == AgentState.RETRIEVING and self.target_position:
-                    # If already retrieving, include distance to target + return
-                    distance_to_target = abs(self.target_position[0] - pos_tuple[0]) + abs(
-                        self.target_position[1] - pos_tuple[1]
-                    )
-                    target_to_warehouse = abs(self.target_position[0] - warehouse_pos[0]) + abs(
-                        self.target_position[1] - warehouse_pos[1]
-                    )
-                    energy_needed = (distance_to_target + target_to_warehouse) * self.energy_consumption["move"] * 1.5
-                else:
-                    # Just need to get back
-                    energy_needed = energy_for_return
+        # ---- P2: Recharge if energy critically low ----
+        if self.energy < self.max_energy * 0.20 and self._wh_step is None:
+            self._start_warehouse_sequence("recharge")
+            return
 
-                # Only recharge if critically low (below 30) or can't complete current mission
-                critical_low = 30  # Increased from 20 to prevent energy death
-                if self.energy < critical_low or (self.state == AgentState.RETRIEVING and self.energy < energy_needed):
-                    print(f"[RETRIEVER {self.unique_id}] STATE: Low energy ({self.energy:.1f}), need recharge (distance to warehouse: {distance_to_warehouse})")
-                    self.state = AgentState.RECHARGING
-                    self.target_position = warehouse_pos
-                    self.was_recharging_at_warehouse = False  # Reset flag
-                    return
-
-        # Priority 3: Use assigned target if available and can claim it
-        if self.assigned_target and self.assigned_target in self.known_objects:
-            # Try to claim the object
-            pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
-            distance = abs(self.assigned_target[0] - pos_tuple[0]) + abs(
-                self.assigned_target[1] - pos_tuple[1]
-            )
-
-            can_claim = self.model.comm_manager.try_claim_object(
-                self.assigned_target, self.unique_id, self.model.current_step, distance, self.energy
-            )
-
-            if can_claim:
-                print(f"[RETRIEVER {self.unique_id}] TARGET: Claimed assigned object at {self.assigned_target}, moving to retrieve")
-                self.state = AgentState.RETRIEVING
-                self.target_position = self.assigned_target
+        # ---- P3: Execute next task in queue ----
+        # Guard: never re-decide tasks while inside a warehouse sub-sequence
+        if self.task_queue and self.carrying_objects < self.carrying_capacity and self._wh_step is None:
+            next_target = self.task_queue[0]
+            # Skip if object is gone from the world
+            if next_target not in self.model.grid.objects and next_target not in self.known_objects:
+                self.task_queue.pop(0)
                 return
+            # Claim the object
+            pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
+            distance = abs(next_target[0] - pos_tuple[0]) + abs(next_target[1] - pos_tuple[1])
+            can_claim = self.model.comm_manager.try_claim_object(
+                next_target, self.unique_id, self.model.current_step, distance, self.energy
+            )
+            if can_claim:
+                self.state = AgentState.RETRIEVING
+                self.target_position = next_target
             else:
-                # Someone else claimed it
-                print(f"[RETRIEVER {self.unique_id}] TARGET: Assigned object at {self.assigned_target} already claimed by another agent")
-                self.assigned_target = None
+                # Object claimed by someone else, abort
+                print(
+                    f"[RETRIEVER {self.unique_id}] SKIP: task {next_target} "
+                    f"already claimed, removing from queue"
+                )
+                self.task_queue.pop(0)
+                self.model.comm_manager.release_claim(next_target, self.unique_id)
+            return
 
-        # Priority 4: Evaluate available actions
-        available_actions = [ActionType.RETRIEVE, ActionType.RECHARGE]
+        # ---- P4: No tasks — explore locally (don't go warehouse) ----
+        if self._wh_step is None:
+            self._update_explore_target()
 
-        if self.known_objects:
-            # Filter out claimed objects
-            available_objects = [
-                obj_pos
-                for obj_pos in self.known_objects.keys()
-                if not self.model.comm_manager.is_object_claimed(obj_pos, self.unique_id)
-            ]
+    def _start_warehouse_sequence(self, purpose: str) -> None:
+        """
+        Begin entering the nearest warehouse.
+        purpose = "deliver" | "recharge"
+        """
+        pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
-            if available_objects:
-                best_action = self.decision_maker.select_best_action(available_actions, context)
+        # Prefer a warehouse we can see in our local map first
+        visible_station = None
+        for wh in self.known_warehouses:
+            cell_type = self.model.grid.get_cell_type(*wh)
+            if cell_type == CellType.WAREHOUSE_ENTRANCE:
+                if visible_station is None:
+                    visible_station = self.model.get_nearest_warehouse_to(wh)
 
-                if best_action.action_type == ActionType.RETRIEVE and best_action.target_position:
-                    # Try to claim before committing
-                    pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                    distance = abs(best_action.target_position[0] - pos_tuple[0]) + abs(
-                        best_action.target_position[1] - pos_tuple[1]
-                    )
+        if visible_station is None:
+            visible_station = self.model.get_nearest_warehouse_to(pos_tuple)
 
-                    can_claim = self.model.comm_manager.try_claim_object(
-                        best_action.target_position,
-                        self.unique_id,
-                        self.model.current_step,
-                        distance,
-                        self.energy,
-                    )
+        self._wh_station = visible_station
+        self._wh_step = "approach"
+        self.target_position = visible_station["entrance"]
 
-                    if can_claim:
-                        self.state = AgentState.RETRIEVING
-                        self.target_position = best_action.target_position
-                    else:
-                        self.state = AgentState.IDLE
-                elif best_action.action_type == ActionType.RECHARGE:
-                    self.state = AgentState.RECHARGING
-                    self.target_position = self.get_closest_warehouse()
-                else:
-                    self.state = AgentState.IDLE
+        if purpose == "deliver":
+            self.state = AgentState.DELIVERING
+        else:
+            self.state = AgentState.RECHARGING
+
+        print(
+            f"[RETRIEVER {self.unique_id}] WH-SEQ: starting {purpose} → "
+            f"entrance={self._wh_station['entrance']}"
+        )
+
+    def _update_explore_target(self) -> None:
+        """Pick a new local exploration A* target if current one is reached/stale."""
+        pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
+
+        # Check if we've reached the current explore target
+        if self._explore_target and pos_tuple == self._explore_target:
+            self._explore_target = None
+
+        # Pick a new target every 15 steps or when we don't have one
+        self._explore_steps += 1
+        if self._explore_target is None or self._explore_steps > 15:
+            self._explore_steps = 0
+            # Candidate cells: walkable, not warehouse, within 8 cells
+            candidates = []
+            for dx in range(-8, 9):
+                for dy in range(-8, 9):
+                    cx, cy = pos_tuple[0] + dx, pos_tuple[1] + dy
+                    if 0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height:
+                        ct = self.model.grid.get_cell_type(cx, cy)
+                        if ct not in (
+                            CellType.OBSTACLE,
+                            CellType.WAREHOUSE,
+                            CellType.WAREHOUSE_ENTRANCE,
+                            CellType.WAREHOUSE_EXIT,
+                        ) and self.model.grid.is_walkable(cx, cy):
+                            candidates.append((cx, cy))
+            if candidates:
+                self._explore_target = random.choice(candidates)
+                self.target_position = self._explore_target
+                self.state = AgentState.EXPLORING
             else:
                 self.state = AgentState.IDLE
+                self.target_position = None
         else:
-            # No known objects, idle
-            self.state = AgentState.IDLE
+            self.state = AgentState.EXPLORING
+
+    # ------------------------------------------------------------------
+    # Act
+    # ------------------------------------------------------------------
 
     def step_act(self) -> None:
-        """Execute decided action: COMMUNICATE or MOVE (not both)"""
         if self.energy <= 0:
             return
 
-        # OPTION 0: Check if standing on an object (opportunistic pickup)
-        if self.carrying_objects < self.carrying_capacity:
-            pos_tuple = pos_to_tuple(self.pos) if self.pos else None
-            if pos_tuple and pos_tuple in self.model.grid.objects:
-                # Opportunistically pick up object we're standing on
-                print(f"[RETRIEVER {self.unique_id}] PICKUP: Opportunistic pickup at {pos_tuple}")
-                self._try_pickup_object()
-                # Don't return, continue with normal behavior
+        # OPTION 1: Communicate status to coordinators (non-blocking — movement still runs)
+        if self.should_communicate_this_step:
+            self._send_status_to_coordinators()
 
-        # OPTION 1: Communicate pending events to coordinators
-        if self.should_communicate_this_step and self.pending_events:
-            self._send_event_to_coordinators()
-            return  # Don't move this step
-
-        # OPTION 2: Handle warehouse interactions
-        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-        if self.is_at_warehouse():
-            # Deliver objects first if carrying any
-            if self.carrying_objects > 0:
-                delivered_count = self.carrying_objects
-                self.model.objects_retrieved += self.carrying_objects
-                self.carrying_objects = 0
-                print(f"[RETRIEVER {self.unique_id}] DELIVERY: Delivered {delivered_count} object(s)! Total progress: {self.model.objects_retrieved}/{self.model.total_objects}")
-                
-                # Register event: objects delivered
-                self.pending_events.append("object_delivered")
-                
-                self.state = AgentState.IDLE
-                self.assigned_target = None
-                self.target_position = None
-                
-                # IMMEDIATELY move out of entrance/exit to avoid blocking
-                cell_type = self.model.grid.get_cell_type(*my_pos)
-                if cell_type in [CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT]:
-                    for dx, dy in [(1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)]:
-                        exit_pos = (my_pos[0] + dx, my_pos[1] + dy)
-                        if (0 <= exit_pos[0] < self.model.grid.width and 
-                            0 <= exit_pos[1] < self.model.grid.height):
-                            exit_cell_type = self.model.grid.get_cell_type(*exit_pos)
-                            if (exit_cell_type not in [CellType.OBSTACLE, 
-                                                        CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, 
-                                                        CellType.WAREHOUSE_EXIT] and
-                                self.model.grid.is_cell_empty(exit_pos)):
-                                self.model.grid.move_agent(self, exit_pos)
-                                print(f"[RETRIEVER {self.unique_id}] EXIT: Moved out of entrance/exit to {exit_pos} to unblock")
-                                return
-            
-            # Recharge if energy low
-            if self.energy < self.max_energy * 0.9:
-                recharge_rate = self.model.config.warehouse.recharge_rate
-                self.recharge_energy(recharge_rate)
-                self.was_recharging_at_warehouse = True  # Flag that we're recharging inside
-                return  # Stay and recharge
-            
-            # Fully charged, need to exit - but only find exit if we don't have one
-            if not self.target_position or self.target_position in self.model.warehouse_position:
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                # Find nearest non-warehouse cell that is walkable and reachable
-                exit_found = False
-                for distance in range(1, 5):
-                    for dx in range(-distance, distance + 1):
-                        for dy in range(-distance, distance + 1):
-                            if abs(dx) != distance and abs(dy) != distance:
-                                continue
-                            check_pos = (my_pos[0] + dx, my_pos[1] + dy)
-                            if (0 <= check_pos[0] < self.model.grid.width and 
-                                0 <= check_pos[1] < self.model.grid.height):
-                                cell_type = self.model.grid.get_cell_type(*check_pos)
-                                if (cell_type not in [CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT] and
-                                    self.model.grid.is_walkable(*check_pos)):
-                                    test_path = self.pathfinder.find_path(my_pos, check_pos)
-                                    if test_path and len(test_path) > 0:
-                                        self.target_position = check_pos
-                                        self.state = AgentState.RECHARGING  # Stay in recharging until we exit
-                                        print(f"[RETRIEVER {self.unique_id}] EXIT: Found exit at {check_pos}, moving out")
-                                        exit_found = True
-                                        break
-                        if exit_found:
-                            break
-                    if exit_found:
-                        break
-                
-                if not exit_found:
-                    from backend.algorithms.exploration import RandomWalkExplorer
-                    new_pos = RandomWalkExplorer.get_random_walk_direction(
-                        my_pos, getattr(self, 'idle_direction', None), 
-                        self.model.grid, momentum=0.3
-                    )
-                    if new_pos != my_pos:
-                        self.target_position = new_pos
-                        self.state = AgentState.RECHARGING
-                        print(f"[RETRIEVER {self.unique_id}] EXIT: Using random walk to exit")
-            # Don't return - let it move towards target
-        else:
-            # Check if stuck near warehouse while trying to deliver
-            if self.state == AgentState.DELIVERING and self.carrying_objects > 0:
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                    check_pos = (my_pos[0] + dx, my_pos[1] + dy)
-                    if (0 <= check_pos[0] < self.model.grid.width and 
-                        0 <= check_pos[1] < self.model.grid.height):
-                        cell_type = self.model.grid.get_cell_type(*check_pos)
-                        if cell_type in [CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT]:
-                            delivered_count = self.carrying_objects
-                            self.model.objects_retrieved += self.carrying_objects
-                            self.carrying_objects = 0
-                            print(f"[RETRIEVER {self.unique_id}] DELIVERY: Delivered {delivered_count} object(s) adjacent to warehouse! Total progress: {self.model.objects_retrieved}/{self.model.total_objects}")
-                            self.pending_events.append("object_delivered")
-                            self.state = AgentState.IDLE
-                            self.target_position = None
-                            self.assigned_target = None
-                            break
-
-        # OPTION 2.5: Check if we've exited warehouse after recharge
-        # Only transition to IDLE if we were actually AT the warehouse (not traveling TO it)
-        if self.state == AgentState.RECHARGING and not self.is_at_warehouse():
-            if getattr(self, 'was_recharging_at_warehouse', False):
-                # Successfully exited warehouse after recharging
-                print(f"[RETRIEVER {self.unique_id}] EXIT: Successfully exited warehouse after recharge, now IDLE")
-                self.state = AgentState.IDLE
-                self.target_position = None
-                self.assigned_target = None
-                self.pending_events.append("idle")
-                self.was_recharging_at_warehouse = False
-
-        # OPTION 3: If IDLE and no target, stay mostly idle to conserve energy
-        # Only do very occasional light exploration to avoid being completely static
-        if self.state == AgentState.IDLE and not self.target_position:
-            # Move only occasionally (every 20 steps) to slightly update position
-            # This conserves energy while waiting for coordinator assignments
-            if self.model.current_step % 20 == 0:
-                from backend.algorithms.exploration import RandomWalkExplorer
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                new_pos = RandomWalkExplorer.get_random_walk_direction(
-                    my_pos, 
-                    getattr(self, 'idle_direction', None), 
-                    self.model.grid,
-                    momentum=0.3  # Low momentum
-                )
-                if new_pos != my_pos:
-                    old_pos = my_pos
-                    self.move_towards(new_pos)
-                    my_pos_after = pos_to_tuple(self.pos) if self.pos else my_pos
-                    if my_pos_after != old_pos:
-                        self.idle_direction = (
-                            my_pos_after[0] - old_pos[0],
-                            my_pos_after[1] - old_pos[1],
-                        )
-            # Otherwise just stay idle and conserve energy
+        # OPTION 2: Handle warehouse sub-sequence
+        if self._wh_step is not None and self._wh_station is not None:
+            self._execute_warehouse_step()
             return
 
-        # OPTION 4: Move towards target
+        # OPTION 3: Move toward current target
         if self.target_position:
-            my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-            # Log if stuck delivering
-            if self.state == AgentState.DELIVERING and self.carrying_objects > 0:
-                wh_pos = self.get_closest_warehouse()
-                if wh_pos:
-                    dist_to_wh = abs(my_pos[0] - wh_pos[0]) + abs(my_pos[1] - wh_pos[1])
-                    if dist_to_wh <= 2 and self.model.current_step % 5 == 0:
-                        print(f"[RETRIEVER {self.unique_id}] DEBUG: At distance {dist_to_wh} from warehouse {wh_pos}, is_at_warehouse={self.is_at_warehouse()}, target={self.target_position}")
             self.move_towards(self.target_position)
-
-            # Check if reached target (convert pos to tuple for comparison)
             my_pos = pos_to_tuple(self.pos) if self.pos else None
-            if my_pos and my_pos == self.target_position:
-                if self.state == AgentState.RETRIEVING:
-                    # Try to pick up object
-                    self._try_pickup_object()
-                elif self.state in [AgentState.DELIVERING, AgentState.RECHARGING]:
-                    # Should be at warehouse, handled above
-                    pass
+
+            # Arrived at retrieval target
+            if (
+                self.state == AgentState.RETRIEVING
+                and my_pos
+                and my_pos == self.target_position
+            ):
+                self._try_pickup_object()
+
+        elif self.state == AgentState.IDLE:
+            self._update_explore_target()
+
+    def _execute_warehouse_step(self) -> None:
+        """
+        Drive the warehouse navigation sub-state machine.
+        Sequence:
+          approach → (at entrance) → deposit_cell OR recharge_cell
+                   → (at interior cell) → action
+                   → exit → (at exit) → done
+        """
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        station = self._wh_station
+        assert station is not None
+
+        if self._wh_step == "approach":
+            entrance = station["entrance"]
+            if my_pos == entrance or self.is_at_warehouse():
+                # Arrived at / inside warehouse — decide next step based on
+                # actual carrying count (safe against state corruption)
+                if self.carrying_objects > 0:
+                    self._wh_step = "deposit_cell"
+                    self.target_position = station["deposit_cell"]
+                else:
+                    self._wh_step = "recharge_cell"
+                    self.target_position = station["recharge_cell"]
+            else:
+                self.move_towards(entrance)
+
+        elif self._wh_step == "deposit_cell":
+            deposit = station["deposit_cell"]
+            # Accept the target deposit cell OR any interior WAREHOUSE cell
+            # (avoids deadlock when another agent is blocking the exact cell)
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            at_deposit = my_pos == deposit or cell_type == CellType.WAREHOUSE
+            if at_deposit:
+                # Deliver objects
+                delivered = self.carrying_objects
+                self.model.objects_retrieved += delivered
+                self.carrying_objects = 0
+                self.energy_consumption["move"] = 0.6  # normal move cost
+                print(
+                    f"[RETRIEVER {self.unique_id}] DELIVERY: "
+                    f"delivered {delivered} → total "
+                    f"{self.model.objects_retrieved}/{self.model.total_objects}"
+                )
+                self.pending_events.append("object_delivered")
+                # If low energy, recharge while still inside
+                if self.energy < self.max_energy * 0.80:
+                    self._wh_step = "recharge_cell"
+                    self.target_position = station["recharge_cell"]
+                    self.state = AgentState.RECHARGING
+                else:
+                    self._wh_step = "exit"
+                    self.target_position = station["exit"]
+            else:
+                self.move_towards(deposit)
+
+        elif self._wh_step == "recharge_cell":
+            recharge = station["recharge_cell"]
+            # Accept the target recharge cell OR any interior WAREHOUSE cell
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            at_recharge = my_pos == recharge or cell_type == CellType.WAREHOUSE
+            if at_recharge:
+                # Recharge here
+                rate = self.model.config.warehouse.recharge_rate
+                self.recharge_energy(rate)
+                if self.energy >= self.max_energy * 0.90:
+                    print(f"[RETRIEVER {self.unique_id}] RECHARGED: heading to exit")
+                    self._wh_step = "exit"
+                    self.target_position = station["exit"]
+                    self.state = AgentState.RECHARGING
+                # else stay and keep recharging
+            else:
+                self.move_towards(recharge)
+
+        elif self._wh_step == "exit":
+            exit_cell = station["exit"]
+            if my_pos == exit_cell:
+                # Left the warehouse
+                print(f"[RETRIEVER {self.unique_id}] EXIT: exited warehouse")
+                self._wh_step = None
+                self._wh_station = None
+                self.target_position = None
+                self.pending_events.append("idle")
+                self.state = AgentState.EXPLORING
+                self._update_explore_target()
+            else:
+                self.move_towards(exit_cell)
+
+    # ------------------------------------------------------------------
+    # Pickup
+    # ------------------------------------------------------------------
 
     def _try_pickup_object(self) -> None:
-        """Try to pick up object at current position"""
+        """Try to pick up the object at current position."""
         if self.carrying_objects >= self.carrying_capacity:
-            # At capacity, can't pick up more
             self.state = AgentState.DELIVERING
-            self.target_position = self.get_closest_warehouse()
+            self._start_warehouse_sequence("deliver")
             return
 
-        # Check if there's an object here
         pos_tuple = pos_to_tuple(self.pos) if self.pos else None
         if pos_tuple and pos_tuple in self.model.grid.objects:
-            # Pick up object
             success = self.model.grid.retrieve_object(*pos_tuple)
             if success:
                 self.carrying_objects += 1
-                print(f"[RETRIEVER {self.unique_id}] PICKUP: Successfully picked up object at {pos_tuple} (now carrying {self.carrying_objects}/{self.carrying_capacity})")
-
-                # Register event: object picked up
+                self.energy_consumption["move"] = 0.6 + self.carrying_objects * 0.2
+                print(
+                    f"[RETRIEVER {self.unique_id}] PICKUP: {pos_tuple} "
+                    f"(carrying {self.carrying_objects}/{self.carrying_capacity})"
+                )
                 self.pending_events.append("object_picked")
-
-                # Release claim and remove from known objects
                 self.model.comm_manager.release_claim(pos_tuple, self.unique_id)
+                # Remove from task queue
+                if pos_tuple in self.task_queue:
+                    self.task_queue.remove(pos_tuple)
                 if pos_tuple in self.known_objects:
                     del self.known_objects[pos_tuple]
 
-                # Clear assigned target if this was it
-                if self.assigned_target == pos_tuple:
-                    self.assigned_target = None
-                    # Register event: task completed
-                    self.pending_events.append("task_completed")
-
-                # Increase move cost when carrying
-                self.energy_consumption["move"] = 0.6 + (self.carrying_objects * 0.2)
-
-                # Decide next action
                 if self.carrying_objects >= self.carrying_capacity:
-                    # At capacity, deliver
+                    # Clear remaining tasks (will need to deliver first)
                     self.state = AgentState.DELIVERING
-                    self.target_position = self.get_closest_warehouse()
+                    self._start_warehouse_sequence("deliver")
                 else:
-                    # Can carry more, look for another object
-                    self.state = AgentState.IDLE
-                    self.target_position = None
-                    # Register event: now idle
-                    self.pending_events.append("idle")
+                    # Continue with next task in queue
+                    if self.task_queue:
+                        self.state = AgentState.RETRIEVING
+                        self.target_position = self.task_queue[0]
+                    else:
+                        self.state = AgentState.EXPLORING
+                        self.target_position = None
         else:
-            # No object here (maybe already taken by another agent)
-            print(f"[RETRIEVER {self.unique_id}] PICKUP: No object at {pos_tuple} (already taken or moved)")
-            # Release claim
+            # Object gone, remove from queue
             if pos_tuple:
                 self.model.comm_manager.release_claim(pos_tuple, self.unique_id)
-            if self.pos in self.known_objects:
-                del self.known_objects[self.pos]
-            self.state = AgentState.IDLE
+                if pos_tuple in self.task_queue:
+                    self.task_queue.remove(pos_tuple)
+                if pos_tuple in self.known_objects:
+                    del self.known_objects[pos_tuple]
+            print(f"[RETRIEVER {self.unique_id}] PICKUP: object gone at {pos_tuple}")
+            self.state = AgentState.EXPLORING
             self.target_position = None
-            self.assigned_target = None
-            # Register event: now idle (task failed)
-            self.pending_events.append("idle")
 
-    def _send_event_to_coordinators(self) -> None:
-        """Send event notifications to nearby coordinators"""
-        if not self.pending_events or not self.pos:
+    # ------------------------------------------------------------------
+    # Communication helpers
+    # ------------------------------------------------------------------
+
+    def _send_status_to_coordinators(self) -> None:
+        """Send TaskStatusMessage + pending events + spotted objects to nearby coordinators."""
+        if not self.pos:
             return
-        
-        # Get nearby coordinators
+
         nearby = self.get_nearby_agents(self.communication_radius)
-        coordinators = [
-            a for a in nearby 
-            if hasattr(a, "role") and getattr(a, "role", None) == "coordinator"
-        ]
-        
+        coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
         if not coordinators:
+            self.should_communicate_this_step = False
             return
-        
-        coordinator_ids = [
-            getattr(c, "unique_id", 0) for c in coordinators if hasattr(c, "unique_id")
-        ]
-        
-        if self.pending_events:
-            print(f"[RETRIEVER {self.unique_id}] -> [COORD {coordinator_ids}]: Sending {len(self.pending_events)} event(s): {self.pending_events}")
-        
-        # Send event message for each pending event
+
+        coord_ids = [getattr(c, "unique_id", 0) for c in coordinators]
+        my_pos = pos_to_tuple(self.pos)
+
+        # Always send task status (anti-race-condition: declare tasks before assignment)
+        status_msg = TaskStatusMessage(
+            sender_id=self.unique_id,
+            timestamp=self.model.current_step,
+            retriever_id=self.unique_id,
+            task_queue=list(self.task_queue),
+            carrying_objects=self.carrying_objects,
+            energy_level=self.energy,
+            position=my_pos,
+        )
+        self.model.comm_manager.send_message(status_msg, coord_ids)
+
+        # Send pending event messages
         for event_type in self.pending_events:
-            message = RetrieverEventMessage(
+            event_msg = RetrieverEventMessage(
                 sender_id=self.unique_id,
                 timestamp=self.model.current_step,
                 retriever_id=self.unique_id,
                 event_type=event_type,
-                position=pos_to_tuple(self.pos),
-                object_position=self.assigned_target,
+                position=my_pos,
+                object_position=self.task_queue[0] if self.task_queue else None,
                 carrying_count=self.carrying_objects,
             )
-            
-            if coordinator_ids:
-                self.model.comm_manager.send_message(message, coordinator_ids)
-        
-        # Log message for UI
-        if self.pending_events:
-            self.log_message(
-                direction="sent",
-                message_type="retriever_event",
-                details=f"Events: {', '.join(self.pending_events)}",
-                target_ids=coordinator_ids
+            self.model.comm_manager.send_message(event_msg, coord_ids)
+
+        # Notify coordinator about newly spotted objects
+        for obj_pos in self.newly_spotted_objects:
+            spot_msg = RetrieverEventMessage(
+                sender_id=self.unique_id,
+                timestamp=self.model.current_step,
+                retriever_id=self.unique_id,
+                event_type="object_spotted",
+                position=my_pos,
+                object_position=obj_pos,
+                carrying_count=self.carrying_objects,
             )
-        
-        # Clear pending events after sending
+            self.model.comm_manager.send_message(spot_msg, coord_ids)
+
+        if self.pending_events or self.newly_spotted_objects:
+            print(
+                f"[RETRIEVER {self.unique_id}] -> COORD {coord_ids}: "
+                f"status (queue={len(self.task_queue)}, "
+                f"carrying={self.carrying_objects}, "
+                f"events={self.pending_events}, "
+                f"spotted={len(self.newly_spotted_objects)})"
+            )
+
+        self.log_message(
+            direction="sent",
+            message_type="task_status",
+            details=(
+                f"queue={len(self.task_queue)}, "
+                f"carrying={self.carrying_objects}, "
+                f"events={self.pending_events}"
+            ),
+            target_ids=coord_ids,
+        )
+
+        # Clear consumed lists
         self.pending_events = []
-        
-        # Consume energy for communication
+        self.newly_spotted_objects = []
+
         self.consume_energy(self.energy_consumption["communicate"])
         self.last_communication_step = self.model.current_step

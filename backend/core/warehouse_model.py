@@ -62,6 +62,8 @@ class WarehouseModel(Model):
         self.warehouse_position = (config.warehouse.position.x, config.warehouse.position.y)
         self.warehouse_entrances = []
         self.warehouse_exits = []
+        # Station info: computed after _setup_warehouse()
+        self.warehouse_stations = []
 
         # Objects tracking
         self.total_objects = config.objects.count
@@ -69,6 +71,7 @@ class WarehouseModel(Model):
 
         # Initialize environment
         self._setup_warehouse()
+        self._compute_warehouse_stations()
         self._setup_obstacles()
         self._spawn_objects()
 
@@ -116,6 +119,92 @@ class WarehouseModel(Model):
         for exit_point in exits:
             self.grid.set_cell_type(exit_point.x, exit_point.y, CellType.WAREHOUSE_EXIT)
             self.warehouse_exits.append((exit_point.x, exit_point.y))
+
+    def _compute_warehouse_stations(self) -> None:
+        """
+        Group warehouse cells into stations, one per entrance.
+        For each entrance, find the nearby WAREHOUSE cells and derive:
+          - deposit_cell  : nearest WAREHOUSE cell to entrance (drop objects here)
+          - recharge_cell : farthest WAREHOUSE cell from entrance (recharge here,
+                            avoids blocking the entrance)
+          - exit          : matching exit cell for this entrance
+        """
+        if not self.warehouse_entrances:
+            return
+
+        # Collect all WAREHOUSE-type interior cells
+        interior_cells = [
+            (x, y)
+            for x in range(self.grid.width)
+            for y in range(self.grid.height)
+            if self.grid.get_cell_type(x, y) == CellType.WAREHOUSE
+        ]
+
+        for entrance in self.warehouse_entrances:
+            ex, ey = entrance
+
+            # Assign cells within Manhattan-3 to this entrance
+            nearby_cells = [
+                c for c in interior_cells
+                if abs(c[0] - ex) + abs(c[1] - ey) <= 3
+            ]
+
+            if not nearby_cells:
+                nearby_cells = interior_cells  # fallback (single station)
+
+            # Deposit = closest interior cell to entrance
+            deposit_cell = min(
+                nearby_cells,
+                key=lambda c: abs(c[0] - ex) + abs(c[1] - ey),
+            )
+
+            # Recharge = farthest interior cell from entrance
+            recharge_cell = max(
+                nearby_cells,
+                key=lambda c: abs(c[0] - ex) + abs(c[1] - ey),
+            )
+
+            # Match the exit closest to this entrance
+            exit_cell = entrance  # default: use entrance itself
+            if self.warehouse_exits:
+                exit_cell = min(
+                    self.warehouse_exits,
+                    key=lambda e: abs(e[0] - ex) + abs(e[1] - ey),
+                )
+
+            self.warehouse_stations.append(
+                {
+                    "entrance": entrance,
+                    "exit": exit_cell,
+                    "deposit_cell": deposit_cell,
+                    "recharge_cell": recharge_cell,
+                    "cells": nearby_cells,
+                }
+            )
+
+    def get_nearest_warehouse_to(self, pos: Tuple[int, int]) -> dict:
+        """
+        Return the nearest warehouse station dict to *pos*.
+
+        The dict has keys: entrance, exit, deposit_cell, recharge_cell, cells.
+        Falls back to a minimal dict built from warehouse_position if no stations.
+        """
+        if self.warehouse_stations:
+            return min(
+                self.warehouse_stations,
+                key=lambda s: (
+                    abs(s["entrance"][0] - pos[0]) + abs(s["entrance"][1] - pos[1])
+                ),
+            )
+        # Fallback for configs without explicit entrances
+        wp = self.warehouse_position
+        return {
+            "entrance": wp,
+            "exit": wp,
+            "deposit_cell": wp,
+            "recharge_cell": wp,
+            "cells": [wp],
+        }
 
     def _setup_obstacles(self) -> None:
         """Setup obstacles on the grid"""

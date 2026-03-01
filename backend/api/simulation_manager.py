@@ -239,8 +239,10 @@ class SimulationManager:
                     if self.model.grid.out_of_bounds(check_pos):
                         continue
                     
-                    # Check if cell is empty and walkable
-                    if self.model.grid.is_cell_empty(check_pos) and self.model.grid.is_walkable(*check_pos):
+                    # Check if cell is empty, walkable, and not already claimed
+                    if (check_pos not in self.occupied_spawn_positions and
+                        self.model.grid.is_cell_empty(check_pos) and
+                        self.model.grid.is_walkable(*check_pos)):
                         # Calculate actual distance
                         dist = abs(dx) + abs(dy)  # Manhattan distance
                         candidates.append((check_pos, dist))
@@ -252,12 +254,15 @@ class SimulationManager:
         if spread:
             # Sort by distance descending (furthest first)
             candidates.sort(key=lambda x: x[1], reverse=True)
-            # Return one from the furthest positions to spread agents out
-            return candidates[0][0] if candidates else None
+            chosen = candidates[0][0] if candidates else None
         else:
             # Return closest available position
             candidates.sort(key=lambda x: x[1])
-            return candidates[0][0] if candidates else None
+            chosen = candidates[0][0] if candidates else None
+
+        if chosen:
+            self.occupied_spawn_positions.add(chosen)
+        return chosen
 
     async def start_simulation(self, ws_manager) -> None:
         """

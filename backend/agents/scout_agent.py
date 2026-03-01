@@ -2,6 +2,7 @@
 Scout Agent - Fast explorer with wide vision
 """
 
+import random
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
@@ -55,16 +56,16 @@ class ScoutAgent(BaseAgent):
 
         # Track discovered objects to communicate
         self.newly_discovered_objects: List[Tuple[Tuple[int, int], float]] = []
-        self.pending_communication_steps = 0  # Track how long objects are pending
+        self._discovery_age: int = 0  # steps without a coordinator to receive discoveries
         
         # Track repeated failures on same target
         self.last_failed_target: Optional[Tuple[int, int]] = None
         self.consecutive_failures_on_target = 0
-        
-        # Track coordinator contact for reunion behavior
-        self.last_coordinator_contact_step = 0
-        self.searching_for_coordinator = False
-        self.known_coordinator_position: Optional[Tuple[int, int]] = None
+
+        # Warehouse recharge sub-state machine (avoids getting stuck on entrance/exit)
+        # Values: None | "approach" | "recharge" | "exit"
+        self._scout_wh_step: Optional[str] = None
+        self._scout_wh_station: Optional[dict] = None
 
         # Setup decision making
         self._setup_decision_maker()
@@ -101,183 +102,134 @@ class ScoutAgent(BaseAgent):
         """Decide next action based on utility"""
         # Reset communication flag
         self.should_communicate_this_step = False
-        
-        # Priority 1: Communicate newly discovered objects to coordinators (if any nearby)
+
+        # If the recharge sub-machine is already running, let step_act handle it
+        if self._scout_wh_step is not None:
+            return
+
+        # ---- Priority 1: Communicate discoveries to any nearby coordinator ----
         if self.newly_discovered_objects:
-            # Increment pending counter
-            self.pending_communication_steps += 1
-            
-            # If pending too long (50 steps), discard and continue
-            if self.pending_communication_steps > 50:
-                print(f"[SCOUT {self.unique_id}] TIMEOUT: Discarding {len(self.newly_discovered_objects)} pending discoveries (no coordinator found for 50 steps)")
-                self.newly_discovered_objects = []
-                self.pending_communication_steps = 0
-            else:
-                # Check if there are coordinators nearby
-                nearby = self.get_nearby_agents(self.communication_radius)
-                coordinators = [
-                    a for a in nearby 
-                    if hasattr(a, "role") and getattr(a, "role", None) == "coordinator"
-                ]
-                
-                if coordinators:
-                    # Communicate instead of move this step
-                    coord_ids = [getattr(c, "unique_id", "?") for c in coordinators]
-                    print(f"[SCOUT {self.unique_id}] DECIDE: Will communicate {len(self.newly_discovered_objects)} objects to coordinators {coord_ids}")
-                    self.should_communicate_this_step = True
-                    return
-                # If no coordinators nearby, continue exploring and keep objects for later
-        
-        # Priority 2: Check if need to find coordinator (if too long without contact)
-        steps_without_coordinator = self.model.current_step - self.last_coordinator_contact_step
-        if steps_without_coordinator > 80 and not self.searching_for_coordinator:
-            # Check if coordinator is nearby right now
+            self._discovery_age += 1
             nearby = self.get_nearby_agents(self.communication_radius)
-            coordinators = [a for a in nearby 
-                          if hasattr(a, "role") and getattr(a, "role", None) == "coordinator"]
-            
+            coordinators = [
+                a for a in nearby
+                if getattr(a, "role", None) == "coordinator"
+            ]
             if coordinators:
-                # Found coordinator, update contact time
-                self.last_coordinator_contact_step = self.model.current_step
-                coord = coordinators[0]
-                if coord.pos:
-                    self.known_coordinator_position = pos_to_tuple(coord.pos)
-                print(f"[SCOUT {self.unique_id}] REUNION: Found coordinator {coord.unique_id} nearby")
-            else:
-                # No coordinator nearby, start searching
-                print(f"[SCOUT {self.unique_id}] REUNION: No coordinator contact for {steps_without_coordinator} steps, searching")
-                self.searching_for_coordinator = True
-                
-                # If we know coordinator's last position, go there
-                if self.known_coordinator_position:
-                    self.target_position = self.known_coordinator_position
-                    self.state = AgentState.MOVING_TO_TARGET
-                    return
-        
-        # If searching for coordinator and found one, stop searching
-        if self.searching_for_coordinator:
-            nearby = self.get_nearby_agents(self.communication_radius)
-            coordinators = [a for a in nearby 
-                          if hasattr(a, "role") and getattr(a, "role", None) == "coordinator"]
-            if coordinators:
-                self.searching_for_coordinator = False
-                self.last_coordinator_contact_step = self.model.current_step
-                coord = coordinators[0]
-                if coord.pos:
-                    self.known_coordinator_position = pos_to_tuple(coord.pos)
-                print(f"[SCOUT {self.unique_id}] REUNION: Reunited with coordinator {coord.unique_id}!")
-                self.target_position = None  # Clear target to resume normal exploration
-        
-        # Priority 3: Check if need to recharge
-        if self.energy < 30:
-            closest_wh = self.get_closest_warehouse()
-            if closest_wh:
-                print(f"[SCOUT {self.unique_id}] STATE: Low energy ({self.energy:.1f}), heading to warehouse at {closest_wh}")
-                self.state = AgentState.RECHARGING
-                self.target_position = closest_wh
+                self.should_communicate_this_step = True
                 return
+            # No coordinator nearby — keep discoveries, but discard after 80 steps
+            if self._discovery_age > 80:
+                print(
+                    f"[SCOUT {self.unique_id}] TIMEOUT: discarding "
+                    f"{len(self.newly_discovered_objects)} stale discoveries"
+                )
+                self.newly_discovered_objects = []
+                self._discovery_age = 0
+        else:
+            self._discovery_age = 0
 
-        # Priority 3: Explore
+        # ---- Priority 2: Recharge if critically low (< 25 %) ----
+        if self.energy < self.max_energy * 0.25:
+            if self._scout_wh_step is None:
+                # Start the warehouse recharge sub-state machine
+                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                station = self.model.get_nearest_warehouse_to(my_pos)
+                self._scout_wh_station = station
+                self._scout_wh_step = "approach"
+                self.state = AgentState.RECHARGING
+                self.target_position = station.get("entrance")
+                print(
+                    f"[SCOUT {self.unique_id}] LOW-E ({self.energy:.1f}), "
+                    f"heading to WH entrance {self.target_position}"
+                )
+            # Sub-machine runs in step_act — just return here
+            return
+
+        # ---- Priority 3: Frontier-based exploration ----
         self.state = AgentState.EXPLORING
-
-        # Find frontiers in local map
-        frontiers = FrontierExplorer.find_frontiers(self.local_map)
-        
-        # Filter out unreachable frontiers (recently failed targets)
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
         current_step = self.model.current_step
+
+        frontiers = FrontierExplorer.find_frontiers(self.local_map)
+
+        # Filter blacklisted / stale frontiers
         valid_frontiers = []
-        blacklisted_count = 0
-        for frontier in frontiers:
-            # frontier is ((x, y), cluster_size) - extract position
-            frontier_pos, cluster_size = frontier
-            
-            # Check if this frontier position was recently unreachable (within last 30 steps)
+        for frontier_pos, cluster_size in frontiers:
             if frontier_pos in self.unreachable_targets:
                 failed_step = self.unreachable_targets[frontier_pos]
                 if current_step - failed_step < 30:
-                    blacklisted_count += 1
-                    continue  # Skip this unreachable frontier
-                else:
-                    # Enough time has passed, remove from blacklist
-                    del self.unreachable_targets[frontier_pos]
-            valid_frontiers.append(frontier)
+                    continue
+                del self.unreachable_targets[frontier_pos]
+            valid_frontiers.append((frontier_pos, cluster_size))
 
-        # If all frontiers are blacklisted, clear old entries and re-filter
-        if blacklisted_count > 0 and len(valid_frontiers) == 0:
-            print(f"[SCOUT {self.unique_id}] EXPLORE: All {blacklisted_count} frontiers blacklisted, clearing old entries")
-            # Clear blacklist entries older than 15 steps
-            to_remove = [pos for pos, step in self.unreachable_targets.items() 
-                        if current_step - step > 15]
-            for pos in to_remove:
-                del self.unreachable_targets[pos]
-            
-            # Re-filter frontiers against UPDATED blacklist
-            valid_frontiers = []
-            for frontier in frontiers:
-                frontier_pos, cluster_size = frontier
-                # Check if still blacklisted after clearing old entries
-                if frontier_pos not in self.unreachable_targets:
-                    valid_frontiers.append(frontier)
-            
-            # If still no valid frontiers after clearing, force random walk
-            if len(valid_frontiers) == 0:
-                print(f"[SCOUT {self.unique_id}] STUCK: No reachable frontiers, forcing random walk")
-                self.target_position = None
-                self.state = AgentState.EXPLORING
-                self.consecutive_failures_on_target = 0  # Reset to try again later
-                return
+        # Anti-clustering: prefer frontiers far from other scouts
+        nearby = self.get_nearby_agents(self.communication_radius)
+        scout_positions = [
+            pos_to_tuple(a.pos)
+            for a in nearby
+            if getattr(a, "role", None) == "scout" and a.pos and pos_to_tuple(a.pos) != my_pos
+        ]
+        anti_clustered = [
+            f for f in valid_frontiers
+            if all(
+                abs(f[0][0] - sp[0]) + abs(f[0][1] - sp[1]) >= 8
+                for sp in scout_positions
+            )
+        ]
+        frontiers_to_use = anti_clustered if anti_clustered else valid_frontiers
 
-        if valid_frontiers:
-            # Get nearby agent positions for coordination
-            nearby = self.get_nearby_agents()
+        if frontiers_to_use:
             nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
-            
-            # Identify nearby scouts for anti-clustering
-            nearby_scouts = [a for a in nearby 
-                            if hasattr(a, "role") and getattr(a, "role", None) == "scout"]
-            scout_positions = [pos_to_tuple(a.pos) for a in nearby_scouts if a.pos]
-
-            # Select best frontier with anti-clustering
-            my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-            
-            # Filter out frontiers too close to other scouts (within 8 cells)
-            min_scout_distance = 8
-            anti_clustered_frontiers = []
-            for frontier_pos, cluster_size in valid_frontiers:
-                too_close_to_scout = False
-                for scout_pos in scout_positions:
-                    if scout_pos == my_pos:
-                        continue  # Skip self
-                    dist = abs(frontier_pos[0] - scout_pos[0]) + abs(frontier_pos[1] - scout_pos[1])
-                    if dist < min_scout_distance:
-                        too_close_to_scout = True
-                        break
-                
-                if not too_close_to_scout:
-                    anti_clustered_frontiers.append((frontier_pos, cluster_size))
-            
-            # Use anti-clustered frontiers if available, otherwise use all
-            frontiers_to_use = anti_clustered_frontiers if anti_clustered_frontiers else valid_frontiers
-            
-            best_frontier = FrontierExplorer.select_best_frontier(
+            best = FrontierExplorer.select_best_frontier(
                 frontiers_to_use, my_pos, nearby_positions
             )
-
-            if best_frontier:
-                # Only update target if significantly different or we don't have one
-                if not self.target_position or abs(best_frontier[0] - self.target_position[0]) > 5 or abs(best_frontier[1] - self.target_position[1]) > 5:
-                    self.target_position = best_frontier
-                    self.path = []  # Clear old path
-                    self.consecutive_failures_on_target = 0  # Reset failure counter
+            if best:
+                if (
+                    not self.target_position
+                    or abs(best[0] - self.target_position[0]) > 5
+                    or abs(best[1] - self.target_position[1]) > 5
+                ):
+                    self.target_position = best
+                    self.path = []
+                    self.consecutive_failures_on_target = 0
                 self.state = AgentState.MOVING_TO_TARGET
-            else:
-                # No good frontier, continue with random walk
-                self.target_position = None
-                self.state = AgentState.EXPLORING
-        else:
-            # No frontiers visible, use random walk with momentum
-            self.target_position = None
-            self.state = AgentState.EXPLORING
+                return
+
+        # ---- Fallback: navigate towards a random unknown boundary cell ----
+        self._pick_unexplored_target(my_pos)
+
+    def _pick_unexplored_target(self, my_pos: Tuple[int, int]) -> None:
+        """Navigate towards a random UNKNOWN boundary cell via A* when no frontier found."""
+        height, width = self.local_map.shape
+        unknown_boundary: List[Tuple[int, int]] = []
+
+        for y in range(height):
+            for x in range(width):
+                if self.local_map[y, x] != 0:
+                    continue  # already explored
+                # Must be adjacent to an explored cell
+                for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < width and 0 <= ny < height and self.local_map[ny, nx] != 0:
+                        unknown_boundary.append((x, y))
+                        break
+
+        random.shuffle(unknown_boundary)
+
+        for candidate in unknown_boundary[:20]:
+            if candidate in self.unreachable_targets:
+                continue
+            if not self.model.grid.is_walkable(*candidate):
+                continue
+            self.target_position = candidate
+            self.path = []
+            self.state = AgentState.MOVING_TO_TARGET
+            return
+
+        # Absolute fallback: random walk handled in step_act
+        self.target_position = None
+        self.state = AgentState.EXPLORING
 
     def step_act(self) -> None:
         """Execute decided action: COMMUNICATE or MOVE (not both)"""
@@ -287,50 +239,56 @@ class ScoutAgent(BaseAgent):
         # OPTION 1: Communicate newly discovered objects to coordinators
         if self.should_communicate_this_step and self.newly_discovered_objects:
             self._broadcast_discovered_objects()
-            # Clear the list after broadcasting
             self.newly_discovered_objects = []
-            self.pending_communication_steps = 0  # Reset counter
+            self._discovery_age = 0
             return  # Don't move this step
 
-        # OPTION 2: Recharge at warehouse
-        if self.is_at_warehouse():
-            recharge_rate = self.model.config.warehouse.recharge_rate
-            old_energy = self.energy
-            self.recharge_energy(recharge_rate)
-            # Only log if actually recharged and reached threshold
-            if old_energy < self.max_energy * 0.9 and self.energy >= self.max_energy * 0.9:
-                print(f"[SCOUT {self.unique_id}] STATE: Fully recharged ({old_energy:.1f} -> {self.energy:.1f}), resuming exploration")
-                self.state = AgentState.EXPLORING
+        # OPTION 2: Warehouse recharge sub-state machine
+        if self._scout_wh_step is not None:
+            self._execute_scout_recharge_step()
             return
 
-        # OPTION 3: Move based on state (scouts can move multiple times per step)
-        moves_per_step = int(self.speed)  # Base moves
-        
-        # For speed > 1.0, do 2 moves per step (fast scout)
-        if self.speed > 1.0:
-            moves_per_step = 2
-        
-        for move_num in range(moves_per_step):
+        # OPTION 3: Move based on state (scouts move 2× per step when speed > 1)
+        moves_per_step = 2 if self.speed > 1.0 else 1
+
+        for _ in range(moves_per_step):
             if self.energy <= 0:
                 break
-                
-            if self.target_position and self.state == AgentState.MOVING_TO_TARGET:
-                self.move_towards(self.target_position)
 
-                # Reached target, find new frontier
+            if self.state == AgentState.MOVING_TO_TARGET and self.target_position:
+                moved = self.move_towards(self.target_position)
+
                 my_pos = pos_to_tuple(self.pos) if self.pos else None
                 if my_pos and my_pos == self.target_position:
                     self.target_position = None
                     self.state = AgentState.EXPLORING
+                    self.consecutive_failures_on_target = 0
                     break
 
+                if not moved:
+                    self.consecutive_failures_on_target += 1
+                    if self.consecutive_failures_on_target >= 8:
+                        print(
+                            f"[SCOUT {self.unique_id}] STUCK: giving up on "
+                            f"{self.target_position}"
+                        )
+                        if self.target_position:
+                            self.unreachable_targets[self.target_position] = (
+                                self.model.current_step
+                            )
+                        self.target_position = None
+                        self.path = []
+                        self.state = AgentState.EXPLORING
+                        self.consecutive_failures_on_target = 0
+                else:
+                    self.consecutive_failures_on_target = 0
+
             elif self.state == AgentState.EXPLORING:
-                # Random walk exploration with momentum
+                # Random walk with momentum as absolute fallback
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
                 new_pos = RandomWalkExplorer.get_random_walk_direction(
                     my_pos, self.previous_direction, self.model.grid
                 )
-
                 if new_pos != my_pos:
                     old_pos = my_pos
                     self.move_towards(new_pos)
@@ -342,17 +300,84 @@ class ScoutAgent(BaseAgent):
                         )
 
             elif self.state == AgentState.RECHARGING:
-                # Move towards warehouse
                 if self.target_position:
                     self.move_towards(self.target_position)
-                    break  # Don't do extra moves when recharging
+                break  # Only one move per step when recharging
+
+    def _execute_scout_recharge_step(self) -> None:
+        """
+        Three-phase warehouse recharge: approach entrance → recharge at interior cell → exit.
+        Ensures the scout never stays parked on entrance/exit cells.
+        """
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        station = self._scout_wh_station or {}
+
+        if self._scout_wh_step == "approach":
+            entrance = station.get("entrance")
+            if not entrance:
+                # No station data — abort
+                self._scout_wh_step = None
+                self._scout_wh_station = None
+                self.state = AgentState.EXPLORING
+                return
+            if self.is_at_warehouse():
+                # Reached the warehouse area — proceed to interior recharge cell
+                recharge_cell = station.get("recharge_cell") or entrance
+                self._scout_wh_step = "recharge"
+                self.target_position = recharge_cell
+                print(f"[SCOUT {self.unique_id}] WH: at entrance, heading to recharge cell {recharge_cell}")
+            else:
+                self.move_towards(entrance)
+
+        elif self._scout_wh_step == "recharge":
+            recharge_cell = station.get("recharge_cell")
+            # Accept the target recharge cell OR any interior WAREHOUSE cell
+            # (avoids deadlock when another agent is parked on the exact cell)
+            from backend.core.grid_manager import CellType
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            at_recharge = (
+                (recharge_cell is not None and my_pos == recharge_cell)
+                or cell_type == CellType.WAREHOUSE
+            )
+            if at_recharge:
+                rate = self.model.config.warehouse.recharge_rate
+                self.recharge_energy(rate)
+                if self.energy >= self.max_energy * 0.90:
+                    exit_cell = station.get("exit") or station.get("entrance")
+                    self._scout_wh_step = "exit"
+                    self.target_position = exit_cell
+                    print(f"[SCOUT {self.unique_id}] WH: recharged, heading to exit {exit_cell}")
+            else:
+                if recharge_cell:
+                    self.move_towards(recharge_cell)
+                else:
+                    # No specific cell — just stay inside and recharge anyway
+                    rate = self.model.config.warehouse.recharge_rate
+                    self.recharge_energy(rate)
+                    if self.energy >= self.max_energy * 0.90:
+                        exit_cell = station.get("exit") or station.get("entrance")
+                        self._scout_wh_step = "exit"
+                        self.target_position = exit_cell
+
+        elif self._scout_wh_step == "exit":
+            exit_cell = station.get("exit") or station.get("entrance")
+            if not exit_cell or my_pos == exit_cell or not self.is_at_warehouse():
+                # Stepped outside the warehouse
+                print(f"[SCOUT {self.unique_id}] WH: exited, resuming exploration")
+                self._scout_wh_step = None
+                self._scout_wh_station = None
+                self.state = AgentState.EXPLORING
+                self.target_position = None
+                self.path = []
+            else:
+                self.move_towards(exit_cell)
 
     def _broadcast_discovered_objects(self) -> None:
         """Send object location messages to nearby coordinators"""
         # Get nearby coordinators
         nearby = self.get_nearby_agents(self.communication_radius)
         coordinators = [
-            a for a in nearby if hasattr(a, "role") and getattr(a, "role", None) == "coordinator"
+            a for a in nearby if getattr(a, "role", None) == "coordinator"
         ]
 
         if not coordinators:
@@ -361,13 +386,11 @@ class ScoutAgent(BaseAgent):
         coordinator_ids = [
             getattr(c, "unique_id", 0) for c in coordinators if hasattr(c, "unique_id")
         ]
-        print(f"[SCOUT {self.unique_id}] COMM: Broadcasting {len(self.newly_discovered_objects)} objects to {len(coordinators)} coordinator(s) {coordinator_ids}")
-
-        # Update coordinator contact time and position
-        self.last_coordinator_contact_step = self.model.current_step
-        self.searching_for_coordinator = False
-        if coordinators[0].pos:
-            self.known_coordinator_position = pos_to_tuple(coordinators[0].pos)
+        print(
+            f"[SCOUT {self.unique_id}] COMM: Broadcasting "
+            f"{len(self.newly_discovered_objects)} objects to "
+            f"coordinators {coordinator_ids}"
+        )
 
         # Send messages about each newly discovered object
         for obj_pos, obj_value in self.newly_discovered_objects:
@@ -377,18 +400,20 @@ class ScoutAgent(BaseAgent):
                 object_position=obj_pos,
                 object_value=obj_value,
             )
-
             if coordinator_ids:
                 self.model.comm_manager.send_message(message, coordinator_ids)
-                print(f"[SCOUT {self.unique_id}] -> [COORD {coordinator_ids}]: Object at {obj_pos} (value={obj_value:.1f})")
-        
+                print(
+                    f"[SCOUT {self.unique_id}] -> COORD {coordinator_ids}: "
+                    f"object at {obj_pos} (v={obj_value:.1f})"
+                )
+
         # Log message for UI
         if self.newly_discovered_objects:
             self.log_message(
                 direction="sent",
                 message_type="object_location",
                 details=f"Broadcast {len(self.newly_discovered_objects)} objects",
-                target_ids=coordinator_ids
+                target_ids=coordinator_ids,
             )
 
         # Consume energy for broadcast
