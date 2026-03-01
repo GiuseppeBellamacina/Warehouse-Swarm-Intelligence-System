@@ -15,11 +15,11 @@ class Position(BaseModel):
 
 
 class EntranceExit(BaseModel):
-    """Warehouse entrance or exit with direction"""
+    """Warehouse entrance or exit point"""
 
     x: int = Field(ge=0)
     y: int = Field(ge=0)
-    direction: Literal["north", "south", "east", "west"]
+    direction: Optional[Literal["north", "south", "east", "west"]] = None
 
 
 class WallObstacle(BaseModel):
