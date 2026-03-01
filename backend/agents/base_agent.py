@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 
-from backend.core.communication import MapDataMessage, MapSharingSystem, ObjectLocationMessage
+from backend.core.communication import ClearWayMessage, MapDataMessage, MapSharingSystem, ObjectLocationMessage
 from backend.core.decision_maker import DecisionMaker
 from backend.core.framework import Agent
 from backend.core.grid_manager import CellType
@@ -109,6 +109,8 @@ class BaseAgent(Agent):
         self.max_messages = 10  # Keep last 10 messages
         # Messages collected this step — drained exactly once in step_communicate
         self._step_messages: list = []
+        # Throttle ClearWayMessage sending: track the step we last sent one
+        self._last_clearway_sent: int = -99
 
     @property
     def energy_percentage(self) -> float:
@@ -311,6 +313,120 @@ class BaseAgent(Agent):
             elif isinstance(message, ObjectLocationMessage):
                 # Add discovered object to known objects
                 self.known_objects[message.object_position] = message.object_value
+
+            elif isinstance(message, ClearWayMessage):
+                self._handle_clear_way_message(message)
+
+    # ------------------------------------------------------------------
+    # ClearWay helpers
+    # ------------------------------------------------------------------
+
+    def _get_agent_at_pos(self, pos: Tuple[int, int]) -> Optional[int]:
+        """Return the unique_id of the agent occupying ``pos``, or None."""
+        for agent in self.model.agents:
+            if agent.unique_id != self.unique_id and agent.pos:
+                agent_pos = pos_to_tuple(agent.pos)
+                if agent_pos == pos:
+                    return agent.unique_id
+        return None
+
+    def _send_clear_way_request(
+        self,
+        cell: Tuple[int, int],
+        recipient_id: int,
+        chain_depth: int = 0,
+    ) -> None:
+        """Send a ClearWayMessage to a specific agent, throttled to once per 5 steps."""
+        current_step = self.model.current_step
+        if current_step - self._last_clearway_sent < 5:
+            return
+        self._last_clearway_sent = current_step
+        msg = ClearWayMessage(
+            sender_id=self.unique_id or 0,
+            timestamp=current_step,
+            cell=cell,
+            chain_depth=chain_depth,
+        )
+        self.model.comm_manager.send_message(msg, [recipient_id])
+        print(
+            f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
+            f"asking agent {recipient_id} to vacate {cell} (depth={chain_depth})"
+        )
+
+    def _try_move_off_entrance_exit(self) -> bool:
+        """
+        Try to step off an entrance / exit cell by moving to any adjacent free,
+        non-warehouse, non-obstacle cell.
+
+        Returns True if the agent managed to move.
+        """
+        if not self.pos:
+            return False
+        my_pos = pos_to_tuple(self.pos)
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            np_ = (my_pos[0] + dx, my_pos[1] + dy)
+            if not (0 <= np_[0] < self.model.grid.width and
+                    0 <= np_[1] < self.model.grid.height):
+                continue
+            nc = self.model.grid.get_cell_type(*np_)
+            if (nc not in (
+                    CellType.OBSTACLE, CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT,
+            ) and self.model.grid.is_cell_empty(np_)):
+                self.model.grid.move_agent(self, np_)
+                print(
+                    f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
+                    f"moved off {my_pos} → {np_}"
+                )
+                return True
+        return False
+
+    def _handle_clear_way_message(self, message: ClearWayMessage) -> None:
+        """
+        Respond to a ClearWayMessage:
+        - If we are on the requested cell, attempt to move off it.
+        - If we cannot move and chain_depth < MAX, forward the request to
+          whoever is blocking *our* preferred escape path.
+        """
+        if not self.pos:
+            return
+        my_pos = pos_to_tuple(self.pos)
+        if my_pos != message.cell:
+            return  # message delivered to wrong agent or we already moved
+
+        cell_type = self.model.grid.get_cell_type(*my_pos)
+        if cell_type not in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT):
+            return  # safety: only vacate actual entrance/exit cells
+
+        print(
+            f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
+            f"received request to vacate {my_pos} (depth={message.chain_depth})"
+        )
+
+        if self._try_move_off_entrance_exit():
+            return  # successfully moved — done
+
+        # Could not move; try to forward the chain if budget allows
+        if message.chain_depth >= ClearWayMessage.MAX_CHAIN_DEPTH:
+            return
+
+        # Find who is blocking adjacent escape cells and chain to them
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            np_ = (my_pos[0] + dx, my_pos[1] + dy)
+            if not (0 <= np_[0] < self.model.grid.width and
+                    0 <= np_[1] < self.model.grid.height):
+                continue
+            nc = self.model.grid.get_cell_type(*np_)
+            if nc in (CellType.OBSTACLE,):
+                continue
+            blocker_id = self._get_agent_at_pos(np_)
+            if blocker_id is not None:
+                self._send_clear_way_request(
+                    cell=np_,
+                    recipient_id=blocker_id,
+                    chain_depth=message.chain_depth + 1,
+                )
+                break  # forward to first blocker only
 
     def move_towards(self, target: Tuple[int, int]) -> bool:
         """

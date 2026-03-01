@@ -150,9 +150,14 @@ class RetrieverAgent(BaseAgent):
             self.should_communicate_this_step = True
 
         # ---- P1: Deliver if carrying objects and warehouse sequence not started ----
+        # Only head to the warehouse when:
+        #   (a) fully loaded, OR
+        #   (b) carrying something but the task queue is exhausted (nothing left to pick up)
         if self.carrying_objects > 0 and self._wh_step is None:
-            self._start_warehouse_sequence("deliver")
-            return
+            if self.carrying_objects >= self.carrying_capacity or not self.task_queue:
+                self._start_warehouse_sequence("deliver")
+                return
+            # else: still have capacity AND queued tasks — fall through to P3
 
         # ---- P2: Recharge if energy critically low ----
         if self.energy < self.max_energy * 0.20 and self._wh_step is None:
@@ -184,11 +189,67 @@ class RetrieverAgent(BaseAgent):
                 )
                 self.task_queue.pop(0)
                 self.model.comm_manager.release_claim(next_target, self.unique_id)
+            # ---- P3b: opportunistic nearby objects while travelling ----
+            # Even if we already have a primary task, try to claim unclaimed objects
+            # that are close by and fit in the remaining carrying slots.
+            if self.state == AgentState.RETRIEVING and self._wh_step is None:
+                self._try_opportunistic_pickup()
             return
 
         # ---- P4: No tasks — explore locally (don't go warehouse) ----
         if self._wh_step is None:
             self._update_explore_target()
+
+    def _try_opportunistic_pickup(self) -> None:
+        """
+        Scan known objects near the current position and try to self-claim any that
+        are unclaimed, unqueued, and within a small radius.  The claim goes through
+        the shared CommunicationManager so it is race-safe: if another retriever or
+        coordinator already locked the object, try_claim_object returns False and we
+        skip it cleanly.
+
+        After claiming, the object is appended to task_queue.  The next
+        TaskStatusMessage broadcast (sent every communication step) will inform the
+        coordinator, which then skips re-assigning that object.
+        """
+        spare = self.carrying_capacity - self.carrying_objects - len(self.task_queue)
+        if spare <= 0:
+            return  # no room for extra items
+
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        # Radius: half of vision so we don't deviate far from the current path
+        radius = max(2, self.vision_radius // 2)
+
+        candidates: List[Tuple[int, Tuple[int, int]]] = []
+        for obj_pos in list(self.known_objects.keys()):
+            if obj_pos in self.task_queue:
+                continue  # already queued
+            if obj_pos not in self.model.grid.objects:
+                continue  # already picked up by someone else
+            dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
+            if dist <= radius:
+                candidates.append((dist, obj_pos))
+
+        candidates.sort()  # closest first
+        claimed = 0
+        for dist, obj_pos in candidates:
+            if claimed >= spare:
+                break
+            can_claim = self.model.comm_manager.try_claim_object(
+                obj_pos, self.unique_id, self.model.current_step, dist, self.energy
+            )
+            if can_claim:
+                self.task_queue.append(obj_pos)
+                print(
+                    f"[RETRIEVER {self.unique_id}] OPP: claimed nearby {obj_pos} "
+                    f"dist={dist} (queue depth={len(self.task_queue)})"
+                )
+                claimed += 1
+            # If claim fails, object is already taken — nothing to do
+
+        if claimed:
+            # Force a status broadcast next act so coordinator sees the new queue ASAP
+            self.should_communicate_this_step = True
 
     def _start_warehouse_sequence(self, purpose: str) -> None:
         """
@@ -348,6 +409,10 @@ class RetrieverAgent(BaseAgent):
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
+                # If the entrance cell is occupied, ask the blocker to move
+                blocker = self._get_agent_at_pos(entrance)
+                if blocker is not None:
+                    self._send_clear_way_request(entrance, blocker)
                 self.move_towards(entrance)
 
         elif self._wh_step == "deposit_cell":
@@ -368,14 +433,15 @@ class RetrieverAgent(BaseAgent):
                     f"{self.model.objects_retrieved}/{self.model.total_objects}"
                 )
                 self.pending_events.append("object_delivered")
-                # If low energy, recharge while still inside
+                # If low energy, recharge while still inside (use FIFO queue slot)
                 if self.energy < self.max_energy * 0.80:
+                    queue_cell = self.model.get_queue_slot(station)
                     self._wh_step = "recharge_cell"
-                    self.target_position = station["recharge_cell"]
+                    self.target_position = queue_cell
                     self.state = AgentState.RECHARGING
                     # Move toward recharge immediately
-                    if my_pos != station["recharge_cell"]:
-                        self.move_towards(station["recharge_cell"])
+                    if my_pos != queue_cell:
+                        self.move_towards(queue_cell)
                 else:
                     self._wh_step = "exit"
                     self.target_position = station["exit"]
@@ -390,13 +456,14 @@ class RetrieverAgent(BaseAgent):
             recharge = self.target_position or station["recharge_cell"]
             # Accept the target cell OR any interior WAREHOUSE cell
             cell_type = self.model.grid.get_cell_type(*my_pos)
-            # Only recharge on true interior cells — never on entrance or exit
+            # Only recharge when exactly at the assigned queue slot
+            # (removes the broad fallback that caused premature recharging on any interior cell)
             at_recharge = (
                 my_pos == recharge
-                or cell_type == CellType.WAREHOUSE
-            ) and cell_type not in (
-                CellType.WAREHOUSE_ENTRANCE,
-                CellType.WAREHOUSE_EXIT,
+                and cell_type not in (
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
             )
             if at_recharge:
                 # Recharge here

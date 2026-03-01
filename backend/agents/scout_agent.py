@@ -355,19 +355,24 @@ class ScoutAgent(BaseAgent):
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
+                # If the entrance cell is occupied, ask the blocker to move
+                blocker = self._get_agent_at_pos(entrance)
+                if blocker is not None:
+                    self._send_clear_way_request(entrance, blocker)
                 self.move_towards(entrance)
 
         elif self._scout_wh_step == "recharge":
             # target_position holds the assigned FIFO queue slot (set during approach)
             recharge_cell = self.target_position or station.get("recharge_cell")
-            # Only recharge on true interior cells — never on entrance or exit
+            # Only recharge when exactly at the assigned FIFO queue slot
             cell_type = self.model.grid.get_cell_type(*my_pos)
             at_recharge = (
-                (recharge_cell is not None and my_pos == recharge_cell)
-                or cell_type == CellType.WAREHOUSE
-            ) and cell_type not in (
-                CellType.WAREHOUSE_ENTRANCE,
-                CellType.WAREHOUSE_EXIT,
+                recharge_cell is not None
+                and my_pos == recharge_cell
+                and cell_type not in (
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
             )
             if at_recharge:
                 rate = self.model.config.warehouse.recharge_rate
@@ -383,17 +388,7 @@ class ScoutAgent(BaseAgent):
             else:
                 if recharge_cell:
                     self.move_towards(recharge_cell)
-                else:
-                    # No specific interior cell — only recharge if truly inside
-                    if cell_type == CellType.WAREHOUSE:
-                        rate = self.model.config.warehouse.recharge_rate
-                        self.recharge_energy(rate)
-                        if self.energy >= self.max_energy * 0.90:
-                            exit_cell = station.get("exit") or station.get("entrance")
-                            self._scout_wh_step = "exit"
-                            self.target_position = exit_cell
-                            if exit_cell:
-                                self.move_towards(exit_cell)
+                # recharge_cell should always be set by approach; if not, just wait
 
         elif self._scout_wh_step == "exit":
             exit_cell = station.get("exit") or station.get("entrance")

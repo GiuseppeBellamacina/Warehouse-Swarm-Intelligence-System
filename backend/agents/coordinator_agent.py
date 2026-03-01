@@ -90,6 +90,8 @@ class CoordinatorAgent(BaseAgent):
         # Warehouse recharge sub-state machine (analogous to retriever _wh_step)
         self._coord_wh_step: Optional[str] = None   # None | "approach" | "recharge" | "exit"
         self._coord_wh_station: Optional[Dict] = None
+        # Dedicated slot for the recharge queue cell so target_position can't corrupt it
+        self._coord_wh_recharge_cell: Optional[Tuple[int, int]] = None
 
     def process_received_messages(self) -> None:
         """Process incoming messages (base handles MapData / ObjectLocation)."""
@@ -223,11 +225,19 @@ class CoordinatorAgent(BaseAgent):
                     self.target_position = closest_wh
                     self.recharge_attempt_start = self.model.current_step
                     self.was_recharging_at_warehouse = False
+                    # Always reset sub-machine so it re-initialises cleanly
+                    self._coord_wh_step = None
+                    self._coord_wh_station = None
+                    self._coord_wh_recharge_cell = None
             else:
                 if self.recharge_attempt_start is not None:
                     steps_attempting = self.model.current_step - self.recharge_attempt_start
                     if steps_attempting > 50:
                         print(f"[COORD {self.unique_id}] EMERGENCY: cannot reach WH after {steps_attempting} steps")
+                        # Full reset — sub-machine MUST be cleared or step_act will keep running it
+                        self._coord_wh_step = None
+                        self._coord_wh_station = None
+                        self._coord_wh_recharge_cell = None
                         self.state = AgentState.IDLE
                         self.target_position = None
                         self.recharge_attempt_start = None
@@ -251,8 +261,8 @@ class CoordinatorAgent(BaseAgent):
             self.should_communicate_this_step = True
             return
 
-        # Priority 2: Explore when idle
-        if self.state in (AgentState.IDLE, AgentState.EXPLORING):
+        # Priority 2: Explore when idle — but never while a warehouse sub-sequence is active
+        if self.state in (AgentState.IDLE, AgentState.EXPLORING) and self._coord_wh_step is None:
             self._decide_exploration()
 
     def _identify_available_retrievers(self) -> None:
@@ -559,30 +569,41 @@ class CoordinatorAgent(BaseAgent):
                     # Need recharge — join FIFO queue near exit
                     queue_cell = self.model.get_queue_slot(station)
                     self._coord_wh_step = "recharge"
+                    # Store in dedicated attribute so target_position changes can't corrupt it
+                    self._coord_wh_recharge_cell = queue_cell
                     self.target_position = queue_cell
                     print(f"[COORD {self.unique_id}] RECHARGE: at entrance, joining queue at {queue_cell}")
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
-                # Guard against getting stuck
-                if self.recharge_attempt_start is not None:
-                    steps = self.model.current_step - self.recharge_attempt_start
-                    if steps > 60:
-                        print(f"[COORD {self.unique_id}] RECHARGE TIMEOUT: cannot reach WH, aborting")
-                        self._coord_wh_step = None
-                        self._coord_wh_station = None
-                        self.state = AgentState.IDLE
-                        self.target_position = None
-                        self.recharge_attempt_start = None
-                        return
+                # Guard against getting stuck.
+                # Ensure recharge_attempt_start is always set (may be None if we arrived
+                # here after an EMERGENCY reset wiped it while _coord_wh_step was left set).
+                if self.recharge_attempt_start is None:
+                    self.recharge_attempt_start = self.model.current_step
+                steps = self.model.current_step - self.recharge_attempt_start
+                if steps > 60:
+                    print(f"[COORD {self.unique_id}] RECHARGE TIMEOUT: cannot reach WH, aborting")
+                    self._coord_wh_step = None
+                    self._coord_wh_station = None
+                    self._coord_wh_recharge_cell = None
+                    self.state = AgentState.IDLE
+                    self.target_position = None
+                    self.recharge_attempt_start = None
+                    return
                 if entrance:
+                    # If the entrance cell is occupied, ask the blocker to move
+                    blocker = self._get_agent_at_pos(entrance)
+                    if blocker is not None:
+                        self._send_clear_way_request(entrance, blocker)
                     self.move_towards(entrance)
             return
 
         # --- walk to recharge cell and recharge ---
         if self._coord_wh_step == "recharge":
-            # target_position holds the assigned FIFO queue slot (set during approach)
-            recharge_cell = self.target_position or station.get("recharge_cell") or my_pos
+            # Use the dedicated attribute so that target_position changes (e.g. REPOSITION)
+            # can never send the coordinator toward the wrong cell while recharging.
+            recharge_cell = self._coord_wh_recharge_cell or station.get("recharge_cell") or my_pos
             cell_type = self.model.grid.get_cell_type(*my_pos)
             # Only recharge on true interior cells — never on entrance or exit
             if my_pos != recharge_cell:
@@ -625,6 +646,7 @@ class CoordinatorAgent(BaseAgent):
                 print(f"[COORD {self.unique_id}] RECHARGE: exited warehouse, resuming")
                 self._coord_wh_step = None
                 self._coord_wh_station = None
+                self._coord_wh_recharge_cell = None
                 self.state = AgentState.IDLE
                 self.recharge_attempt_start = None
                 # Find a walkable cell just outside the warehouse to move to immediately

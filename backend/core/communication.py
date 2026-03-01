@@ -3,7 +3,7 @@ Agent communication and map sharing system
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import ClassVar, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -94,6 +94,23 @@ class CoordinatorSyncMessage(Message):
     assigned_tasks: Dict            # {retriever_id: obj_pos} — current assignments
     retriever_states: Dict          # {retriever_id: state_str}
     objects_being_collected: List   # list of (x,y) positions
+
+
+@dataclass
+class ClearWayMessage(Message):
+    """
+    Request to an agent to vacate a warehouse entrance or exit cell.
+
+    The receiving agent should try to move off the ``cell`` immediately.
+    If it cannot (all adjacent paths are blocked by other agents) it
+    forwards the same request to the agent that is blocking *it*, with
+    ``chain_depth`` incremented so the chain terminates after a few hops.
+    """
+
+    cell: Tuple[int, int]   # the entrance / exit cell to vacate
+    chain_depth: int = 0    # hop counter — abort forwarding when >= MAX_CHAIN_DEPTH
+
+    MAX_CHAIN_DEPTH: ClassVar[int] = 4  # class-level constant — not a dataclass field
 
 
 class CommunicationManager:
