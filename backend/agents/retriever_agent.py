@@ -192,25 +192,31 @@ class RetrieverAgent(BaseAgent):
 
     def _start_warehouse_sequence(self, purpose: str) -> None:
         """
-        Begin entering the nearest warehouse.
+        Begin entering the best warehouse for this agent.
         purpose = "deliver" | "recharge"
+
+        Selection considers:
+        - Proximity (nearest entrance wins by default)
+        - Congestion (penalises stations already being targeted by other retrievers)
+        - Visibility (prefer entrances already seen in local map; fall back to
+          model-wide list if none known yet)
         """
         pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
-        # Prefer a warehouse we can see in our local map first
-        visible_station = None
-        for wh in self.known_warehouses:
-            cell_type = self.model.grid.get_cell_type(*wh)
-            if cell_type == CellType.WAREHOUSE_ENTRANCE:
-                if visible_station is None:
-                    visible_station = self.model.get_nearest_warehouse_to(wh)
+        # Collect all WAREHOUSE_ENTRANCE cells we have seen so far
+        visible_entrances = [
+            wh for wh in self.known_warehouses
+            if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
+        ]
 
-        if visible_station is None:
-            visible_station = self.model.get_nearest_warehouse_to(pos_tuple)
+        station = self.model.get_best_warehouse_for(
+            pos=pos_tuple,
+            known_entrances=visible_entrances,
+        )
 
-        self._wh_station = visible_station
+        self._wh_station = station
         self._wh_step = "approach"
-        self.target_position = visible_station["entrance"]
+        self.target_position = station["entrance"]
 
         if purpose == "deliver":
             self.state = AgentState.DELIVERING

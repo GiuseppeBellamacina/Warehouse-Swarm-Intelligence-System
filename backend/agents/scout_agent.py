@@ -10,6 +10,7 @@ from backend.algorithms.exploration import FrontierExplorer, RandomWalkExplorer
 from backend.algorithms.pathfinding import AStarPathfinder
 from backend.core.communication import ObjectLocationMessage
 from backend.core.decision_maker import ActionType, UtilityFunctions
+from backend.core.grid_manager import CellType
 
 if TYPE_CHECKING:
     from backend.core.warehouse_model import WarehouseModel
@@ -134,7 +135,14 @@ class ScoutAgent(BaseAgent):
             if self._scout_wh_step is None:
                 # Start the warehouse recharge sub-state machine
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                station = self.model.get_nearest_warehouse_to(my_pos)
+                visible_entrances = [
+                    wh for wh in self.known_warehouses
+                    if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
+                ]
+                station = self.model.get_best_warehouse_for(
+                    pos=my_pos,
+                    known_entrances=visible_entrances,
+                )
                 self._scout_wh_station = station
                 self._scout_wh_step = "approach"
                 self.state = AgentState.RECHARGING
@@ -333,7 +341,6 @@ class ScoutAgent(BaseAgent):
             recharge_cell = station.get("recharge_cell")
             # Accept the target recharge cell OR any interior WAREHOUSE cell
             # (avoids deadlock when another agent is parked on the exact cell)
-            from backend.core.grid_manager import CellType
             cell_type = self.model.grid.get_cell_type(*my_pos)
             at_recharge = (
                 (recharge_cell is not None and my_pos == recharge_cell)

@@ -3,7 +3,7 @@ Warehouse simulation model
 """
 
 import random
-from typing import Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -205,6 +205,66 @@ class WarehouseModel(Model):
             "recharge_cell": wp,
             "cells": [wp],
         }
+
+    def get_best_warehouse_for(
+        self,
+        pos: Tuple[int, int],
+        known_entrances: List[Tuple[int, int]],
+        excluded_entrance: Optional[Tuple[int, int]] = None,
+        congestion_penalty: int = 8,
+    ) -> dict:
+        """
+        Select the best warehouse station for an agent at *pos*.
+
+        Scoring (lower is better):
+          score = Manhattan-distance(pos, entrance) + congestion_penalty * num_agents_heading_there
+
+        Args:
+            pos: agent's current position
+            known_entrances: WAREHOUSE_ENTRANCE cells visible in the agent's local map.
+                             If empty, all stations are considered.
+            excluded_entrance: entrance to exclude (e.g. one the agent is already at).
+            congestion_penalty: extra distance units per agent already heading to a station.
+        """
+        # Build candidate station list
+        if known_entrances:
+            # Map each known entrance to its station
+            candidates = []
+            seen = set()
+            for ent in known_entrances:
+                station = self.get_nearest_warehouse_to(ent)
+                key = station["entrance"]
+                if key not in seen and key != excluded_entrance:
+                    candidates.append(station)
+                    seen.add(key)
+        else:
+            candidates = [
+                s for s in self.warehouse_stations
+                if s["entrance"] != excluded_entrance
+            ]
+
+        if not candidates:
+            # Fall back to absolute nearest (ignore exclusion)
+            return self.get_nearest_warehouse_to(pos)
+
+        # Count how many retriever agents are currently heading to each entrance
+        heading_count: Dict[Tuple[int, int], int] = {}
+        for agent in self.agents:
+            if getattr(agent, "role", None) != "retriever":
+                continue
+            wh_station = getattr(agent, "_wh_station", None)
+            if wh_station:
+                ent = wh_station.get("entrance")
+                if ent:
+                    heading_count[ent] = heading_count.get(ent, 0) + 1
+
+        def score(s: dict) -> float:
+            ent = s["entrance"]
+            dist = abs(ent[0] - pos[0]) + abs(ent[1] - pos[1])
+            congestion = heading_count.get(ent, 0)
+            return dist + congestion_penalty * congestion
+
+        return min(candidates, key=score)
 
     def _setup_obstacles(self) -> None:
         """Setup obstacles on the grid"""
