@@ -1,0 +1,8 @@
+{
+  "rootDirectory": "frontend",
+  "framework": "vite",
+  "buildCommand": "bun run build",
+  "outputDirectory": "dist",
+  "installCommand": "bun install",
+  "ignoreCommand": "! git diff --name-only HEAD~1 HEAD | grep -qvE '^(README\\.md|QUICK_START\\.md|docs/)'"
+}

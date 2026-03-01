@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: warehouse-swarm-backend
+    runtime: python
+    buildCommand: pip install uv && uv sync --frozen && uv cache prune --ci
+    startCommand: uv run python -m backend.api.main
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 10000
+      - key: ALLOWED_ORIGINS
+        sync: false # set manually in Render dashboard
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+    ignoredFiles:
+      - README.md
+      - QUICK_START.md
+      - docs/**
+      - frontend/**
+      - "*.md"

@@ -56,3 +56,6 @@ frontend/yarn-error.log*
 outputs/
 *.json.bak
 simulation_logs/
+
+# Ruff
+.ruff_cache/
