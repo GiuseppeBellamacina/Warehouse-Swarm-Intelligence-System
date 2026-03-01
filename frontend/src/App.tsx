@@ -73,13 +73,20 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("simulation");
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
 
-  // Panel widths in pixels (the map panel is flex-1 and fills the rest)
-  const [agentsW, setAgentsW] = useState(200);
-  const [metricsW, setMetricsW] = useState(260);
-  const [controlsW, setControlsW] = useState(240);
+  // Panel widths in pixels — initialised as % of viewport so the map gets ~50%,
+  // agents ~15%, metrics ~15%, controls ~20%.
+  const [agentsW, setAgentsW] = useState(() =>
+    Math.round(window.innerWidth * 0.15),
+  );
+  const [metricsW, setMetricsW] = useState(() =>
+    Math.round(window.innerWidth * 0.15),
+  );
+  const [controlsW, setControlsW] = useState(() =>
+    Math.round(window.innerWidth * 0.2),
+  );
 
-  const MIN = 160;
-  const MAX = 520;
+  const MIN = 120;
+  const MAX = 700;
   const clamp = (v: number) => Math.max(MIN, Math.min(MAX, v));
 
   return (

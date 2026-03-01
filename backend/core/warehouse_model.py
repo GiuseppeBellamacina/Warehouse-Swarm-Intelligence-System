@@ -172,12 +172,22 @@ class WarehouseModel(Model):
                     key=lambda e: abs(e[0] - ex) + abs(e[1] - ey),
                 )
 
+            # Queue cells: sorted by distance to exit (closest first = front of queue).
+            # Agents will line up from this exit-side cell toward the entrance-side,
+            # forming a natural FIFO queue where slot-0 exits first.
+            qx, qy = exit_cell
+            queue_cells = sorted(
+                nearby_cells,
+                key=lambda c: abs(c[0] - qx) + abs(c[1] - qy),
+            )
+
             self.warehouse_stations.append(
                 {
                     "entrance": entrance,
                     "exit": exit_cell,
                     "deposit_cell": deposit_cell,
                     "recharge_cell": recharge_cell,
+                    "queue_cells": queue_cells,
                     "cells": nearby_cells,
                 }
             )
@@ -186,7 +196,7 @@ class WarehouseModel(Model):
         """
         Return the nearest warehouse station dict to *pos*.
 
-        The dict has keys: entrance, exit, deposit_cell, recharge_cell, cells.
+        The dict has keys: entrance, exit, deposit_cell, recharge_cell, queue_cells, cells.
         Falls back to a minimal dict built from warehouse_position if no stations.
         """
         if self.warehouse_stations:
@@ -203,8 +213,41 @@ class WarehouseModel(Model):
             "exit": wp,
             "deposit_cell": wp,
             "recharge_cell": wp,
+            "queue_cells": [wp],
             "cells": [wp],
         }
+
+    def get_queue_slot(self, station: dict) -> Tuple[int, int]:
+        """
+        Return the interior cell an agent should target when joining the recharge queue.
+
+        Cells are ordered from exit-side (slot 0, front) to entrance-side (back).
+        A new agent is assigned the slot equal to the number of agents currently
+        occupying interior cells in this station, so it always goes to the back —
+        creating a natural FIFO line that drains from the exit end.
+        """
+        queue_cells: list = station.get("queue_cells") or []
+        if not queue_cells:
+            return station.get("recharge_cell", station.get("entrance", (0, 0)))
+
+        station_cells_set: set = set(map(tuple, station.get("cells", [])))
+        if not station_cells_set:
+            return queue_cells[-1]  # back of queue (entrance-side)
+
+        # Count agents already occupying interior (WAREHOUSE-type) cells of this station
+        occupied = 0
+        for agent in self.agents:
+            if agent.pos is None:
+                continue
+            ap = (int(agent.pos[0]), int(agent.pos[1]))
+            if ap in station_cells_set:
+                ct = self.grid.get_cell_type(*ap)
+                if ct == CellType.WAREHOUSE:
+                    occupied += 1
+
+        # New agent goes to slot `occupied` (back), capped at the last available cell
+        idx = min(occupied, len(queue_cells) - 1)
+        return queue_cells[idx]
 
     def get_best_warehouse_for(
         self,

@@ -14,6 +14,7 @@ from backend.core.communication import (
     TaskAssignmentMessage,
     TaskStatusMessage,
 )
+from backend.core.grid_manager import CellType
 
 if TYPE_CHECKING:
     from backend.core.warehouse_model import WarehouseModel
@@ -532,12 +533,36 @@ class CoordinatorAgent(BaseAgent):
         # --- approach entrance ---
         if self._coord_wh_step == "approach":
             entrance = station.get("entrance")
-            if not entrance or my_pos == entrance or self.is_at_warehouse():
-                # Reached warehouse area — proceed to recharge cell
-                recharge_cell = station.get("recharge_cell") or my_pos
-                self._coord_wh_step = "recharge"
-                self.target_position = recharge_cell
-                print(f"[COORD {self.unique_id}] RECHARGE: at entrance, moving to recharge cell {recharge_cell}")
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            at_or_inside = (
+                not entrance
+                or my_pos == entrance
+                or cell_type in (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
+            )
+            if at_or_inside:
+                if self.energy >= self.max_energy * 0.80:
+                    # Enough energy — skip recharge entirely, exit immediately
+                    print(
+                        f"[COORD {self.unique_id}] RECHARGE: energy sufficient "
+                        f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
+                    )
+                    exit_cell = station.get("exit") or station.get("entrance")
+                    self._coord_wh_step = "exit"
+                    self.target_position = exit_cell
+                    if exit_cell and my_pos != exit_cell:
+                        self.move_towards(exit_cell)
+                else:
+                    # Need recharge — join FIFO queue near exit
+                    queue_cell = self.model.get_queue_slot(station)
+                    self._coord_wh_step = "recharge"
+                    self.target_position = queue_cell
+                    print(f"[COORD {self.unique_id}] RECHARGE: at entrance, joining queue at {queue_cell}")
+                    if my_pos != queue_cell:
+                        self.move_towards(queue_cell)
             else:
                 # Guard against getting stuck
                 if self.recharge_attempt_start is not None:
@@ -550,16 +575,24 @@ class CoordinatorAgent(BaseAgent):
                         self.target_position = None
                         self.recharge_attempt_start = None
                         return
-                self.move_towards(entrance)
+                if entrance:
+                    self.move_towards(entrance)
             return
 
         # --- walk to recharge cell and recharge ---
         if self._coord_wh_step == "recharge":
-            recharge_cell = station.get("recharge_cell") or my_pos
+            # target_position holds the assigned FIFO queue slot (set during approach)
+            recharge_cell = self.target_position or station.get("recharge_cell") or my_pos
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            # Only recharge on true interior cells — never on entrance or exit
             if my_pos != recharge_cell:
                 self.move_towards(recharge_cell)
                 return
-            # At recharge cell — recharge
+            if cell_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT):
+                # Shouldn't happen, but move further inside just in case
+                self.move_towards(recharge_cell)
+                return
+            # At interior recharge cell — recharge
             rate = self.model.config.warehouse.recharge_rate
             self.recharge_energy(rate)
             if self.energy >= self.max_energy * 0.95:
@@ -570,21 +603,48 @@ class CoordinatorAgent(BaseAgent):
                     f"[COORD {self.unique_id}] RECHARGE: full ({self.energy:.1f}), "
                     f"heading to exit {exit_cell}"
                 )
+                # Move toward exit immediately
+                if exit_cell and my_pos != exit_cell:
+                    self.move_towards(exit_cell)
             return
 
         # --- walk to exit cell ---
         if self._coord_wh_step == "exit":
             exit_cell = station.get("exit") or station.get("entrance")
-            if not exit_cell or my_pos == exit_cell or not self.is_at_warehouse():
-                # Reached exit or stepped outside warehouse
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            left_wh = (
+                not exit_cell
+                or my_pos == exit_cell
+                or cell_type not in (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
+            )
+            if left_wh:
                 print(f"[COORD {self.unique_id}] RECHARGE: exited warehouse, resuming")
                 self._coord_wh_step = None
                 self._coord_wh_station = None
                 self.state = AgentState.IDLE
-                self.target_position = None
                 self.recharge_attempt_start = None
+                # Find a walkable cell just outside the warehouse to move to immediately
+                if self.pos:
+                    for dx, dy in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
+                        np_ = (my_pos[0] + dx, my_pos[1] + dy)
+                        if (0 <= np_[0] < self.model.grid.width and
+                                0 <= np_[1] < self.model.grid.height):
+                            nc = self.model.grid.get_cell_type(*np_)
+                            if (nc not in (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE,
+                                          CellType.WAREHOUSE_EXIT, CellType.OBSTACLE)
+                                    and self.model.grid.is_cell_empty(np_)):
+                                self.target_position = np_
+                                self.model.grid.move_agent(self, np_)
+                                break
+                    else:
+                        self.target_position = None
             else:
-                self.move_towards(exit_cell)
+                if exit_cell:
+                    self.move_towards(exit_cell)
             return
 
     def _send_task_assignments(self) -> None:

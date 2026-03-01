@@ -264,24 +264,20 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     <div className="p-4 space-y-3 text-sm select-none">
       <h2 className="text-base font-bold">Control Panel</h2>
 
-      {/* Connection / status pill */}
-      <div className="flex items-center gap-2">
-        <div
-          className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${connected ? "bg-green-500" : "bg-red-500"}`}
-        />
-        <span className="text-xs text-gray-400">
-          {connected ? "Connected" : "Disconnected"}
-        </span>
-        {isRunning ? (
-          <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-green-900 text-green-300">
-            {isPaused ? "⏸ PAUSED" : "▶ RUNNING"}
-          </span>
-        ) : isLoaded ? (
-          <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-300">
-            ● LOADED
-          </span>
-        ) : null}
-      </div>
+      {/* Simulation status pill */}
+      {(isRunning || isLoaded) && (
+        <div className="flex items-center">
+          {isRunning ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900 text-green-300">
+              {isPaused ? "⏸ PAUSED" : "▶ RUNNING"}
+            </span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900 text-blue-300">
+              ● LOADED
+            </span>
+          )}
+        </div>
+      )}
 
       <Hr />
 
@@ -495,6 +491,38 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     />
                   </div>
                 </div>
+
+                {/* Overflow warning */}
+                {(() => {
+                  const totalAgents =
+                    overrides.scouts.count +
+                    overrides.coordinators.count +
+                    overrides.retrievers.count;
+                  const totalObjects = overrides.objectsCount;
+                  const total = totalAgents + totalObjects;
+                  const gw = rawConfig?.simulation?.grid_width ?? 0;
+                  const gh = rawConfig?.simulation?.grid_height ?? 0;
+                  const capacity =
+                    gw * gh > 0 ? Math.floor(gw * gh * 0.25) : 50;
+                  if (total <= capacity) return null;
+                  const pct = Math.round((total / capacity) * 100);
+                  return (
+                    <div className="border-t border-yellow-700 pt-2 mt-1">
+                      <div className="flex items-start gap-1.5 bg-yellow-900/40 border border-yellow-700 rounded px-2 py-1.5">
+                        <span className="text-yellow-400 text-sm leading-none mt-0.5">
+                          ⚠
+                        </span>
+                        <div className="text-[10px] text-yellow-300 leading-snug">
+                          <span className="font-semibold">
+                            {totalAgents} agents + {totalObjects} objects
+                          </span>{" "}
+                          = {total} cells ({pct}% of ~{capacity} walkable). Some
+                          elements may not spawn.
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>

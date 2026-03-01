@@ -311,15 +311,42 @@ class RetrieverAgent(BaseAgent):
 
         if self._wh_step == "approach":
             entrance = station["entrance"]
-            if my_pos == entrance or self.is_at_warehouse():
-                # Arrived at / inside warehouse — decide next step based on
-                # actual carrying count (safe against state corruption)
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            # Transition once the agent is ON the entrance OR inside (any WH cell).
+            # Note: WAREHOUSE_ENTRANCE is NOT interior — we specifically check for that
+            # case so the agent also moves off the entrance in the same step.
+            at_or_inside = (
+                my_pos == entrance
+                or cell_type == CellType.WAREHOUSE
+                or cell_type == CellType.WAREHOUSE_ENTRANCE
+                or cell_type == CellType.WAREHOUSE_EXIT
+            )
+            if at_or_inside:
                 if self.carrying_objects > 0:
+                    # Must deposit — head to deposit cell
                     self._wh_step = "deposit_cell"
-                    self.target_position = station["deposit_cell"]
+                    interior = station["deposit_cell"]
+                    self.target_position = interior
+                    if my_pos != interior:
+                        self.move_towards(interior)
+                elif self.energy >= self.max_energy * 0.80:
+                    # Enough energy — skip recharge entirely, exit immediately
+                    print(
+                        f"[RETRIEVER {self.unique_id}] WH: energy sufficient "
+                        f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
+                    )
+                    self._wh_step = "exit"
+                    exit_cell = station["exit"]
+                    self.target_position = exit_cell
+                    if my_pos != exit_cell:
+                        self.move_towards(exit_cell)
                 else:
+                    # Need recharge — join queue near exit (FIFO slot)
+                    queue_cell = self.model.get_queue_slot(station)
                     self._wh_step = "recharge_cell"
-                    self.target_position = station["recharge_cell"]
+                    self.target_position = queue_cell
+                    if my_pos != queue_cell:
+                        self.move_towards(queue_cell)
             else:
                 self.move_towards(entrance)
 
@@ -346,17 +373,31 @@ class RetrieverAgent(BaseAgent):
                     self._wh_step = "recharge_cell"
                     self.target_position = station["recharge_cell"]
                     self.state = AgentState.RECHARGING
+                    # Move toward recharge immediately
+                    if my_pos != station["recharge_cell"]:
+                        self.move_towards(station["recharge_cell"])
                 else:
                     self._wh_step = "exit"
                     self.target_position = station["exit"]
+                    # Move toward exit immediately
+                    if my_pos != station["exit"]:
+                        self.move_towards(station["exit"])
             else:
                 self.move_towards(deposit)
 
         elif self._wh_step == "recharge_cell":
-            recharge = station["recharge_cell"]
-            # Accept the target recharge cell OR any interior WAREHOUSE cell
+            # target_position holds the assigned queue slot (set during approach transition)
+            recharge = self.target_position or station["recharge_cell"]
+            # Accept the target cell OR any interior WAREHOUSE cell
             cell_type = self.model.grid.get_cell_type(*my_pos)
-            at_recharge = my_pos == recharge or cell_type == CellType.WAREHOUSE
+            # Only recharge on true interior cells — never on entrance or exit
+            at_recharge = (
+                my_pos == recharge
+                or cell_type == CellType.WAREHOUSE
+            ) and cell_type not in (
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
+            )
             if at_recharge:
                 # Recharge here
                 rate = self.model.config.warehouse.recharge_rate
@@ -366,21 +407,35 @@ class RetrieverAgent(BaseAgent):
                     self._wh_step = "exit"
                     self.target_position = station["exit"]
                     self.state = AgentState.RECHARGING
+                    # Move toward exit immediately
+                    if my_pos != station["exit"]:
+                        self.move_towards(station["exit"])
                 # else stay and keep recharging
             else:
                 self.move_towards(recharge)
 
         elif self._wh_step == "exit":
             exit_cell = station["exit"]
-            if my_pos == exit_cell:
-                # Left the warehouse
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            # Finish when on the exit cell OR when already outside (not inside WH)
+            left_wh = (
+                my_pos == exit_cell
+                or cell_type not in (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
+            )
+            if left_wh:
                 print(f"[RETRIEVER {self.unique_id}] EXIT: exited warehouse")
                 self._wh_step = None
                 self._wh_station = None
-                self.target_position = None
                 self.pending_events.append("idle")
                 self.state = AgentState.EXPLORING
                 self._update_explore_target()
+                # Move off the exit cell immediately so it doesn't block
+                if self.target_position and my_pos == exit_cell:
+                    self.move_towards(self.target_position)
             else:
                 self.move_towards(exit_cell)
 

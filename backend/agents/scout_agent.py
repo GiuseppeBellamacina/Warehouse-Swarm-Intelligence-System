@@ -323,28 +323,51 @@ class ScoutAgent(BaseAgent):
         if self._scout_wh_step == "approach":
             entrance = station.get("entrance")
             if not entrance:
-                # No station data — abort
                 self._scout_wh_step = None
                 self._scout_wh_station = None
                 self.state = AgentState.EXPLORING
                 return
-            if self.is_at_warehouse():
-                # Reached the warehouse area — proceed to interior recharge cell
-                recharge_cell = station.get("recharge_cell") or entrance
-                self._scout_wh_step = "recharge"
-                self.target_position = recharge_cell
-                print(f"[SCOUT {self.unique_id}] WH: at entrance, heading to recharge cell {recharge_cell}")
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            at_or_inside = (
+                my_pos == entrance
+                or cell_type == CellType.WAREHOUSE
+                or cell_type == CellType.WAREHOUSE_ENTRANCE
+                or cell_type == CellType.WAREHOUSE_EXIT
+            )
+            if at_or_inside:
+                if self.energy >= self.max_energy * 0.80:
+                    # Enough energy — skip recharge, exit immediately
+                    print(
+                        f"[SCOUT {self.unique_id}] WH: energy sufficient "
+                        f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
+                    )
+                    exit_cell = station.get("exit") or entrance
+                    self._scout_wh_step = "exit"
+                    self.target_position = exit_cell
+                    if my_pos != exit_cell:
+                        self.move_towards(exit_cell)
+                else:
+                    # Need recharge — join FIFO queue near exit
+                    queue_cell = self.model.get_queue_slot(station)
+                    self._scout_wh_step = "recharge"
+                    self.target_position = queue_cell
+                    print(f"[SCOUT {self.unique_id}] WH: at entrance, joining queue at {queue_cell}")
+                    if my_pos != queue_cell:
+                        self.move_towards(queue_cell)
             else:
                 self.move_towards(entrance)
 
         elif self._scout_wh_step == "recharge":
-            recharge_cell = station.get("recharge_cell")
-            # Accept the target recharge cell OR any interior WAREHOUSE cell
-            # (avoids deadlock when another agent is parked on the exact cell)
+            # target_position holds the assigned FIFO queue slot (set during approach)
+            recharge_cell = self.target_position or station.get("recharge_cell")
+            # Only recharge on true interior cells — never on entrance or exit
             cell_type = self.model.grid.get_cell_type(*my_pos)
             at_recharge = (
                 (recharge_cell is not None and my_pos == recharge_cell)
                 or cell_type == CellType.WAREHOUSE
+            ) and cell_type not in (
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
             )
             if at_recharge:
                 rate = self.model.config.warehouse.recharge_rate
@@ -354,30 +377,59 @@ class ScoutAgent(BaseAgent):
                     self._scout_wh_step = "exit"
                     self.target_position = exit_cell
                     print(f"[SCOUT {self.unique_id}] WH: recharged, heading to exit {exit_cell}")
+                    # Move toward exit immediately
+                    if exit_cell and my_pos != exit_cell:
+                        self.move_towards(exit_cell)
             else:
                 if recharge_cell:
                     self.move_towards(recharge_cell)
                 else:
-                    # No specific cell — just stay inside and recharge anyway
-                    rate = self.model.config.warehouse.recharge_rate
-                    self.recharge_energy(rate)
-                    if self.energy >= self.max_energy * 0.90:
-                        exit_cell = station.get("exit") or station.get("entrance")
-                        self._scout_wh_step = "exit"
-                        self.target_position = exit_cell
+                    # No specific interior cell — only recharge if truly inside
+                    if cell_type == CellType.WAREHOUSE:
+                        rate = self.model.config.warehouse.recharge_rate
+                        self.recharge_energy(rate)
+                        if self.energy >= self.max_energy * 0.90:
+                            exit_cell = station.get("exit") or station.get("entrance")
+                            self._scout_wh_step = "exit"
+                            self.target_position = exit_cell
+                            if exit_cell:
+                                self.move_towards(exit_cell)
 
         elif self._scout_wh_step == "exit":
             exit_cell = station.get("exit") or station.get("entrance")
-            if not exit_cell or my_pos == exit_cell or not self.is_at_warehouse():
-                # Stepped outside the warehouse
+            cell_type = self.model.grid.get_cell_type(*my_pos)
+            # Finish when on the exit cell OR when already outside warehouse
+            left_wh = (
+                not exit_cell
+                or my_pos == exit_cell
+                or cell_type not in (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
+            )
+            if left_wh:
                 print(f"[SCOUT {self.unique_id}] WH: exited, resuming exploration")
                 self._scout_wh_step = None
                 self._scout_wh_station = None
                 self.state = AgentState.EXPLORING
                 self.target_position = None
                 self.path = []
+                # Move off the exit cell immediately so it doesn't block
+                if my_pos == exit_cell and self.pos:
+                    for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                        np_ = (my_pos[0] + dx, my_pos[1] + dy)
+                        if (0 <= np_[0] < self.model.grid.width and
+                                0 <= np_[1] < self.model.grid.height):
+                            nc = self.model.grid.get_cell_type(*np_)
+                            if (nc not in (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE,
+                                          CellType.WAREHOUSE_EXIT, CellType.OBSTACLE)
+                                    and self.model.grid.is_cell_empty(np_)):
+                                self.model.grid.move_agent(self, np_)
+                                break
             else:
-                self.move_towards(exit_cell)
+                if exit_cell:
+                    self.move_towards(exit_cell)
 
     def _broadcast_discovered_objects(self) -> None:
         """Send object location messages to nearby coordinators"""
