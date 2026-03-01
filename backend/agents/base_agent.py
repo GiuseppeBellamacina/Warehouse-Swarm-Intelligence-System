@@ -14,6 +14,7 @@ from backend.core.grid_manager import CellType
 
 if TYPE_CHECKING:
     from backend.core.warehouse_model import WarehouseModel
+    from backend.algorithms.pathfinding import AStarPathfinder
 
 
 def pos_to_tuple(pos) -> Tuple[int, int]:
@@ -97,6 +98,9 @@ class BaseAgent(Agent):
         self.position_history: List[Tuple[int, int]] = []  # Track recent positions to detect loops
         self.max_history_length: int = 15  # Keep last 15 positions
         self.unreachable_targets: dict[Tuple[int, int], int] = {}  # Track unreachable targets {position: step}
+
+        # Optional A* pathfinder — set by subclasses that support it (e.g. RetrieverAgent)
+        self.pathfinder: Optional["AStarPathfinder"] = None
 
         # Decision making
         self.decision_maker = DecisionMaker()
@@ -430,7 +434,12 @@ class BaseAgent(Agent):
 
     def move_towards(self, target: Tuple[int, int]) -> bool:
         """
-        Move one step towards target position using intelligent pathfinding
+        Move one step towards target position using intelligent pathfinding.
+
+        Warehouse ENTRANCE and EXIT cells are forbidden as *intermediate* path
+        nodes whenever the target itself is not a warehouse cell.  This prevents
+        A* from using doors as shortcuts on exterior routes, and also stops it
+        from routing *out* through an exit just to re-enter via the entrance.
 
         Args:
             target: Target (x, y) position
@@ -444,6 +453,18 @@ class BaseAgent(Agent):
         pos_tuple = pos_to_tuple(self.pos)
         if pos_tuple == target:
             return True  # Already at target
+
+        # Determine whether warehouse doors may be used as transit nodes.
+        # Allow transit only when heading TO or THROUGH a warehouse cell.
+        target_type = self.model.grid.get_cell_type(*target)
+        _DOOR_TYPES = {CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+        _WH_TYPES = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+        if target_type in _WH_TYPES:
+            # Heading into/through warehouse — doors are allowed as transit
+            forbidden_types = None
+        else:
+            # External navigation — never shortcut through warehouse doors
+            forbidden_types = _DOOR_TYPES
 
         # If waiting due to temporary blockage, decrement wait counter
         if self.wait_counter > 0:
@@ -460,19 +481,31 @@ class BaseAgent(Agent):
                 other_agent_positions.add(pos_to_tuple(agent.pos))
 
         # Try to use A* pathfinding if agent has it
-        if hasattr(self, 'pathfinder'):
-            # Recompute path if we don't have one or if stuck
+        if self.pathfinder is not None:
+            # Recompute path if:
+            # - we don't have one yet
+            # - stuck too long
+            # - cached path leads somewhere other than the current target
+            #   (target changed since path was computed, e.g. new task assigned)
+            cached_destination = self.path[-1] if self.path else None
+            if cached_destination != target:
+                self.path = []  # stale — destination changed
             if not self.path or self.stuck_counter > 5:
-                self.path = self.pathfinder.find_path(pos_tuple, target, other_agent_positions)  # type: ignore[attr-defined]
-                
+                new_path = self.pathfinder.find_path(
+                    pos_tuple, target, other_agent_positions,
+                    forbidden_types=forbidden_types,
+                )
+
                 # If no path found, target is unreachable
-                if self.path is None:
+                if new_path is None:
                     print(f"[{self.role.upper()} {self.unique_id}] PATH: No path found to {target}, target unreachable")
                     # Blacklist this target for 100 steps
                     self.unreachable_targets[target] = self.model.current_step
                     self.target_position = None
                     self.stuck_counter = 0
                     return False
+
+                self.path = new_path
                 
                 # Remove first element (current position) if path exists
                 if self.path and len(self.path) > 1 and self.path[0] == pos_tuple:

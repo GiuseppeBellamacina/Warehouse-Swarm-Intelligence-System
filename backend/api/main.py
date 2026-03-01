@@ -279,7 +279,7 @@ async def reset_simulation():
     if not sim_manager.config:
         raise HTTPException(status_code=400, detail="No configuration loaded")
 
-    sim_manager.reset_simulation()
+    await sim_manager.reset_simulation()
 
     # Broadcast the fresh step-0 state before sending the reset event
     state = sim_manager.get_simulation_state()

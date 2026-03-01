@@ -7,6 +7,8 @@ from typing import List, Optional, Set, Tuple
 
 import numpy as np
 
+from backend.core.grid_manager import CellType
+
 
 class AStarPathfinder:
     """
@@ -34,12 +36,19 @@ class AStarPathfinder:
         """
         return np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 
-    def get_neighbors(self, pos: Tuple[int, int]) -> List[Tuple[Tuple[int, int], float]]:
+    def get_neighbors(
+        self,
+        pos: Tuple[int, int],
+        forbidden_pos: Optional[Set[Tuple[int, int]]] = None,
+    ) -> List[Tuple[Tuple[int, int], float]]:
         """
-        Get walkable neighbors with cost
+        Get walkable neighbors with cost.
 
         Args:
             pos: Current position
+            forbidden_pos: Positions that must NOT be used as intermediate nodes.
+                           These cells are still walkable in general, but the
+                           pathfinder will not route *through* them.
 
         Returns:
             List of ((neighbor_x, neighbor_y), cost) tuples
@@ -62,8 +71,11 @@ class AStarPathfinder:
         for dx, dy, cost in directions:
             nx, ny = x + dx, y + dy
 
-            if self.grid.is_walkable(nx, ny):
-                neighbors.append(((nx, ny), cost))
+            if not self.grid.is_walkable(nx, ny):
+                continue
+            if forbidden_pos and (nx, ny) in forbidden_pos:
+                continue
+            neighbors.append(((nx, ny), cost))
 
         return neighbors
 
@@ -72,20 +84,33 @@ class AStarPathfinder:
         start: Tuple[int, int],
         goal: Tuple[int, int],
         avoid_positions: Optional[Set[Tuple[int, int]]] = None,
+        forbidden_types: Optional[Set[CellType]] = None,
     ) -> Optional[List[Tuple[int, int]]]:
         """
-        Find shortest path using A* algorithm
+        Find shortest path using A* algorithm.
 
         Args:
             start: Start position
             goal: Goal position
-            avoid_positions: Positions to avoid (other agents)
+            avoid_positions: Positions to avoid (other agents) — adds cost penalty
+            forbidden_types: CellType values that must NOT appear as *intermediate*
+                             nodes in the path.  The goal cell is always allowed
+                             regardless of its type.
 
         Returns:
             List of positions from start to goal, or None if no path
         """
         if avoid_positions is None:
             avoid_positions = set()
+
+        # Build the set of forbidden intermediate positions (goal is always reachable)
+        forbidden_pos: Set[Tuple[int, int]] = set()
+        if forbidden_types:
+            for x in range(self.grid.width):
+                for y in range(self.grid.height):
+                    if self.grid.get_cell_type(x, y) in forbidden_types:
+                        forbidden_pos.add((x, y))
+            forbidden_pos.discard(goal)  # goal is always reachable
 
         # Priority queue: (f_score, counter, position)
         counter = 0
@@ -112,7 +137,7 @@ class AStarPathfinder:
                 return self._reconstruct_path(came_from, current)
 
             # Explore neighbors
-            for neighbor, move_cost in self.get_neighbors(current):
+            for neighbor, move_cost in self.get_neighbors(current, forbidden_pos or None):
                 # Add penalty for positions to avoid (other agents)
                 penalty = 10.0 if neighbor in avoid_positions else 0.0
 

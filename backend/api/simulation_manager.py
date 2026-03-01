@@ -373,9 +373,29 @@ class SimulationManager:
             self.model.running = False
         print("Simulation stopped")
 
-    def reset_simulation(self) -> None:
-        """Reset the simulation"""
-        self.stop_simulation()
+    async def reset_simulation(self) -> None:
+        """Reset the simulation to a clean initial state.
+
+        Cancels and awaits any active simulation task so it cannot
+        interfere with the freshly-initialised model.
+        """
+        # Cancel the running asyncio task (if any) and wait for it to exit
+        # cleanly before touching the model.  This prevents the old loop
+        # from waking up after the new model is created and stepping it.
+        if self.simulation_task is not None and not self.simulation_task.done():
+            # Signal the loop to stop (belt-and-suspenders alongside cancel())
+            self.is_running = False
+            if self.model:
+                self.model.running = False
+            self.simulation_task.cancel()
+            try:
+                await self.simulation_task
+            except asyncio.CancelledError:
+                pass
+            self.simulation_task = None
+        else:
+            self.stop_simulation()
+
         if self.config:
             self.initialize_simulation(self.config)
         print("Simulation reset")

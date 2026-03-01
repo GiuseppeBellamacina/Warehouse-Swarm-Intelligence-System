@@ -181,6 +181,7 @@ class RetrieverAgent(BaseAgent):
             if can_claim:
                 self.state = AgentState.RETRIEVING
                 self.target_position = next_target
+                self.path = []  # invalidate cached path — new target
             else:
                 # Object claimed by someone else, abort
                 print(
@@ -318,6 +319,7 @@ class RetrieverAgent(BaseAgent):
             if candidates:
                 self._explore_target = random.choice(candidates)
                 self.target_position = self._explore_target
+                self.path = []  # invalidate cached path — new explore target
                 self.state = AgentState.EXPLORING
             else:
                 self.state = AgentState.IDLE
@@ -498,8 +500,15 @@ class RetrieverAgent(BaseAgent):
                 self._wh_step = None
                 self._wh_station = None
                 self.pending_events.append("idle")
-                self.state = AgentState.EXPLORING
-                self._update_explore_target()
+                # If there are pending tasks, head there immediately instead of
+                # exploring a random cell (which caused the "wander first" bug)
+                if self.task_queue:
+                    self.state = AgentState.RETRIEVING
+                    self.target_position = self.task_queue[0]
+                    self.path = []  # invalidate cached path — new target
+                else:
+                    self.state = AgentState.EXPLORING
+                    self._update_explore_target()
                 # Move off the exit cell immediately so it doesn't block
                 if self.target_position and my_pos == exit_cell:
                     self.move_towards(self.target_position)

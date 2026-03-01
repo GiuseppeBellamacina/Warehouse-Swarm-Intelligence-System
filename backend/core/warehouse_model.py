@@ -172,13 +172,14 @@ class WarehouseModel(Model):
                     key=lambda e: abs(e[0] - ex) + abs(e[1] - ey),
                 )
 
-            # Queue cells: sorted by distance to exit (closest first = front of queue).
-            # Agents will line up from this exit-side cell toward the entrance-side,
-            # forming a natural FIFO queue where slot-0 exits first.
-            qx, qy = exit_cell
+            # Queue cells: sorted by distance to entrance DESCENDING so that slot 0
+            # is the deepest interior cell (farthest from entrance / door).
+            # Agents fill from the back of the warehouse toward the entrance; none
+            # ever parks right at the door even when the warehouse is crowded.
             queue_cells = sorted(
                 nearby_cells,
-                key=lambda c: abs(c[0] - qx) + abs(c[1] - qy),
+                key=lambda c: abs(c[0] - ex) + abs(c[1] - ey),
+                reverse=True,   # farthest from entrance = slot 0 (deepest inside)
             )
 
             self.warehouse_stations.append(
@@ -221,10 +222,11 @@ class WarehouseModel(Model):
         """
         Return the interior cell an agent should target when joining the recharge queue.
 
-        Cells are ordered from exit-side (slot 0, front) to entrance-side (back).
+        Cells are ordered farthest-from-entrance first (slot 0 = deepest inside).
         A new agent is assigned the slot equal to the number of agents currently
-        occupying interior cells in this station, so it always goes to the back —
-        creating a natural FIFO line that drains from the exit end.
+        occupying interior cells in this station, so it backs up from the rear.
+        The cell closest to the entrance is never a door cell; agents therefore
+        recharge well inside the warehouse regardless of congestion.
         """
         queue_cells: list = station.get("queue_cells") or []
         if not queue_cells:
