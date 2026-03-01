@@ -1,5 +1,4 @@
 {
-  "rootDirectory": "frontend",
   "framework": "vite",
   "buildCommand": "bun run build",
   "outputDirectory": "dist",
