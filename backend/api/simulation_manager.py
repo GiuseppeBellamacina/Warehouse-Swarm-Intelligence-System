@@ -4,6 +4,7 @@ Simulation manager for running simulations in background
 
 import asyncio
 import random
+import time
 import traceback
 from typing import Optional, Set, Tuple
 
@@ -15,6 +16,17 @@ from backend.agents.scout_agent import ScoutAgent
 from backend.config.schemas import ScenarioConfig
 from backend.core.grid_manager import CellType
 from backend.core.warehouse_model import WarehouseModel
+
+# imported lazily to avoid circular issues at module load
+_notify_complete_fn = None
+
+
+def _get_notify_complete():
+    global _notify_complete_fn
+    if _notify_complete_fn is None:
+        from backend.api.telegram_notifier import notify_simulation_complete
+        _notify_complete_fn = notify_simulation_complete
+    return _notify_complete_fn
 
 
 class SimulationManager:
@@ -30,6 +42,7 @@ class SimulationManager:
         self.simulation_task: Optional[asyncio.Task] = None
         self.update_rate = 30  # Updates per second
         self.occupied_spawn_positions: Set[Tuple[int, int]] = set()
+        self._sim_start_time: Optional[float] = None  # monotonic clock at sim start
 
     def _find_random_spawn_position(
         self,
@@ -310,6 +323,7 @@ class SimulationManager:
 
         self.is_running = True
         self.is_paused = False
+        self._sim_start_time = time.monotonic()
 
         print("\n" + "=" * 60)
         print("SIMULATION STARTING")
@@ -372,6 +386,20 @@ class SimulationManager:
                             "objects_retrieved": self.model.objects_retrieved,
                             "total_objects": self.model.total_objects,
                         },
+                    )
+                    elapsed = (
+                        time.monotonic() - self._sim_start_time
+                        if self._sim_start_time is not None
+                        else None
+                    )
+                    asyncio.create_task(
+                        _get_notify_complete()(
+                            config_name=getattr(self.config, "name", None),
+                            steps=self.model.current_step,
+                            objects_retrieved=self.model.objects_retrieved,
+                            total_objects=self.model.total_objects,
+                            elapsed_seconds=elapsed,
+                        )
                     )
                     break
 

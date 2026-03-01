@@ -7,12 +7,15 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.api.simulation_manager import sim_manager
-from backend.api.telegram_notifier import notify_simulation_start
+from backend.api.telegram_notifier import (
+    notify_simulation_start,
+    notify_simulation_stopped,
+)
 from backend.api.websocket_manager import ws_manager
 from backend.config.config_loader import ConfigLoader
 from backend.config.settings import settings
@@ -175,7 +178,7 @@ async def load_simulation_endpoint(request: StartSimulationRequest):
 
 
 @app.post("/api/simulation/start")
-async def start_simulation():
+async def start_simulation(request: Request):
     """
     Start the simulation loop. The simulation must be loaded first via /api/simulation/load.
 
@@ -200,7 +203,20 @@ async def start_simulation():
     if sim_manager.model:
         config_name = getattr(sim_manager.config, "name", None)
         agent_count = len(sim_manager.model.agents) if sim_manager.model.agents else None
-    asyncio.create_task(notify_simulation_start(config_name=config_name, agent_count=agent_count))
+    # Extract client IP (respects X-Forwarded-For set by Render/Vercel proxies)
+    forwarded_for = request.headers.get("x-forwarded-for")
+    user_ip = forwarded_for.split(",")[0].strip() if forwarded_for else (
+        request.client.host if request.client else None
+    )
+    user_agent = request.headers.get("user-agent")
+    asyncio.create_task(
+        notify_simulation_start(
+            config_name=config_name,
+            agent_count=agent_count,
+            user_ip=user_ip,
+            user_agent=user_agent,
+        )
+    )
 
     return {"status": "started", "message": "Simulation running"}
 
@@ -283,6 +299,18 @@ async def stop_simulation():
     sim_manager.stop_simulation()
 
     await ws_manager.broadcast_event("simulation_stopped", {})
+
+    # Fire-and-forget Telegram notification
+    _cfg = getattr(sim_manager.config, "name", None)
+    _model = sim_manager.model
+    asyncio.create_task(
+        notify_simulation_stopped(
+            config_name=_cfg,
+            steps=_model.current_step if _model else None,
+            objects_retrieved=_model.objects_retrieved if _model else None,
+            total_objects=_model.total_objects if _model else None,
+        )
+    )
 
     return {"status": "stopped"}
 
