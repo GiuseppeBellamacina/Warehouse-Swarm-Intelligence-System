@@ -75,6 +75,32 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("simulation");
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
 
+  // Wake-up button cooldown (10 s)
+  const [wakeCooldown, setWakeCooldown] = useState(0);
+  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const handleWake = useCallback(() => {
+    wakeBackend();
+    setWakeCooldown(10);
+    cooldownRef.current = setInterval(() => {
+      setWakeCooldown((prev) => {
+        if (prev <= 1) {
+          clearInterval(cooldownRef.current!);
+          cooldownRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [wakeBackend]);
+
+  useEffect(
+    () => () => {
+      if (cooldownRef.current) clearInterval(cooldownRef.current);
+    },
+    [],
+  );
+
   // Panel widths in pixels — initialised as % of viewport so the map gets ~50%,
   // agents ~15%, metrics ~15%, controls ~20%.
   const [agentsW, setAgentsW] = useState(() =>
@@ -93,6 +119,21 @@ function App() {
 
   return (
     <div className="h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
+      {/* ── Free-hosting notice ── */}
+      {!connected && (
+        <div className="flex-shrink-0 bg-amber-950 border-b border-amber-700 px-6 py-3 flex items-start gap-3">
+          <span className="text-amber-400 text-xl leading-none mt-0.5">⚠️</span>
+          <p className="text-amber-200 text-sm leading-snug">
+            <span className="font-bold">
+              Il backend è ospitato gratuitamente su Render.
+            </span>{" "}
+            Dopo un periodo di inattività il server va in sleep e impiega circa{" "}
+            <span className="font-semibold">30-60 secondi</span> per riavviarsi.
+            Premi <span className="font-semibold">⚡ Wake up backend</span> e
+            attendi il riavvio.
+          </p>
+        </div>
+      )}
       {/* ── Header ── */}
       <header className="flex-shrink-0 px-6 py-3 border-b border-gray-700 flex items-center gap-4">
         <div>
@@ -124,11 +165,14 @@ function App() {
           {/* Show wake-up button only when backend is offline/unknown and not yet connected */}
           {!connected && backendStatus !== "waking" && (
             <button
-              onClick={wakeBackend}
-              className="text-xs px-3 py-1 rounded-full font-medium bg-blue-700 hover:bg-blue-600 active:bg-blue-500 text-white transition-colors"
+              onClick={handleWake}
+              disabled={wakeCooldown > 0}
+              className="text-xs px-3 py-1 rounded-full font-medium bg-blue-700 hover:bg-blue-600 active:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white transition-colors"
               title="Il backend Render potrebbe essere in sleep. Clicca per riattivarlo."
             >
-              ⚡ Wake up backend
+              {wakeCooldown > 0
+                ? `⏳ Riprova tra ${wakeCooldown}s`
+                : "⚡ Wake up backend"}
             </button>
           )}
 

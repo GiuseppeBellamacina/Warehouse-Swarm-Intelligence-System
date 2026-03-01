@@ -8,6 +8,25 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
 export type BackendStatus = "unknown" | "waking" | "online" | "offline";
 
+/** Stable per-tab session ID (survives re-renders, gone when tab closes). */
+const getSessionId = (): string => {
+  const key = "wsis-session-id";
+  let id = sessionStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem(key, id);
+  }
+  return id;
+};
+
+const SESSION_ID = getSessionId();
+
+/** Headers included in every REST request. */
+const SESSION_HEADERS = {
+  "Content-Type": "application/json",
+  "X-Session-ID": SESSION_ID,
+};
+
 export const useSimulation = () => {
   const [state, setState] = useState<SimulationState | null>(null);
   const [connected, setConnected] = useState(false);
@@ -18,9 +37,10 @@ export const useSimulation = () => {
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    // Connect to WebSocket
+    // Connect to WebSocket with session ID so the server routes events correctly
     const socket = io(BACKEND_URL, {
       transports: ["websocket", "polling"],
+      auth: { sessionId: SESSION_ID },
     });
 
     socketRef.current = socket;
@@ -115,7 +135,7 @@ export const useSimulation = () => {
     try {
       const response = await fetch(`${BACKEND_URL}/api/simulation/load`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: SESSION_HEADERS,
         body: JSON.stringify({ config }),
       });
       if (!response.ok) {
@@ -139,6 +159,7 @@ export const useSimulation = () => {
     try {
       const response = await fetch(`${BACKEND_URL}/api/simulation/start`, {
         method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
       });
       if (!response.ok) {
         const error = await response.json();
@@ -161,6 +182,7 @@ export const useSimulation = () => {
 
       const response = await fetch(`${BACKEND_URL}/api/simulation/upload`, {
         method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
         body: formData,
       });
 
@@ -183,7 +205,10 @@ export const useSimulation = () => {
 
   const pauseSimulation = useCallback(async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/simulation/pause`, { method: "POST" });
+      await fetch(`${BACKEND_URL}/api/simulation/pause`, {
+        method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
+      });
     } catch (error) {
       console.error("Error pausing simulation:", error);
     }
@@ -191,7 +216,10 @@ export const useSimulation = () => {
 
   const resumeSimulation = useCallback(async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/simulation/resume`, { method: "POST" });
+      await fetch(`${BACKEND_URL}/api/simulation/resume`, {
+        method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
+      });
     } catch (error) {
       console.error("Error resuming simulation:", error);
     }
@@ -199,7 +227,10 @@ export const useSimulation = () => {
 
   const stopSimulation = useCallback(async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/simulation/stop`, { method: "POST" });
+      await fetch(`${BACKEND_URL}/api/simulation/stop`, {
+        method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
+      });
       setIsRunning(false);
     } catch (error) {
       console.error("Error stopping simulation:", error);
@@ -208,7 +239,10 @@ export const useSimulation = () => {
 
   const resetSimulation = useCallback(async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/simulation/reset`, { method: "POST" });
+      await fetch(`${BACKEND_URL}/api/simulation/reset`, {
+        method: "POST",
+        headers: { "X-Session-ID": SESSION_ID },
+      });
       // The backend broadcasts step 0 state + simulation_reset event;
       // we let the socket handlers update isLoaded/isRunning.
     } catch (error) {
@@ -222,6 +256,7 @@ export const useSimulation = () => {
         `${BACKEND_URL}/api/simulation/speed?speed=${speed}`,
         {
           method: "POST",
+          headers: { "X-Session-ID": SESSION_ID },
         },
       );
       if (!response.ok) {

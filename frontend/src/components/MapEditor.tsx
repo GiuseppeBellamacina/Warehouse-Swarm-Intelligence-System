@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { SimulationConfig } from "../types/simulation";
+import { MAP_PRESETS } from "../presets";
 
 type CellType =
   | "free"
@@ -42,9 +43,16 @@ export const MapEditor: React.FC<{
 
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
-  // Initialize grid when dimensions change
+  // Initialize grid when dimensions change, but skip if cells already match
   useEffect(() => {
+    if (
+      state.cells.length === state.gridHeight &&
+      (state.cells[0]?.length ?? 0) === state.gridWidth
+    ) {
+      return;
+    }
     const newCells = Array(state.gridHeight)
       .fill(null)
       .map(() => Array(state.gridWidth).fill("free"));
@@ -132,6 +140,98 @@ export const MapEditor: React.FC<{
     handleCanvasClick(e);
   };
 
+  // ---------- JSON import ----------
+  const loadFromConfig = (json: any) => {
+    const width: number = json.simulation?.grid_width ?? state.gridWidth;
+    const height: number = json.simulation?.grid_height ?? state.gridHeight;
+
+    const newCells: CellType[][] = Array(height)
+      .fill(null)
+      .map(() => Array(width).fill("free" as CellType));
+
+    // Warehouse cells
+    if (json.warehouse?.warehouse_cells) {
+      for (const { x, y } of json.warehouse.warehouse_cells) {
+        if (y >= 0 && y < height && x >= 0 && x < width)
+          newCells[y][x] = "warehouse";
+      }
+    }
+
+    // Entrances
+    if (json.warehouse?.entrances) {
+      for (const { x, y } of json.warehouse.entrances) {
+        if (y >= 0 && y < height && x >= 0 && x < width)
+          newCells[y][x] = "entrance";
+      }
+    }
+
+    // Exits
+    if (json.warehouse?.exits) {
+      for (const { x, y } of json.warehouse.exits) {
+        if (y >= 0 && y < height && x >= 0 && x < width)
+          newCells[y][x] = "exit";
+      }
+    }
+
+    // Obstacles – expand start→end segment
+    if (json.obstacles) {
+      for (const obs of json.obstacles) {
+        const sx: number = obs.start?.x ?? obs.x ?? 0;
+        const sy: number = obs.start?.y ?? obs.y ?? 0;
+        const ex: number = obs.end?.x ?? sx;
+        const ey: number = obs.end?.y ?? sy;
+        for (let cy = Math.min(sy, ey); cy <= Math.max(sy, ey); cy++) {
+          for (let cx = Math.min(sx, ex); cx <= Math.max(sx, ex); cx++) {
+            if (cy >= 0 && cy < height && cx >= 0 && cx < width)
+              newCells[cy][cx] = "obstacle";
+          }
+        }
+      }
+    }
+
+    // Object spawn zones
+    if (json.objects?.spawn_zones) {
+      for (const zone of json.objects.spawn_zones) {
+        const [x0, x1]: [number, number] = zone.x_range ?? [0, 0];
+        const [y0, y1]: [number, number] = zone.y_range ?? [0, 0];
+        for (let cy = Math.min(y0, y1); cy <= Math.max(y0, y1); cy++) {
+          for (let cx = Math.min(x0, x1); cx <= Math.max(x0, x1); cx++) {
+            if (cy >= 0 && cy < height && cx >= 0 && cx < width)
+              if (newCells[cy][cx] === "free") newCells[cy][cx] = "object_zone";
+          }
+        }
+      }
+    }
+
+    setState((prev) => ({
+      ...prev,
+      gridWidth: width,
+      gridHeight: height,
+      cells: newCells,
+      scouts: json.agents?.scouts?.count ?? prev.scouts,
+      coordinators: json.agents?.coordinators?.count ?? prev.coordinators,
+      retrievers: json.agents?.retrievers?.count ?? prev.retrievers,
+      objectCount: json.objects?.count ?? prev.objectCount,
+    }));
+  };
+
+  const handleImportJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const json = JSON.parse(ev.target?.result as string);
+        loadFromConfig(json);
+      } catch {
+        alert("File JSON non valido.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ""; // reset so the same file can be re-imported
+  };
+  // ------------------------------------
+
   const paintCell = (x: number, y: number) => {
     setState((prev) => {
       const newCells = prev.cells.map((row) => [...row]);
@@ -144,8 +244,8 @@ export const MapEditor: React.FC<{
     // Extract positions for each cell type
     const obstacles: Array<{ x: number; y: number }> = [];
     const warehouseCells: Array<{ x: number; y: number }> = [];
-    const entrances: Array<{ x: number; y: number; direction: string }> = [];
-    const exits: Array<{ x: number; y: number; direction: string }> = [];
+    const entrances: Array<{ x: number; y: number }> = [];
+    const exits: Array<{ x: number; y: number }> = [];
     const objectZones: Array<{ x: number; y: number }> = [];
 
     for (let y = 0; y < state.gridHeight; y++) {
@@ -159,10 +259,10 @@ export const MapEditor: React.FC<{
             warehouseCells.push({ x, y });
             break;
           case "entrance":
-            entrances.push({ x, y, direction: "south" });
+            entrances.push({ x, y });
             break;
           case "exit":
-            exits.push({ x, y, direction: "south" });
+            exits.push({ x, y });
             break;
           case "object_zone":
             objectZones.push({ x, y });
@@ -212,7 +312,6 @@ export const MapEditor: React.FC<{
                 {
                   x: Math.floor(state.gridWidth / 2),
                   y: 5,
-                  direction: "south",
                 },
               ],
         exits:
@@ -222,7 +321,6 @@ export const MapEditor: React.FC<{
                 {
                   x: Math.floor(state.gridWidth / 2) + 1,
                   y: 5,
-                  direction: "south",
                 },
               ],
         recharge_rate: 5.0,
@@ -328,8 +426,8 @@ export const MapEditor: React.FC<{
   const buildConfig = () => {
     const obstacles: Array<{ x: number; y: number }> = [];
     const warehouseCells: Array<{ x: number; y: number }> = [];
-    const entrances: Array<{ x: number; y: number; direction: string }> = [];
-    const exits: Array<{ x: number; y: number; direction: string }> = [];
+    const entrances: Array<{ x: number; y: number }> = [];
+    const exits: Array<{ x: number; y: number }> = [];
     const objectZones: Array<{ x: number; y: number }> = [];
 
     for (let y = 0; y < state.gridHeight; y++) {
@@ -343,10 +441,10 @@ export const MapEditor: React.FC<{
             warehouseCells.push({ x, y });
             break;
           case "entrance":
-            entrances.push({ x, y, direction: "south" });
+            entrances.push({ x, y });
             break;
           case "exit":
-            exits.push({ x, y, direction: "south" });
+            exits.push({ x, y });
             break;
           case "object_zone":
             objectZones.push({ x, y });
@@ -393,7 +491,6 @@ export const MapEditor: React.FC<{
                 {
                   x: Math.floor(state.gridWidth / 2),
                   y: 5,
-                  direction: "south",
                 },
               ],
         exits:
@@ -403,7 +500,6 @@ export const MapEditor: React.FC<{
                 {
                   x: Math.floor(state.gridWidth / 2) + 1,
                   y: 5,
-                  direction: "south",
                 },
               ],
         recharge_rate: 5.0,
@@ -477,7 +573,42 @@ export const MapEditor: React.FC<{
 
   return (
     <div className="bg-gray-800 rounded-lg p-6 space-y-4">
-      <h2 className="text-2xl font-bold mb-4">Map Editor</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">Map Editor</h2>
+        <div>
+          <input
+            ref={importRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={handleImportJSON}
+          />
+          <button
+            onClick={() => importRef.current?.click()}
+            className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded font-medium transition text-sm"
+            title="Importa una configurazione JSON per pre-popolare la mappa"
+          >
+            Importa JSON
+          </button>
+        </div>
+      </div>
+
+      {/* Preset selector */}
+      <div className="border border-gray-700 rounded-lg p-3">
+        <p className="text-sm font-medium text-gray-300 mb-2">Preconfigurati</p>
+        <div className="flex flex-wrap gap-2">
+          {MAP_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              onClick={() => loadFromConfig(preset.config)}
+              title={preset.description}
+              className="bg-gray-700 hover:bg-gray-600 border border-gray-600 hover:border-indigo-400 px-3 py-1.5 rounded text-sm font-medium transition"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Grid Size Controls */}
       <div className="grid grid-cols-2 gap-4">

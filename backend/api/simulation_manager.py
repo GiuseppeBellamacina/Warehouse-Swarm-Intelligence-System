@@ -44,6 +44,7 @@ class SimulationManager:
         self.update_rate = 30  # Updates per second
         self.occupied_spawn_positions: Set[Tuple[int, int]] = set()
         self._sim_start_time: Optional[float] = None  # monotonic clock at sim start
+        self.session_id: str = "default"  # owning session
 
     def _find_random_spawn_position(
         self,
@@ -231,7 +232,7 @@ class SimulationManager:
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve")
 
-    async def load_simulation(self, config: ScenarioConfig, ws_manager) -> None:
+    async def load_simulation(self, config: ScenarioConfig, ws_manager, session_id: str = "default") -> None:
         """
         Initialize simulation and broadcast step 0 without starting the loop.
         The client will see the initial grid state and can then call start_simulation.
@@ -239,12 +240,14 @@ class SimulationManager:
         Args:
             config: Scenario configuration
             ws_manager: WebSocket manager for broadcasting the initial state
+            session_id: Owning session identifier
         """
+        self.session_id = session_id
         self.initialize_simulation(config)
         self.is_running = False
         self.is_paused = False
         state = self.get_simulation_state()
-        await ws_manager.broadcast_state(state)
+        await ws_manager.broadcast_state_to_session(session_id, state)
 
     def _find_free_cell_near(
         self, target_pos: Tuple[int, int], max_radius: int = 10, spread: bool = True
@@ -374,13 +377,14 @@ class SimulationManager:
                         f"\n=== STEP {self.model.current_step} === Progress: {self.model.objects_retrieved}/{self.model.total_objects} objects retrieved ==="
                     )
 
-                # Get state and broadcast
+                # Get state and broadcast (scoped to this session)
                 state = self.get_simulation_state()
-                await ws_manager.broadcast_state(state)
+                await ws_manager.broadcast_state_to_session(self.session_id, state)
 
                 # Check if complete
                 if not self.model.running:
-                    await ws_manager.broadcast_event(
+                    await ws_manager.broadcast_event_to_session(
+                        self.session_id,
                         "simulation_complete",
                         {
                             "steps": self.model.current_step,

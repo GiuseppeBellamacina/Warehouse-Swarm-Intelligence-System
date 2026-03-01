@@ -4,6 +4,7 @@ FastAPI main application with REST endpoints and WebSocket support
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -11,17 +12,31 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from backend.api.simulation_manager import sim_manager
+from backend.api.simulation_manager import SimulationManager
 from backend.api.telegram_notifier import notify_simulation_start, notify_simulation_stopped
 from backend.api.websocket_manager import ws_manager
+from backend.api.session_registry import session_registry
 from backend.config.config_loader import ConfigLoader
 from backend.config.settings import settings
+
+# Get the project root directory for configs
+project_root = Path(__file__).parent.parent.parent
+configs_path = project_root / "configs"
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start background cleanup of idle sessions on startup."""
+    asyncio.create_task(session_registry.cleanup_loop())
+    yield
+
 
 # FastAPI app
 app = FastAPI(
     title="Warehouse Swarm Intelligence System",
     description="Multi-agent warehouse object retrieval simulation",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware
@@ -33,9 +48,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Get the project root directory for configs
-project_root = Path(__file__).parent.parent.parent
-configs_path = project_root / "configs"
+
+# ── session dependency ─────────────────────────────────────────────────────
+
+def _session_id(request: Request) -> str:
+    return request.headers.get("x-session-id", "default")
+
+
+def _get_manager(request: Request) -> SimulationManager:
+    return session_registry.get_or_create(_session_id(request))
 
 
 # Pydantic models for requests
@@ -57,7 +78,7 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "simulation_running": sim_manager.is_running}
+    return {"status": "healthy"}
 
 
 @app.get("/api/configs")
@@ -129,22 +150,18 @@ async def get_config(config_name: str):
 
 
 @app.post("/api/simulation/load")
-async def load_simulation_endpoint(request: StartSimulationRequest):
+async def load_simulation_endpoint(request: Request, body: StartSimulationRequest):
     """
     Load a simulation configuration: initialize agents/grid and broadcast step 0.
     The simulation loop does NOT start — call /api/simulation/start to run it.
-
-    Args:
-        request: Configuration dictionary
-
-    Returns:
-        Loaded status message
     """
     try:
+        mgr = _get_manager(request)
+        sid = _session_id(request)
         print("[DEBUG] Received load simulation request")
-        config = ConfigLoader.load_from_dict(request.config)
+        config = ConfigLoader.load_from_dict(body.config)
         print("[DEBUG] Configuration parsed — initializing and broadcasting step 0...")
-        await sim_manager.load_simulation(config, ws_manager)
+        await mgr.load_simulation(config, ws_manager, sid)
         print("[DEBUG] Step 0 broadcast complete")
         return {
             "status": "loaded",
@@ -163,13 +180,11 @@ async def load_simulation_endpoint(request: StartSimulationRequest):
     except ValueError as e:
         print(f"[ERROR] Validation error: {str(e)}")
         import traceback
-
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"[ERROR] Unexpected error loading simulation: {str(e)}")
         import traceback
-
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to load simulation: {str(e)}")
 
@@ -178,29 +193,23 @@ async def load_simulation_endpoint(request: StartSimulationRequest):
 async def start_simulation(request: Request):
     """
     Start the simulation loop. The simulation must be loaded first via /api/simulation/load.
-
-    Returns:
-        Success message
     """
-    if not sim_manager.model:
+    mgr = _get_manager(request)
+    if not mgr.model:
         raise HTTPException(
             status_code=400,
             detail="No simulation loaded. Call /api/simulation/load first.",
         )
-    if sim_manager.is_running:
+    if mgr.is_running:
         raise HTTPException(status_code=400, detail="Simulation is already running")
 
     print("[DEBUG] Starting simulation loop...")
-    sim_manager.simulation_task = asyncio.create_task(sim_manager.start_simulation(ws_manager))
+    mgr.simulation_task = asyncio.create_task(mgr.start_simulation(ws_manager))
     print("[DEBUG] Simulation loop task created")
 
     # Fire-and-forget Telegram notification
-    config_name: Optional[str] = None
-    agent_count: Optional[int] = None
-    if sim_manager.model:
-        config_name = getattr(sim_manager.config, "name", None)
-        agent_count = len(sim_manager.model.agents) if sim_manager.model.agents else None
-    # Extract client IP (respects X-Forwarded-For set by Render/Vercel proxies)
+    config_name: Optional[str] = getattr(mgr.config, "name", None)
+    agent_count: Optional[int] = len(mgr.model.agents) if mgr.model and mgr.model.agents else None
     forwarded_for = request.headers.get("x-forwarded-for")
     user_ip = (
         forwarded_for.split(",")[0].strip()
@@ -221,27 +230,17 @@ async def start_simulation(request: Request):
 
 
 @app.post("/api/simulation/upload")
-async def upload_configuration(file: UploadFile = File(...)):
+async def upload_configuration(request: Request, file: UploadFile = File(...)):
     """
     Upload and start simulation from JSON configuration file
-
-    Args:
-        file: JSON configuration file
-
-    Returns:
-        Success message
     """
     try:
-        # Read file content
+        mgr = _get_manager(request)
+        sid = _session_id(request)
         content = await file.read()
         config_dict = json.loads(content)
-
-        # Parse configuration
         config = ConfigLoader.load_from_dict(config_dict)
-
-        # Load (init + broadcast step 0) without starting the loop
-        await sim_manager.load_simulation(config, ws_manager)
-
+        await mgr.load_simulation(config, ws_manager, sid)
         return {
             "status": "loaded",
             "message": f"Configuration loaded from {file.filename}. Press Start to begin.",
@@ -260,54 +259,58 @@ async def upload_configuration(file: UploadFile = File(...)):
 
 
 @app.post("/api/simulation/pause")
-async def pause_simulation():
+async def pause_simulation(request: Request):
     """Pause the running simulation"""
-    if not sim_manager.is_running:
+    mgr = _get_manager(request)
+    if not mgr.is_running:
         raise HTTPException(status_code=400, detail="No simulation running")
 
-    sim_manager.pause_simulation()
+    mgr.pause_simulation()
 
-    await ws_manager.broadcast_event(
-        "simulation_paused", {"step": sim_manager.model.current_step if sim_manager.model else 0}
+    await ws_manager.broadcast_event_to_session(
+        _session_id(request),
+        "simulation_paused",
+        {"step": mgr.model.current_step if mgr.model else 0},
     )
 
     return {"status": "paused"}
 
 
 @app.post("/api/simulation/resume")
-async def resume_simulation():
+async def resume_simulation(request: Request):
     """Resume the paused simulation"""
-    if not sim_manager.is_running:
+    mgr = _get_manager(request)
+    if not mgr.is_running:
         raise HTTPException(status_code=400, detail="No simulation running")
 
-    sim_manager.resume_simulation()
+    mgr.resume_simulation()
 
-    await ws_manager.broadcast_event(
-        "simulation_resumed", {"step": sim_manager.model.current_step if sim_manager.model else 0}
+    await ws_manager.broadcast_event_to_session(
+        _session_id(request),
+        "simulation_resumed",
+        {"step": mgr.model.current_step if mgr.model else 0},
     )
 
     return {"status": "resumed"}
 
 
 @app.post("/api/simulation/stop")
-async def stop_simulation():
+async def stop_simulation(request: Request):
     """Stop the running simulation"""
-    if not sim_manager.is_running:
+    mgr = _get_manager(request)
+    if not mgr.is_running:
         raise HTTPException(status_code=400, detail="No simulation running")
 
-    sim_manager.stop_simulation()
+    mgr.stop_simulation()
 
-    await ws_manager.broadcast_event("simulation_stopped", {})
+    await ws_manager.broadcast_event_to_session(_session_id(request), "simulation_stopped", {})
 
-    # Fire-and-forget Telegram notification
-    _cfg = getattr(sim_manager.config, "name", None)
-    _model = sim_manager.model
     asyncio.create_task(
         notify_simulation_stopped(
-            config_name=_cfg,
-            steps=_model.current_step if _model else None,
-            objects_retrieved=_model.objects_retrieved if _model else None,
-            total_objects=_model.total_objects if _model else None,
+            config_name=getattr(mgr.config, "name", None),
+            steps=mgr.model.current_step if mgr.model else None,
+            objects_retrieved=mgr.model.objects_retrieved if mgr.model else None,
+            total_objects=mgr.model.total_objects if mgr.model else None,
         )
     )
 
@@ -315,72 +318,70 @@ async def stop_simulation():
 
 
 @app.post("/api/simulation/reset")
-async def reset_simulation():
+async def reset_simulation(request: Request):
     """Reset the simulation to initial state and broadcast step 0"""
-    if not sim_manager.config:
+    mgr = _get_manager(request)
+    sid = _session_id(request)
+    if not mgr.config:
         raise HTTPException(status_code=400, detail="No configuration loaded")
 
-    await sim_manager.reset_simulation()
+    await mgr.reset_simulation()
 
-    # Broadcast the fresh step-0 state before sending the reset event
-    state = sim_manager.get_simulation_state()
-    await ws_manager.broadcast_state(state)
-    await ws_manager.broadcast_event("simulation_reset", {})
+    state = mgr.get_simulation_state()
+    await ws_manager.broadcast_state_to_session(sid, state)
+    await ws_manager.broadcast_event_to_session(sid, "simulation_reset", {})
 
     return {"status": "reset"}
 
 
 @app.post("/api/simulation/speed")
-async def set_simulation_speed(speed: float):
+async def set_simulation_speed(speed: float, request: Request):
     """
-    Set simulation speed
-
-    Args:
-        speed: Speed multiplier (0.1 to 10.0, where 1.0 is normal speed)
+    Set simulation speed (0.1 to 10.0, where 1.0 is normal speed)
     """
-    # Validate speed
     if speed < 0.1 or speed > 10.0:
         raise HTTPException(status_code=400, detail="Speed must be between 0.1 and 10.0")
 
-    sim_manager.set_speed(speed)
+    mgr = _get_manager(request)
+    mgr.set_speed(speed)
 
-    return {"status": "success", "speed": speed, "update_rate": sim_manager.update_rate}
+    return {"status": "success", "speed": speed, "update_rate": mgr.update_rate}
 
 
 @app.get("/api/simulation/status")
-async def get_simulation_status():
+async def get_simulation_status(request: Request):
     """Get current simulation status"""
-    if not sim_manager.model:
+    mgr = _get_manager(request)
+    if not mgr.model:
         return {"initialized": False, "running": False}
 
-    stats = sim_manager.get_statistics()
-
+    stats = mgr.get_statistics()
     return {
         "initialized": True,
-        "running": sim_manager.is_running,
-        "paused": sim_manager.is_paused,
+        "running": mgr.is_running,
+        "paused": mgr.is_paused,
         **stats,
     }
 
 
 @app.get("/api/simulation/state")
-async def get_simulation_state():
+async def get_simulation_state(request: Request):
     """Get current simulation state (snapshot)"""
-    if not sim_manager.model:
+    mgr = _get_manager(request)
+    if not mgr.model:
         raise HTTPException(status_code=404, detail="No simulation initialized")
 
-    return sim_manager.get_simulation_state()
+    return mgr.get_simulation_state()
 
 
 @app.get("/api/simulation/metrics")
-async def get_simulation_metrics():
+async def get_simulation_metrics(request: Request):
     """Get detailed simulation metrics"""
-    if not sim_manager.model:
+    mgr = _get_manager(request)
+    if not mgr.model:
         raise HTTPException(status_code=404, detail="No simulation initialized")
 
-    # Get data from data collector
-    model_data = sim_manager.model.datacollector.get_model_vars_dataframe()
-
+    model_data = mgr.model.datacollector.get_model_vars_dataframe()
     return {
         "steps": model_data.index.tolist(),
         "objects_retrieved": model_data["Objects Retrieved"].tolist(),
