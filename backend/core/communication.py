@@ -79,7 +79,7 @@ class TaskStatusMessage(Message):
     """Retriever declares its current task queue to coordinators (anti-race-condition)"""
 
     retriever_id: int
-    task_queue: List[Tuple[int, int]]   # ordered list of assigned object positions
+    task_queue: List[Tuple[int, int]]  # ordered list of assigned object positions
     carrying_objects: int
     energy_level: float
     position: Tuple[int, int]
@@ -90,10 +90,10 @@ class CoordinatorSyncMessage(Message):
     """Coordinator shares full knowledge state with another coordinator on contact"""
 
     sender_coordinator_id: int
-    known_objects: Dict             # {(x,y): value} — unassigned discovered objects
-    assigned_tasks: Dict            # {retriever_id: obj_pos} — current assignments
-    retriever_states: Dict          # {retriever_id: state_str}
-    objects_being_collected: List   # list of (x,y) positions
+    known_objects: Dict  # {(x,y): value} — unassigned discovered objects
+    assigned_tasks: Dict  # {retriever_id: obj_pos} — current assignments
+    retriever_states: Dict  # {retriever_id: state_str}
+    objects_being_collected: List  # list of (x,y) positions
 
 
 @dataclass
@@ -107,8 +107,8 @@ class ClearWayMessage(Message):
     ``chain_depth`` incremented so the chain terminates after a few hops.
     """
 
-    cell: Tuple[int, int]   # the entrance / exit cell to vacate
-    chain_depth: int = 0    # hop counter — abort forwarding when >= MAX_CHAIN_DEPTH
+    cell: Tuple[int, int]  # the entrance / exit cell to vacate
+    chain_depth: int = 0  # hop counter — abort forwarding when >= MAX_CHAIN_DEPTH
 
     MAX_CHAIN_DEPTH: ClassVar[int] = 4  # class-level constant — not a dataclass field
 

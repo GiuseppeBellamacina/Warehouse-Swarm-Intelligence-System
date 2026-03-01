@@ -3,7 +3,7 @@ Retriever Agent - Heavy lifter for object collection and delivery
 """
 
 import random
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
 from backend.algorithms.pathfinding import AStarPathfinder
@@ -166,7 +166,11 @@ class RetrieverAgent(BaseAgent):
 
         # ---- P3: Execute next task in queue ----
         # Guard: never re-decide tasks while inside a warehouse sub-sequence
-        if self.task_queue and self.carrying_objects < self.carrying_capacity and self._wh_step is None:
+        if (
+            self.task_queue
+            and self.carrying_objects < self.carrying_capacity
+            and self._wh_step is None
+        ):
             next_target = self.task_queue[0]
             # Skip if object is gone from the world
             if next_target not in self.model.grid.objects and next_target not in self.known_objects:
@@ -267,7 +271,8 @@ class RetrieverAgent(BaseAgent):
 
         # Collect all WAREHOUSE_ENTRANCE cells we have seen so far
         visible_entrances = [
-            wh for wh in self.known_warehouses
+            wh
+            for wh in self.known_warehouses
             if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
         ]
 
@@ -350,11 +355,7 @@ class RetrieverAgent(BaseAgent):
             my_pos = pos_to_tuple(self.pos) if self.pos else None
 
             # Arrived at retrieval target
-            if (
-                self.state == AgentState.RETRIEVING
-                and my_pos
-                and my_pos == self.target_position
-            ):
+            if self.state == AgentState.RETRIEVING and my_pos and my_pos == self.target_position:
                 self._try_pickup_object()
 
         elif self.state == AgentState.IDLE:
@@ -460,12 +461,9 @@ class RetrieverAgent(BaseAgent):
             cell_type = self.model.grid.get_cell_type(*my_pos)
             # Only recharge when exactly at the assigned queue slot
             # (removes the broad fallback that caused premature recharging on any interior cell)
-            at_recharge = (
-                my_pos == recharge
-                and cell_type not in (
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                )
+            at_recharge = my_pos == recharge and cell_type not in (
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
             )
             if at_recharge:
                 # Recharge here
@@ -487,13 +485,10 @@ class RetrieverAgent(BaseAgent):
             exit_cell = station["exit"]
             cell_type = self.model.grid.get_cell_type(*my_pos)
             # Finish when on the exit cell OR when already outside (not inside WH)
-            left_wh = (
-                my_pos == exit_cell
-                or cell_type not in (
-                    CellType.WAREHOUSE,
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                )
+            left_wh = my_pos == exit_cell or cell_type not in (
+                CellType.WAREHOUSE,
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
             )
             if left_wh:
                 print(f"[RETRIEVER {self.unique_id}] EXIT: exited warehouse")

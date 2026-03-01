@@ -5,14 +5,17 @@ FastAPI main application with REST endpoints and WebSocket support
 import asyncio
 import json
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.api.simulation_manager import sim_manager
+from backend.api.telegram_notifier import notify_simulation_start
 from backend.api.websocket_manager import ws_manager
 from backend.config.config_loader import ConfigLoader
+from backend.config.settings import settings
 
 # FastAPI app
 app = FastAPI(
@@ -24,7 +27,7 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=settings.allowed_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -160,11 +163,13 @@ async def load_simulation_endpoint(request: StartSimulationRequest):
     except ValueError as e:
         print(f"[ERROR] Validation error: {str(e)}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"[ERROR] Unexpected error loading simulation: {str(e)}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to load simulation: {str(e)}")
 
@@ -188,6 +193,15 @@ async def start_simulation():
     print("[DEBUG] Starting simulation loop...")
     sim_manager.simulation_task = asyncio.create_task(sim_manager.start_simulation(ws_manager))
     print("[DEBUG] Simulation loop task created")
+
+    # Fire-and-forget Telegram notification
+    config_name: Optional[str] = None
+    agent_count: Optional[int] = None
+    if sim_manager.model:
+        config_name = getattr(sim_manager.config, "name", None)
+        agent_count = len(sim_manager.model.agents) if sim_manager.model.agents else None
+    asyncio.create_task(notify_simulation_start(config_name=config_name, agent_count=agent_count))
+
     return {"status": "started", "message": "Simulation running"}
 
 
@@ -293,16 +307,16 @@ async def reset_simulation():
 async def set_simulation_speed(speed: float):
     """
     Set simulation speed
-    
+
     Args:
         speed: Speed multiplier (0.1 to 10.0, where 1.0 is normal speed)
     """
     # Validate speed
     if speed < 0.1 or speed > 10.0:
         raise HTTPException(status_code=400, detail="Speed must be between 0.1 and 10.0")
-    
+
     sim_manager.set_speed(speed)
-    
+
     return {"status": "success", "speed": speed, "update_rate": sim_manager.update_rate}
 
 
@@ -358,7 +372,14 @@ if __name__ == "__main__":
     import uvicorn
 
     print("Starting Warehouse Swarm Intelligence System")
-    print("API Documentation: http://localhost:8000/docs")
-    print("WebSocket: ws://localhost:8000/socket.io")
+    print(f"API Documentation: http://{settings.host}:{settings.port}/docs")
+    print(f"WebSocket: ws://{settings.host}:{settings.port}/socket.io")
+    print(f"Allowed origins: {settings.allowed_origins_list}")
 
-    uvicorn.run("backend.api.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    uvicorn.run(
+        "backend.api.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=True,
+        log_level="info",
+    )

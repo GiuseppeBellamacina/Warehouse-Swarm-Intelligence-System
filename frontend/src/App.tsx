@@ -60,6 +60,8 @@ function App() {
     isRunning,
     isPaused,
     isLoaded,
+    backendStatus,
+    wakeBackend,
     loadConfig,
     startSimulation,
     uploadConfig: _uploadConfig,
@@ -101,16 +103,59 @@ function App() {
             Multi-Agent Object Retrieval Simulation
           </p>
         </div>
-        {/* Connection badge */}
-        <span
-          className={`ml-auto text-xs px-2 py-1 rounded-full font-medium ${
-            connected
-              ? "bg-green-900 text-green-300"
-              : "bg-red-900 text-red-300"
-          }`}
-        >
-          {connected ? "● Connected" : "○ Disconnected"}
-        </span>
+        {/* Backend status + wake-up */}
+        <div className="ml-auto flex items-center gap-2">
+          <span
+            className={`text-xs px-2 py-1 rounded-full font-medium ${
+              connected
+                ? "bg-green-900 text-green-300"
+                : backendStatus === "waking"
+                  ? "bg-yellow-900 text-yellow-300"
+                  : "bg-red-900 text-red-300"
+            }`}
+          >
+            {connected
+              ? "● Connected"
+              : backendStatus === "waking"
+                ? "◌ Starting…"
+                : "○ Disconnected"}
+          </span>
+
+          {/* Show wake-up button only when backend is offline/unknown and not yet connected */}
+          {!connected && backendStatus !== "waking" && (
+            <button
+              onClick={wakeBackend}
+              className="text-xs px-3 py-1 rounded-full font-medium bg-blue-700 hover:bg-blue-600 active:bg-blue-500 text-white transition-colors"
+              title="Il backend Render potrebbe essere in sleep. Clicca per riattivarlo."
+            >
+              ⚡ Wake up backend
+            </button>
+          )}
+
+          {/* Spinner while waking */}
+          {backendStatus === "waking" && (
+            <svg
+              className="animate-spin h-4 w-4 text-yellow-400"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8v8H4z"
+              />
+            </svg>
+          )}
+        </div>
       </header>
 
       {/* ── Main area ── */}

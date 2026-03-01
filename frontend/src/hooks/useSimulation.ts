@@ -4,7 +4,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { SimulationState, SimulationConfig } from "../types/simulation";
 
-const BACKEND_URL = "http://localhost:8000";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
+
+export type BackendStatus = "unknown" | "waking" | "online" | "offline";
 
 export const useSimulation = () => {
   const [state, setState] = useState<SimulationState | null>(null);
@@ -12,6 +14,7 @@ export const useSimulation = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus>("unknown");
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
@@ -69,6 +72,42 @@ export const useSimulation = () => {
     return () => {
       socket.disconnect();
     };
+  }, []);
+
+  // Initial health check on mount
+  useEffect(() => {
+    fetch(`${BACKEND_URL}/api/health`)
+      .then((r) =>
+        r.ok ? setBackendStatus("online") : setBackendStatus("offline"),
+      )
+      .catch(() => setBackendStatus("offline"));
+  }, []);
+
+  /**
+   * Poll /api/health until the backend responds (Render cold start ~30 s).
+   * Retries every 3 s for up to 60 s total.
+   */
+  const wakeBackend = useCallback(async () => {
+    setBackendStatus("waking");
+    const MAX_ATTEMPTS = 20; // 20 × 3 s = 60 s
+    const INTERVAL_MS = 3000;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/health`);
+        if (res.ok) {
+          setBackendStatus("online");
+          // socket.io auto-reconnects; nudge it if it's still disconnected
+          socketRef.current?.connect();
+          return;
+        }
+      } catch {
+        // backend still sleeping — swallow and retry
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, INTERVAL_MS));
+    }
+
+    setBackendStatus("offline");
   }, []);
 
   /** Load a config: initialises backend + broadcasts step 0, does NOT start the loop */
@@ -200,6 +239,8 @@ export const useSimulation = () => {
     isRunning,
     isPaused,
     isLoaded,
+    backendStatus,
+    wakeBackend,
     loadConfig,
     startSimulation,
     uploadConfig,

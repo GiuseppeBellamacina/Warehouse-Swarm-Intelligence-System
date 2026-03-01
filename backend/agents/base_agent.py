@@ -7,14 +7,19 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 
-from backend.core.communication import ClearWayMessage, MapDataMessage, MapSharingSystem, ObjectLocationMessage
+from backend.core.communication import (
+    ClearWayMessage,
+    MapDataMessage,
+    MapSharingSystem,
+    ObjectLocationMessage,
+)
 from backend.core.decision_maker import DecisionMaker
 from backend.core.framework import Agent
 from backend.core.grid_manager import CellType
 
 if TYPE_CHECKING:
-    from backend.core.warehouse_model import WarehouseModel
     from backend.algorithms.pathfinding import AStarPathfinder
+    from backend.core.warehouse_model import WarehouseModel
 
 
 def pos_to_tuple(pos) -> Tuple[int, int]:
@@ -97,7 +102,9 @@ class BaseAgent(Agent):
         self.wait_counter: int = 0  # Counter for waiting when path blocked by other agents
         self.position_history: List[Tuple[int, int]] = []  # Track recent positions to detect loops
         self.max_history_length: int = 15  # Keep last 15 positions
-        self.unreachable_targets: dict[Tuple[int, int], int] = {}  # Track unreachable targets {position: step}
+        self.unreachable_targets: dict[Tuple[int, int], int] = (
+            {}
+        )  # Track unreachable targets {position: step}
 
         # Optional A* pathfinder — set by subclasses that support it (e.g. RetrieverAgent)
         self.pathfinder: Optional["AStarPathfinder"] = None
@@ -128,11 +135,17 @@ class BaseAgent(Agent):
     def recharge_energy(self, amount: float) -> None:
         """Recharge energy, capped at max_energy"""
         self.energy = min(self.max_energy, self.energy + amount)
-    
-    def log_message(self, direction: str, message_type: str, details: str, target_ids: Optional[List[int]] = None) -> None:
+
+    def log_message(
+        self,
+        direction: str,
+        message_type: str,
+        details: str,
+        target_ids: Optional[List[int]] = None,
+    ) -> None:
         """
         Log a message for UI display
-        
+
         Args:
             direction: "sent" or "received"
             message_type: Type of message (e.g., "object_location", "task_assignment")
@@ -144,13 +157,13 @@ class BaseAgent(Agent):
             "direction": direction,
             "type": message_type,
             "details": details,
-            "targets": target_ids or []
+            "targets": target_ids or [],
         }
         self.recent_messages.append(message_entry)
-        
+
         # Keep only last N messages
         if len(self.recent_messages) > self.max_messages:
-            self.recent_messages = self.recent_messages[-self.max_messages:]
+            self.recent_messages = self.recent_messages[-self.max_messages :]
 
     def is_at_warehouse(self) -> bool:
         """Check if agent is at warehouse entrance"""
@@ -196,11 +209,15 @@ class BaseAgent(Agent):
                     self.known_objects[(x, y)] = 1.0
 
                 # Track discovered warehouses (entrance cells are navigation targets)
-                if cell_type in (
-                    CellType.WAREHOUSE,
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                ) and (x, y) not in self.known_warehouses:
+                if (
+                    cell_type
+                    in (
+                        CellType.WAREHOUSE,
+                        CellType.WAREHOUSE_ENTRANCE,
+                        CellType.WAREHOUSE_EXIT,
+                    )
+                    and (x, y) not in self.known_warehouses
+                ):
                     self.known_warehouses.append((x, y))
 
     def get_closest_warehouse(self) -> Optional[Tuple[int, int]]:
@@ -217,10 +234,10 @@ class BaseAgent(Agent):
 
         # Prefer entrance cells if we know some
         entrances = [
-            wh for wh in self.known_warehouses
-            if self.model.grid.get_cell_type(*wh) in (
-                CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT
-            )
+            wh
+            for wh in self.known_warehouses
+            if self.model.grid.get_cell_type(*wh)
+            in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
         ]
         candidates = entrances if entrances else self.known_warehouses
 
@@ -369,14 +386,15 @@ class BaseAgent(Agent):
         my_pos = pos_to_tuple(self.pos)
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             np_ = (my_pos[0] + dx, my_pos[1] + dy)
-            if not (0 <= np_[0] < self.model.grid.width and
-                    0 <= np_[1] < self.model.grid.height):
+            if not (0 <= np_[0] < self.model.grid.width and 0 <= np_[1] < self.model.grid.height):
                 continue
             nc = self.model.grid.get_cell_type(*np_)
-            if (nc not in (
-                    CellType.OBSTACLE, CellType.WAREHOUSE,
-                    CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT,
-            ) and self.model.grid.is_cell_empty(np_)):
+            if nc not in (
+                CellType.OBSTACLE,
+                CellType.WAREHOUSE,
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
+            ) and self.model.grid.is_cell_empty(np_):
                 self.model.grid.move_agent(self, np_)
                 print(
                     f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
@@ -417,8 +435,7 @@ class BaseAgent(Agent):
         # Find who is blocking adjacent escape cells and chain to them
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             np_ = (my_pos[0] + dx, my_pos[1] + dy)
-            if not (0 <= np_[0] < self.model.grid.width and
-                    0 <= np_[1] < self.model.grid.height):
+            if not (0 <= np_[0] < self.model.grid.width and 0 <= np_[1] < self.model.grid.height):
                 continue
             nc = self.model.grid.get_cell_type(*np_)
             if nc in (CellType.OBSTACLE,):
@@ -492,13 +509,17 @@ class BaseAgent(Agent):
                 self.path = []  # stale — destination changed
             if not self.path or self.stuck_counter > 5:
                 new_path = self.pathfinder.find_path(
-                    pos_tuple, target, other_agent_positions,
+                    pos_tuple,
+                    target,
+                    other_agent_positions,
                     forbidden_types=forbidden_types,
                 )
 
                 # If no path found, target is unreachable
                 if new_path is None:
-                    print(f"[{self.role.upper()} {self.unique_id}] PATH: No path found to {target}, target unreachable")
+                    print(
+                        f"[{self.role.upper()} {self.unique_id}] PATH: No path found to {target}, target unreachable"
+                    )
                     # Blacklist this target for 100 steps
                     self.unreachable_targets[target] = self.model.current_step
                     self.target_position = None
@@ -506,7 +527,7 @@ class BaseAgent(Agent):
                     return False
 
                 self.path = new_path
-                
+
                 # Remove first element (current position) if path exists
                 if self.path and len(self.path) > 1 and self.path[0] == pos_tuple:
                     self.path.pop(0)
@@ -514,7 +535,7 @@ class BaseAgent(Agent):
             # Follow path if exists
             if self.path and len(self.path) > 0:
                 next_pos = self.path[0]
-                
+
                 # Check if next position is walkable and not occupied
                 if self.model.grid.is_walkable(*next_pos):
                     # Check collision with other agents
@@ -532,13 +553,15 @@ class BaseAgent(Agent):
                             if agent.pos and pos_to_tuple(agent.pos) == next_pos:
                                 blocking_agent = agent
                                 break
-                        
+
                         self.stuck_counter += 1
-                        
+
                         # If blocking agent has higher ID (lower priority), wait less
                         # If blocking agent has lower ID (higher priority), wait more
-                        has_priority = blocking_agent is None or self.unique_id < blocking_agent.unique_id
-                        
+                        has_priority = (
+                            blocking_agent is None or self.unique_id < blocking_agent.unique_id
+                        )
+
                         # Check if we should wait or replan
                         if self.stuck_counter <= 3 and has_priority:
                             # Short wait with priority - just wait a bit
@@ -551,7 +574,9 @@ class BaseAgent(Agent):
                             self.path = []
                         else:
                             # Too long stuck - give up on this target
-                            print(f"[{self.role.upper()} {self.unique_id}] STUCK: Too long stuck at {pos_tuple}, abandoning target {target}")
+                            print(
+                                f"[{self.role.upper()} {self.unique_id}] STUCK: Too long stuck at {pos_tuple}, abandoning target {target}"
+                            )
                             self.target_position = None
                             self.path = []
                             self.stuck_counter = 0
@@ -597,20 +622,22 @@ class BaseAgent(Agent):
             self.stuck_counter = 0
             self.wait_counter = 0
             self.last_position = pos_to_tuple(self.pos) if self.pos else pos_tuple
-            
+
             # Track position history to detect loops
             current_pos = pos_to_tuple(self.pos) if self.pos else pos_tuple
             self.position_history.append(current_pos)
             if len(self.position_history) > self.max_history_length:
                 self.position_history.pop(0)
-            
+
             # Detect loop: if we're oscillating between 2-3 positions
             if len(self.position_history) >= 10:
                 # Count unique positions in recent history
                 recent_positions = set(self.position_history[-10:])
                 if len(recent_positions) <= 3:
                     # Oscillating between few positions - clear target
-                    print(f"[{self.role.upper()} {self.unique_id}] LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}")
+                    print(
+                        f"[{self.role.upper()} {self.unique_id}] LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}"
+                    )
                     self.target_position = None
                     self.path = []
                     self.stuck_counter = 0
@@ -620,7 +647,9 @@ class BaseAgent(Agent):
             self.stuck_counter += 1
             # If stuck for too long, clear target and path to find alternative
             if self.stuck_counter > 20:
-                print(f"[{self.role.upper()} {self.unique_id}] STUCK: Stuck for {self.stuck_counter} steps at {pos_to_tuple(self.pos)}, abandoning target {self.target_position}")
+                print(
+                    f"[{self.role.upper()} {self.unique_id}] STUCK: Stuck for {self.stuck_counter} steps at {pos_to_tuple(self.pos)}, abandoning target {self.target_position}"
+                )
                 self.target_position = None
                 self.path = []
                 self.stuck_counter = 0
@@ -672,31 +701,37 @@ class BaseAgent(Agent):
         if self.pos:
             pos_tuple = pos_to_tuple(self.pos)
             cell_type = self.model.grid.get_cell_type(*pos_tuple)
-            
+
             # If idle/exploring on entrance/exit, move away to unblock
             if cell_type in [CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT]:
                 if self.state in [AgentState.IDLE, AgentState.EXPLORING]:
                     # Try to move to adjacent non-entrance/exit cell
                     for dx, dy in [(1, 0), (0, 1), (-1, 0), (0, -1)]:
                         new_pos = (pos_tuple[0] + dx, pos_tuple[1] + dy)
-                        if (0 <= new_pos[0] < self.model.grid.width and 
-                            0 <= new_pos[1] < self.model.grid.height):
+                        if (
+                            0 <= new_pos[0] < self.model.grid.width
+                            and 0 <= new_pos[1] < self.model.grid.height
+                        ):
                             new_cell_type = self.model.grid.get_cell_type(*new_pos)
-                            if (new_cell_type not in [CellType.OBSTACLE,
-                                                       CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE,
-                                                       CellType.WAREHOUSE_EXIT] and
-                                self.model.grid.is_cell_empty(new_pos)):
+                            if new_cell_type not in [
+                                CellType.OBSTACLE,
+                                CellType.WAREHOUSE,
+                                CellType.WAREHOUSE_ENTRANCE,
+                                CellType.WAREHOUSE_EXIT,
+                            ] and self.model.grid.is_cell_empty(new_pos):
                                 self.model.grid.move_agent(self, new_pos)
-                                print(f"[{self.role.upper()} {self.unique_id}] UNBLOCK: Moving out of entrance/exit to {new_pos}")
+                                print(
+                                    f"[{self.role.upper()} {self.unique_id}] UNBLOCK: Moving out of entrance/exit to {new_pos}"
+                                )
                                 return
-        
+
         # Subclasses override this to implement specific behavior
         pass
 
     def step(self) -> None:
         """
         Execute one step of the agent's behavior
-        
+
         Cycle: SENSE -> COMMUNICATE (receive) -> DECIDE -> ACT (move OR send)
         """
         if self.energy <= 0:

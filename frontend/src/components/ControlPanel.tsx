@@ -3,6 +3,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { SimulationConfig } from "../types/simulation";
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
+
 interface ControlPanelProps {
   connected: boolean;
   isRunning: boolean;
@@ -182,7 +184,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   useEffect(() => {
     const fetchList = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/configs");
+        const res = await fetch(`${BACKEND_URL}/api/configs`);
         if (!res.ok) return;
         const data = await res.json();
         const cfgs: string[] = data.configs ?? [];
@@ -201,9 +203,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     const load = async () => {
       setIsFetching(true);
       try {
-        const res = await fetch(
-          `http://localhost:8000/configs/${configName}.json`,
-        );
+        const res = await fetch(`${BACKEND_URL}/configs/${configName}.json`);
         if (!res.ok) return;
         const cfg: SimulationConfig = await res.json();
         setRawConfig(cfg);

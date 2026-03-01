@@ -2,7 +2,7 @@
 Coordinator Agent - Strategic planner managing task assignments
 """
 
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
 from backend.algorithms.exploration import FrontierExplorer
@@ -63,24 +63,24 @@ class CoordinatorAgent(BaseAgent):
         self.known_objects: Dict[Tuple[int, int], float] = {}
         self.assigned_tasks: Dict[int, Tuple[int, int]] = {}  # retriever_id -> object_pos
         self.available_retrievers: List[int] = []
-        
+
         # Retriever state tracking (populated via TaskStatusMessage — authoritative)
-        self.retriever_states: Dict[int, str] = {}        # retriever_id -> state str
+        self.retriever_states: Dict[int, str] = {}  # retriever_id -> state str
         self.retriever_task_queues: Dict[int, List] = {}  # retriever_id -> declared queue
-        self.retriever_carrying: Dict[int, int] = {}      # retriever_id -> carrying count
-        self.retriever_energy: Dict[int, float] = {}      # retriever_id -> energy
-        self.retriever_capacity: Dict[int, int] = {}      # retriever_id -> carrying_capacity
-        self.retriever_positions: Dict[int, Tuple] = {}   # retriever_id -> position
+        self.retriever_carrying: Dict[int, int] = {}  # retriever_id -> carrying count
+        self.retriever_energy: Dict[int, float] = {}  # retriever_id -> energy
+        self.retriever_capacity: Dict[int, int] = {}  # retriever_id -> carrying_capacity
+        self.retriever_positions: Dict[int, Tuple] = {}  # retriever_id -> position
 
         # Objects currently being collected (prevents double-assignment)
         self.objects_being_collected: Set[Tuple[int, int]] = set()
 
         # Hint: which retriever spotted each object (used for opportunistic assignment)
         self._spotted_by: Dict[Tuple[int, int], int] = {}
-        
+
         # Communication flag
         self.tasks_to_assign: List[Tuple[int, Tuple[int, int], float]] = []
-        
+
         # Coordinator sync: track last step we synced with each other coordinator
         self.last_sync_step: Dict[int, int] = {}
 
@@ -88,7 +88,7 @@ class CoordinatorAgent(BaseAgent):
         self.recharge_attempt_start: Optional[int] = None
 
         # Warehouse recharge sub-state machine (analogous to retriever _wh_step)
-        self._coord_wh_step: Optional[str] = None   # None | "approach" | "recharge" | "exit"
+        self._coord_wh_step: Optional[str] = None  # None | "approach" | "recharge" | "exit"
         self._coord_wh_station: Optional[Dict] = None
         # Dedicated slot for the recharge queue cell so target_position can't corrupt it
         self._coord_wh_recharge_cell: Optional[Tuple[int, int]] = None
@@ -214,13 +214,15 @@ class CoordinatorAgent(BaseAgent):
         # Reset communication flag
         self.should_communicate_this_step = False
         self.tasks_to_assign = []
-        
+
         # Check if need to recharge
         if self.energy < 50:
             if self.state != AgentState.RECHARGING:
                 closest_wh = self.get_closest_warehouse()
                 if closest_wh:
-                    print(f"[COORD {self.unique_id}] LOW-E ({self.energy:.1f}), heading to WH {closest_wh}")
+                    print(
+                        f"[COORD {self.unique_id}] LOW-E ({self.energy:.1f}), heading to WH {closest_wh}"
+                    )
                     self.state = AgentState.RECHARGING
                     self.target_position = closest_wh
                     self.recharge_attempt_start = self.model.current_step
@@ -233,7 +235,9 @@ class CoordinatorAgent(BaseAgent):
                 if self.recharge_attempt_start is not None:
                     steps_attempting = self.model.current_step - self.recharge_attempt_start
                     if steps_attempting > 50:
-                        print(f"[COORD {self.unique_id}] EMERGENCY: cannot reach WH after {steps_attempting} steps")
+                        print(
+                            f"[COORD {self.unique_id}] EMERGENCY: cannot reach WH after {steps_attempting} steps"
+                        )
                         # Full reset — sub-machine MUST be cleared or step_act will keep running it
                         self._coord_wh_step = None
                         self._coord_wh_station = None
@@ -351,7 +355,9 @@ class CoordinatorAgent(BaseAgent):
         candidates.sort(key=lambda x: x[0], reverse=True)
 
         assigned_objects: Set[Tuple] = set()
-        extra_slots: Dict[int, int] = {rid: info["free_slots"] for rid, info in retriever_info.items()}
+        extra_slots: Dict[int, int] = {
+            rid: info["free_slots"] for rid, info in retriever_info.items()
+        }
 
         for priority, rid, obj_pos in candidates:
             if extra_slots.get(rid, 0) <= 0:
@@ -368,9 +374,7 @@ class CoordinatorAgent(BaseAgent):
         Rate-limited to once every 10 steps per coordinator pair.
         """
         nearby = self.get_nearby_agents(self.communication_radius)
-        other_coords = [
-            a for a in nearby if getattr(a, "role", None) == "coordinator"
-        ]
+        other_coords = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
         if not other_coords:
             return
 
@@ -402,7 +406,7 @@ class CoordinatorAgent(BaseAgent):
     def _decide_exploration(self) -> None:
         """Decide exploration action when idle - stay near managed agents"""
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-        
+
         # Calculate center of mass of managed agents (retrievers and nearby scouts)
         agent_positions = []
         for agent in self.model.agents:
@@ -415,25 +419,27 @@ class CoordinatorAgent(BaseAgent):
                     # Only consider agents within reasonable range (< 20 cells)
                     if distance < 20:
                         agent_positions.append(agent_pos)
-        
+
         # Calculate centroid if we have agents nearby
         max_distance_from_agents = 12  # Maximum distance coordinator should be from agent centroid
-        
+
         if len(agent_positions) > 0:
             centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
             centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
             centroid = (int(centroid_x), int(centroid_y))
-            
+
             # Check distance from centroid
             dist_from_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
-            
+
             # If too far from agents, move back towards them
             if dist_from_centroid > max_distance_from_agents:
-                print(f"[COORD {self.unique_id}] REPOSITION: Too far from agents (distance: {dist_from_centroid}), moving towards centroid {centroid}")
+                print(
+                    f"[COORD {self.unique_id}] REPOSITION: Too far from agents (distance: {dist_from_centroid}), moving towards centroid {centroid}"
+                )
                 self.target_position = centroid
                 self.state = AgentState.EXPLORING
                 return
-        
+
         # Normal exploration but prefer staying near agents
         frontiers = FrontierExplorer.find_frontiers(self.local_map)
 
@@ -446,15 +452,17 @@ class CoordinatorAgent(BaseAgent):
                 centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
                 centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
                 centroid = (int(centroid_x), int(centroid_y))
-                
+
                 # Weight frontiers by distance from centroid (closer is better)
                 weighted_frontiers = []
                 for frontier_pos, cluster_size in frontiers:
-                    dist_from_centroid = abs(frontier_pos[0] - centroid[0]) + abs(frontier_pos[1] - centroid[1])
+                    dist_from_centroid = abs(frontier_pos[0] - centroid[0]) + abs(
+                        frontier_pos[1] - centroid[1]
+                    )
                     # Penalize frontiers far from centroid
                     if dist_from_centroid < max_distance_from_agents * 1.5:
                         weighted_frontiers.append((frontier_pos, cluster_size))
-                
+
                 # Use weighted frontiers if any, otherwise use all
                 frontiers = weighted_frontiers if weighted_frontiers else frontiers
 
@@ -464,14 +472,18 @@ class CoordinatorAgent(BaseAgent):
 
             if best_frontier:
                 # Only update target if significantly different or we don't have one
-                if not self.target_position or abs(best_frontier[0] - self.target_position[0]) > 5 or abs(best_frontier[1] - self.target_position[1]) > 5:
+                if (
+                    not self.target_position
+                    or abs(best_frontier[0] - self.target_position[0]) > 5
+                    or abs(best_frontier[1] - self.target_position[1]) > 5
+                ):
                     self.target_position = best_frontier
                     self.path = []  # Clear old path
                 self.state = AgentState.EXPLORING
             else:
                 self.state = AgentState.IDLE
         else:
-            # No frontiers, stay idle or random explore  
+            # No frontiers, stay idle or random explore
             if not self.target_position:
                 self.state = AgentState.IDLE
 
@@ -502,6 +514,7 @@ class CoordinatorAgent(BaseAgent):
         elif self.state == AgentState.IDLE:
             # Light random walk to maintain map coverage
             from backend.algorithms.exploration import RandomWalkExplorer
+
             my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
             new_pos = RandomWalkExplorer.get_random_walk_direction(
                 my_pos,
@@ -547,7 +560,8 @@ class CoordinatorAgent(BaseAgent):
             at_or_inside = (
                 not entrance
                 or my_pos == entrance
-                or cell_type in (
+                or cell_type
+                in (
                     CellType.WAREHOUSE,
                     CellType.WAREHOUSE_ENTRANCE,
                     CellType.WAREHOUSE_EXIT,
@@ -572,7 +586,9 @@ class CoordinatorAgent(BaseAgent):
                     # Store in dedicated attribute so target_position changes can't corrupt it
                     self._coord_wh_recharge_cell = queue_cell
                     self.target_position = queue_cell
-                    print(f"[COORD {self.unique_id}] RECHARGE: at entrance, joining queue at {queue_cell}")
+                    print(
+                        f"[COORD {self.unique_id}] RECHARGE: at entrance, joining queue at {queue_cell}"
+                    )
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
@@ -636,7 +652,8 @@ class CoordinatorAgent(BaseAgent):
             left_wh = (
                 not exit_cell
                 or my_pos == exit_cell
-                or cell_type not in (
+                or cell_type
+                not in (
                     CellType.WAREHOUSE,
                     CellType.WAREHOUSE_ENTRANCE,
                     CellType.WAREHOUSE_EXIT,
@@ -651,14 +668,28 @@ class CoordinatorAgent(BaseAgent):
                 self.recharge_attempt_start = None
                 # Find a walkable cell just outside the warehouse to move to immediately
                 if self.pos:
-                    for dx, dy in [(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]:
+                    for dx, dy in [
+                        (1, 0),
+                        (-1, 0),
+                        (0, 1),
+                        (0, -1),
+                        (1, 1),
+                        (-1, 1),
+                        (1, -1),
+                        (-1, -1),
+                    ]:
                         np_ = (my_pos[0] + dx, my_pos[1] + dy)
-                        if (0 <= np_[0] < self.model.grid.width and
-                                0 <= np_[1] < self.model.grid.height):
+                        if (
+                            0 <= np_[0] < self.model.grid.width
+                            and 0 <= np_[1] < self.model.grid.height
+                        ):
                             nc = self.model.grid.get_cell_type(*np_)
-                            if (nc not in (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE,
-                                          CellType.WAREHOUSE_EXIT, CellType.OBSTACLE)
-                                    and self.model.grid.is_cell_empty(np_)):
+                            if nc not in (
+                                CellType.WAREHOUSE,
+                                CellType.WAREHOUSE_ENTRANCE,
+                                CellType.WAREHOUSE_EXIT,
+                                CellType.OBSTACLE,
+                            ) and self.model.grid.is_cell_empty(np_):
                                 self.target_position = np_
                                 self.model.grid.move_agent(self, np_)
                                 break

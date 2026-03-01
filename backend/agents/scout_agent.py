@@ -3,7 +3,7 @@ Scout Agent - Fast explorer with wide vision
 """
 
 import random
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
 from backend.algorithms.exploration import FrontierExplorer, RandomWalkExplorer
@@ -58,7 +58,7 @@ class ScoutAgent(BaseAgent):
         # Track discovered objects to communicate
         self.newly_discovered_objects: List[Tuple[Tuple[int, int], float]] = []
         self._discovery_age: int = 0  # steps without a coordinator to receive discoveries
-        
+
         # Track repeated failures on same target
         self.last_failed_target: Optional[Tuple[int, int]] = None
         self.consecutive_failures_on_target = 0
@@ -84,16 +84,18 @@ class ScoutAgent(BaseAgent):
         """Perceive environment and track newly discovered objects"""
         # Store old known objects
         old_objects = set(self.known_objects.keys())
-        
+
         # Call parent sense
         super().step_sense()
-        
+
         # Check for newly discovered objects
         new_objects = set(self.known_objects.keys())
         discovered = new_objects - old_objects
-        
+
         if discovered:
-            print(f"[SCOUT {self.unique_id}] SENSE: Discovered {len(discovered)} new objects at positions: {list(discovered)}")
+            print(
+                f"[SCOUT {self.unique_id}] SENSE: Discovered {len(discovered)} new objects at positions: {list(discovered)}"
+            )
             # Add to list of objects to communicate
             for obj_pos in discovered:
                 obj_value = self.known_objects.get(obj_pos, 1.0)
@@ -112,10 +114,7 @@ class ScoutAgent(BaseAgent):
         if self.newly_discovered_objects:
             self._discovery_age += 1
             nearby = self.get_nearby_agents(self.communication_radius)
-            coordinators = [
-                a for a in nearby
-                if getattr(a, "role", None) == "coordinator"
-            ]
+            coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
             if coordinators:
                 self.should_communicate_this_step = True
                 return
@@ -136,7 +135,8 @@ class ScoutAgent(BaseAgent):
                 # Start the warehouse recharge sub-state machine
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
                 visible_entrances = [
-                    wh for wh in self.known_warehouses
+                    wh
+                    for wh in self.known_warehouses
                     if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
                 ]
                 station = self.model.get_best_warehouse_for(
@@ -179,19 +179,15 @@ class ScoutAgent(BaseAgent):
             if getattr(a, "role", None) == "scout" and a.pos and pos_to_tuple(a.pos) != my_pos
         ]
         anti_clustered = [
-            f for f in valid_frontiers
-            if all(
-                abs(f[0][0] - sp[0]) + abs(f[0][1] - sp[1]) >= 8
-                for sp in scout_positions
-            )
+            f
+            for f in valid_frontiers
+            if all(abs(f[0][0] - sp[0]) + abs(f[0][1] - sp[1]) >= 8 for sp in scout_positions)
         ]
         frontiers_to_use = anti_clustered if anti_clustered else valid_frontiers
 
         if frontiers_to_use:
             nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
-            best = FrontierExplorer.select_best_frontier(
-                frontiers_to_use, my_pos, nearby_positions
-            )
+            best = FrontierExplorer.select_best_frontier(frontiers_to_use, my_pos, nearby_positions)
             if best:
                 if (
                     not self.target_position
@@ -281,9 +277,7 @@ class ScoutAgent(BaseAgent):
                             f"{self.target_position}"
                         )
                         if self.target_position:
-                            self.unreachable_targets[self.target_position] = (
-                                self.model.current_step
-                            )
+                            self.unreachable_targets[self.target_position] = self.model.current_step
                         self.target_position = None
                         self.path = []
                         self.state = AgentState.EXPLORING
@@ -351,7 +345,9 @@ class ScoutAgent(BaseAgent):
                     queue_cell = self.model.get_queue_slot(station)
                     self._scout_wh_step = "recharge"
                     self.target_position = queue_cell
-                    print(f"[SCOUT {self.unique_id}] WH: at entrance, joining queue at {queue_cell}")
+                    print(
+                        f"[SCOUT {self.unique_id}] WH: at entrance, joining queue at {queue_cell}"
+                    )
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
@@ -369,7 +365,8 @@ class ScoutAgent(BaseAgent):
             at_recharge = (
                 recharge_cell is not None
                 and my_pos == recharge_cell
-                and cell_type not in (
+                and cell_type
+                not in (
                     CellType.WAREHOUSE_ENTRANCE,
                     CellType.WAREHOUSE_EXIT,
                 )
@@ -397,7 +394,8 @@ class ScoutAgent(BaseAgent):
             left_wh = (
                 not exit_cell
                 or my_pos == exit_cell
-                or cell_type not in (
+                or cell_type
+                not in (
                     CellType.WAREHOUSE,
                     CellType.WAREHOUSE_ENTRANCE,
                     CellType.WAREHOUSE_EXIT,
@@ -414,12 +412,17 @@ class ScoutAgent(BaseAgent):
                 if my_pos == exit_cell and self.pos:
                     for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
                         np_ = (my_pos[0] + dx, my_pos[1] + dy)
-                        if (0 <= np_[0] < self.model.grid.width and
-                                0 <= np_[1] < self.model.grid.height):
+                        if (
+                            0 <= np_[0] < self.model.grid.width
+                            and 0 <= np_[1] < self.model.grid.height
+                        ):
                             nc = self.model.grid.get_cell_type(*np_)
-                            if (nc not in (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE,
-                                          CellType.WAREHOUSE_EXIT, CellType.OBSTACLE)
-                                    and self.model.grid.is_cell_empty(np_)):
+                            if nc not in (
+                                CellType.WAREHOUSE,
+                                CellType.WAREHOUSE_ENTRANCE,
+                                CellType.WAREHOUSE_EXIT,
+                                CellType.OBSTACLE,
+                            ) and self.model.grid.is_cell_empty(np_):
                                 self.model.grid.move_agent(self, np_)
                                 break
             else:
@@ -430,9 +433,7 @@ class ScoutAgent(BaseAgent):
         """Send object location messages to nearby coordinators"""
         # Get nearby coordinators
         nearby = self.get_nearby_agents(self.communication_radius)
-        coordinators = [
-            a for a in nearby if getattr(a, "role", None) == "coordinator"
-        ]
+        coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
 
         if not coordinators:
             return

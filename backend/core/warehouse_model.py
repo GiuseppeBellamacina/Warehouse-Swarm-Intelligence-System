@@ -144,10 +144,7 @@ class WarehouseModel(Model):
             ex, ey = entrance
 
             # Assign cells within Manhattan-3 to this entrance
-            nearby_cells = [
-                c for c in interior_cells
-                if abs(c[0] - ex) + abs(c[1] - ey) <= 3
-            ]
+            nearby_cells = [c for c in interior_cells if abs(c[0] - ex) + abs(c[1] - ey) <= 3]
 
             if not nearby_cells:
                 nearby_cells = interior_cells  # fallback (single station)
@@ -179,7 +176,7 @@ class WarehouseModel(Model):
             queue_cells = sorted(
                 nearby_cells,
                 key=lambda c: abs(c[0] - ex) + abs(c[1] - ey),
-                reverse=True,   # farthest from entrance = slot 0 (deepest inside)
+                reverse=True,  # farthest from entrance = slot 0 (deepest inside)
             )
 
             self.warehouse_stations.append(
@@ -203,9 +200,7 @@ class WarehouseModel(Model):
         if self.warehouse_stations:
             return min(
                 self.warehouse_stations,
-                key=lambda s: (
-                    abs(s["entrance"][0] - pos[0]) + abs(s["entrance"][1] - pos[1])
-                ),
+                key=lambda s: (abs(s["entrance"][0] - pos[0]) + abs(s["entrance"][1] - pos[1])),
             )
         # Fallback for configs without explicit entrances
         wp = self.warehouse_position
@@ -283,10 +278,7 @@ class WarehouseModel(Model):
                     candidates.append(station)
                     seen.add(key)
         else:
-            candidates = [
-                s for s in self.warehouse_stations
-                if s["entrance"] != excluded_entrance
-            ]
+            candidates = [s for s in self.warehouse_stations if s["entrance"] != excluded_entrance]
 
         if not candidates:
             # Fall back to absolute nearest (ignore exclusion)
@@ -544,7 +536,11 @@ class WarehouseModel(Model):
                     "vision_radius": getattr(agent, "vision_radius", 5),
                     "communication_radius": getattr(agent, "communication_radius", 10),
                     "recent_messages": getattr(agent, "recent_messages", []),
-                    "path": [{"x": p[0], "y": p[1]} for p in getattr(agent, "path", [])] if getattr(agent, "path", None) else [],
+                    "path": (
+                        [{"x": p[0], "y": p[1]} for p in getattr(agent, "path", [])]
+                        if getattr(agent, "path", None)
+                        else []
+                    ),
                 }
                 agents_data.append(agent_data)
 
