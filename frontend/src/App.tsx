@@ -121,17 +121,102 @@ function App() {
     <div className="h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
       {/* ── Free-hosting notice ── */}
       {!connected && (
-        <div className="flex-shrink-0 bg-amber-950 border-b border-amber-700 px-6 py-3 flex items-start gap-3">
-          <span className="text-amber-400 text-xl leading-none mt-0.5">⚠️</span>
-          <p className="text-amber-200 text-sm leading-snug">
-            <span className="font-bold">
-              Il backend è ospitato gratuitamente su Render.
-            </span>{" "}
-            Dopo un periodo di inattività il server va in sleep e impiega circa{" "}
-            <span className="font-semibold">30-60 secondi</span> per riavviarsi.
-            Premi <span className="font-semibold">⚡ Wake up backend</span> e
-            attendi il riavvio.
-          </p>
+        <div
+          className={`flex-shrink-0 border-b px-6 py-4 flex items-center gap-5 ${
+            backendStatus === "waking"
+              ? "bg-yellow-950 border-yellow-700"
+              : "bg-amber-950 border-amber-800"
+          }`}
+        >
+          {/* Icon / spinner */}
+          <div className="flex-shrink-0">
+            {backendStatus === "waking" ? (
+              <svg
+                className="animate-spin h-7 w-7 text-yellow-400"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8v4l3-3-3-3v4a10 10 0 100 20v-4l-3 3 3 3v-4a8 8 0 01-8-8z"
+                />
+              </svg>
+            ) : (
+              <span className="text-3xl leading-none select-none">🌙</span>
+            )}
+          </div>
+
+          {/* Text */}
+          <div className="flex-1 min-w-0">
+            <p
+              className={`font-bold text-sm ${backendStatus === "waking" ? "text-yellow-300" : "text-amber-300"}`}
+            >
+              {backendStatus === "waking"
+                ? "Avvio del backend in corso…"
+                : "Il backend è in sleep (hosting gratuito)"}
+            </p>
+            <p
+              className={`text-xs mt-0.5 ${backendStatus === "waking" ? "text-yellow-400/80" : "text-amber-400/80"}`}
+            >
+              {backendStatus === "waking"
+                ? "Il server Render si sta riavviando. L'operazione richiede circa 30–60 secondi — la pagina si aggiornerà automaticamente."
+                : "Dopo un periodo di inattività il server va in sleep. Premi il pulsante per risvegliarlo, poi attendi il riavvio (30–60 s)."}
+            </p>
+          </div>
+
+          {/* Wake-up button — inline in the banner */}
+          {backendStatus !== "waking" && (
+            <button
+              onClick={handleWake}
+              disabled={wakeCooldown > 0}
+              className="flex-shrink-0 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg font-semibold
+                bg-amber-500 hover:bg-amber-400 active:bg-amber-300
+                disabled:bg-gray-600 disabled:cursor-not-allowed
+                text-gray-900 disabled:text-gray-400
+                transition-colors shadow-md"
+            >
+              {wakeCooldown > 0 ? (
+                <>
+                  <svg
+                    className="animate-spin h-4 w-4"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                    />
+                  </svg>
+                  <span>Riprova tra {wakeCooldown}s</span>
+                </>
+              ) : (
+                <>
+                  <span>⚡</span>
+                  <span>Wake up</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       )}
       {/* ── Header ── */}
@@ -161,44 +246,6 @@ function App() {
                 ? "◌ Starting…"
                 : "○ Disconnected"}
           </span>
-
-          {/* Show wake-up button only when backend is offline/unknown and not yet connected */}
-          {!connected && backendStatus !== "waking" && (
-            <button
-              onClick={handleWake}
-              disabled={wakeCooldown > 0}
-              className="text-xs px-3 py-1 rounded-full font-medium bg-blue-700 hover:bg-blue-600 active:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white transition-colors"
-              title="Il backend Render potrebbe essere in sleep. Clicca per riattivarlo."
-            >
-              {wakeCooldown > 0
-                ? `⏳ Riprova tra ${wakeCooldown}s`
-                : "⚡ Wake up backend"}
-            </button>
-          )}
-
-          {/* Spinner while waking */}
-          {backendStatus === "waking" && (
-            <svg
-              className="animate-spin h-4 w-4 text-yellow-400"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8v8H4z"
-              />
-            </svg>
-          )}
         </div>
       </header>
 

@@ -47,11 +47,7 @@ class SessionRegistry:
         while True:
             await asyncio.sleep(60)
             now = time.monotonic()
-            stale = [
-                sid
-                for sid, ts in list(self._last_seen.items())
-                if now - ts > IDLE_TIMEOUT
-            ]
+            stale = [sid for sid, ts in list(self._last_seen.items()) if now - ts > IDLE_TIMEOUT]
             for sid in stale:
                 print(f"[session] purging idle session {sid}")
                 self.remove(sid)

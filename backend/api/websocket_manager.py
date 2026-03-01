@@ -46,13 +46,16 @@ class WebSocketManager:
             """Handle client disconnection"""
             session_id = self.client_sessions.pop(sid, None)
             self.clients.discard(sid)
-            print(f"Client disconnected: {sid} session={session_id} (Remaining: {len(self.clients)})")
+            print(
+                f"Client disconnected: {sid} session={session_id} (Remaining: {len(self.clients)})"
+            )
 
             # If no clients remain for the session, stop its simulation to free resources
             if session_id and session_id != "default":
                 remaining = [s for s, sess in self.client_sessions.items() if sess == session_id]
                 if not remaining:
                     from backend.api.session_registry import session_registry
+
                     mgr = session_registry.get(session_id)
                     if mgr and mgr.is_running:
                         mgr.stop_simulation()

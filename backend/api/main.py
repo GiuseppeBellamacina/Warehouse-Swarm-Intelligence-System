@@ -12,10 +12,10 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from backend.api.session_registry import session_registry
 from backend.api.simulation_manager import SimulationManager
 from backend.api.telegram_notifier import notify_simulation_start, notify_simulation_stopped
 from backend.api.websocket_manager import ws_manager
-from backend.api.session_registry import session_registry
 from backend.config.config_loader import ConfigLoader
 from backend.config.settings import settings
 
@@ -50,6 +50,7 @@ app.add_middleware(
 
 
 # ── session dependency ─────────────────────────────────────────────────────
+
 
 def _session_id(request: Request) -> str:
     return request.headers.get("x-session-id", "default")
@@ -180,11 +181,13 @@ async def load_simulation_endpoint(request: Request, body: StartSimulationReques
     except ValueError as e:
         print(f"[ERROR] Validation error: {str(e)}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"[ERROR] Unexpected error loading simulation: {str(e)}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to load simulation: {str(e)}")
 

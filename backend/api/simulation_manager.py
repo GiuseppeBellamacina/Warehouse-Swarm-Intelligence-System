@@ -232,7 +232,9 @@ class SimulationManager:
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve")
 
-    async def load_simulation(self, config: ScenarioConfig, ws_manager, session_id: str = "default") -> None:
+    async def load_simulation(
+        self, config: ScenarioConfig, ws_manager, session_id: str = "default"
+    ) -> None:
         """
         Initialize simulation and broadcast step 0 without starting the loop.
         The client will see the initial grid state and can then call start_simulation.
