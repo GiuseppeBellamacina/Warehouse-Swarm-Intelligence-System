@@ -8,14 +8,15 @@ A real-time swarm intelligence simulation where autonomous agents cooperate to e
 
 ## Features
 
-**Three specialised agent roles**
-| Role | Colour | Responsibility |
-|------|--------|---------------|
-| Scout | Green | Explore the map, report object locations to coordinators |
-| Coordinator | Purple | Assign retrieval tasks, manage agent recharging |
-| Retriever | Blue | Navigate to objects, carry them to the deposit zone |
+### Three specialised agent roles
 
-**Algorithms**
+| Role        | Colour | Responsibility                                           |
+| ----------- | ------ | -------------------------------------------------------- |
+| Scout       | Green  | Explore the map, report object locations to coordinators |
+| Coordinator | Purple | Assign retrieval tasks, manage agent recharging          |
+| Retriever   | Blue   | Navigate to objects, carry them to the deposit zone      |
+
+### Algorithms
 
 - A\* pathfinding with dynamic replanning and forbidden-zone support
 - Frontier-based and random-walk exploration
@@ -24,14 +25,15 @@ A real-time swarm intelligence simulation where autonomous agents cooperate to e
 - FIFO task queue with opportunistic multi-carry optimisation
 - Radius-based inter-agent communication (scout → coordinator → retriever)
 
-**Real-time interface**
+### Real-time interface
 
 - HTML5 Canvas grid rendering streamed over Socket.IO
 - Resizable panel layout (agents · map · metrics · controls)
 - Map editor for drawing custom scenarios
 - ⚡ "Wake up backend" button — polls `/api/health` until Render cold-starts (~30 s)
 
-**Optional Telegram notifications**  
+### Optional Telegram notifications
+
 Receive a message when a simulation starts, completes or is stopped (see [Environment variables](#environment-variables)).
 
 ---
