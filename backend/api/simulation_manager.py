@@ -25,6 +25,7 @@ def _get_notify_complete():
     global _notify_complete_fn
     if _notify_complete_fn is None:
         from backend.api.telegram_notifier import notify_simulation_complete
+
         _notify_complete_fn = notify_simulation_complete
     return _notify_complete_fn
 

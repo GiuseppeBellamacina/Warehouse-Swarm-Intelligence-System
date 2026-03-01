@@ -12,10 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.api.simulation_manager import sim_manager
-from backend.api.telegram_notifier import (
-    notify_simulation_start,
-    notify_simulation_stopped,
-)
+from backend.api.telegram_notifier import notify_simulation_start, notify_simulation_stopped
 from backend.api.websocket_manager import ws_manager
 from backend.config.config_loader import ConfigLoader
 from backend.config.settings import settings
@@ -205,8 +202,10 @@ async def start_simulation(request: Request):
         agent_count = len(sim_manager.model.agents) if sim_manager.model.agents else None
     # Extract client IP (respects X-Forwarded-For set by Render/Vercel proxies)
     forwarded_for = request.headers.get("x-forwarded-for")
-    user_ip = forwarded_for.split(",")[0].strip() if forwarded_for else (
-        request.client.host if request.client else None
+    user_ip = (
+        forwarded_for.split(",")[0].strip()
+        if forwarded_for
+        else (request.client.host if request.client else None)
     )
     user_agent = request.headers.get("user-agent")
     asyncio.create_task(
