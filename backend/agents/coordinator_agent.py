@@ -503,7 +503,7 @@ class CoordinatorAgent(BaseAgent):
         for rid, r_pos in self.retriever_positions.items():
             if not r_pos:
                 continue
-            r_pos_t = tuple(r_pos)  # type: ignore[arg-type]
+            r_pos_t: Tuple[int, int] = (int(r_pos[0]), int(r_pos[1]))
             # Skip position if pathfinder recently marked it unreachable
             if r_pos_t in self.unreachable_targets:
                 failed_step = self.unreachable_targets[r_pos_t]
@@ -554,9 +554,18 @@ class CoordinatorAgent(BaseAgent):
             CellType.OBSTACLE,
         )
 
-        # Build centroid from communicated (last-known) positions only.
-        # No direct access to model.agents positions — positions must arrive via messages.
-        agent_positions = [tuple(p) for p in self.retriever_positions.values() if p]
+        # Build centroid from communicated positions only.
+        # Only consider positions that are recent enough to be meaningful.
+        # Stale positions (retrievers that have moved far away and stopped reporting)
+        # would pin the coordinator to the delivery area — if no fresh data is available,
+        # fall back to the waypoint patrol so the coordinator keeps moving.
+        _POS_MAX_AGE = 25  # steps; tuned to ~2 communication cycles
+        cs_now = self.model.current_step
+        agent_positions = [
+            tuple(p)
+            for rid, p in self.retriever_positions.items()
+            if p and cs_now - self.retriever_positions_step.get(rid, -9999) <= _POS_MAX_AGE
+        ]
 
         if not agent_positions:
             # No communicated positions yet — enter search mode: cycle through

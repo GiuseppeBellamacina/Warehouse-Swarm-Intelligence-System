@@ -338,8 +338,28 @@ class BaseAgent(Agent):
         if not nearby:
             return 0
 
-        # Extract explored cells from local map
-        explored_cells = MapSharingSystem.extract_explored_cells(self.local_map)
+        # Extract explored cells from local map, scrubbing stale OBJECT entries.
+        # Agents update their local_map only via direct vision, so cells marked as
+        # OBJECT that were already retrieved remain stale until the agent re-visits
+        # that location. If we broadcast a stale OBJECT cell with the current step
+        # timestamp, recipients will re-insert it into known_objects (bypassing the
+        # tombstone, which was set at an earlier step). Fix: any OBJECT cell not
+        # present in the actual grid is downgraded to FREE before broadcasting, and
+        # the sender's local_map is corrected in-place to avoid repeat stale sends.
+        raw_cells = MapSharingSystem.extract_explored_cells(self.local_map)
+        actual_objects = self.model.grid.objects
+        explored_cells = []
+        for x, y, ct in raw_cells:
+            if ct == int(CellType.OBJECT) and (x, y) not in actual_objects:
+                explored_cells.append((x, y, int(CellType.FREE)))
+                self.local_map[y, x] = CellType.FREE
+                pos = (x, y)
+                self.known_objects.pop(pos, None)
+                self.known_objects_step.pop(pos, None)
+                if self.known_objects_cleared.get(pos, -1) < self.model.current_step:
+                    self.known_objects_cleared[pos] = self.model.current_step
+            else:
+                explored_cells.append((x, y, ct))
 
         # Create message — carry full knowledge with Stamped timestamps so every
         # recipient can apply "newest wins" and use this agent as a relay node.
