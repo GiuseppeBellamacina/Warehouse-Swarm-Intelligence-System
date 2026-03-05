@@ -31,9 +31,9 @@ class ScoutAgent(BaseAgent):
         self,
         unique_id: int,
         model: "WarehouseModel",
-        vision_radius: int = 7,
-        communication_radius: int = 20,
-        max_energy: float = 100.0,
+        vision_radius: int = 3,
+        communication_radius: int = 2,
+        max_energy: float = 500.0,
         speed: float = 1.5,
     ):
         super().__init__(
@@ -45,9 +45,9 @@ class ScoutAgent(BaseAgent):
             max_energy=max_energy,
             speed=speed,
             energy_consumption={
-                "base": 0.08,  # Lower base consumption (efficient)
-                "move": 0.4,  # Lower move cost (lighter agent)
-                "communicate": 0.15,
+                "base": 0.0,
+                "move": 1.0,
+                "communicate": 0.0,
             },
         )
 
@@ -62,6 +62,10 @@ class ScoutAgent(BaseAgent):
         # Track repeated failures on same target
         self.last_failed_target: Optional[Tuple[int, int]] = None
         self.consecutive_failures_on_target = 0
+
+        # Last known coordinator position — used to seek the coordinator when
+        # discoveries are pending but no coordinator is currently in comms range.
+        self.last_seen_coordinator_pos: Optional[Tuple[int, int]] = None
 
         # Warehouse recharge sub-state machine (avoids getting stuck on entrance/exit)
         # Values: None | "approach" | "recharge" | "exit"
@@ -101,6 +105,17 @@ class ScoutAgent(BaseAgent):
                 obj_value = self.known_objects.get(obj_pos, 1.0)
                 self.newly_discovered_objects.append((obj_pos, obj_value))
 
+        # Update last known coordinator position whenever one is within vision
+        # (use vision_radius so we track coordinator movements sooner than comm range)
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        for agent in self.model.agents:
+            if getattr(agent, "role", None) == "coordinator" and agent.pos:
+                c_pos = pos_to_tuple(agent.pos)
+                dist = abs(c_pos[0] - my_pos[0]) + abs(c_pos[1] - my_pos[1])
+                if dist <= self.vision_radius:
+                    self.last_seen_coordinator_pos = c_pos
+                    break
+
     def step_decide(self) -> None:
         """Decide next action based on utility"""
         # Reset communication flag
@@ -112,13 +127,57 @@ class ScoutAgent(BaseAgent):
 
         # ---- Priority 1: Communicate discoveries to any nearby coordinator ----
         if self.newly_discovered_objects:
-            self._discovery_age += 1
+            # _discovery_age counts steps WITHOUT a known coordinator destination.
+            # While we are actively heading somewhere don't count — reset instead.
+            if self.last_seen_coordinator_pos:
+                self._discovery_age = 0  # we have a destination; no timeout
+            else:
+                self._discovery_age += 1
             nearby = self.get_nearby_agents(self.communication_radius)
             coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
             if coordinators:
                 self.should_communicate_this_step = True
                 return
-            # No coordinator nearby — keep discoveries, but discard after 80 steps
+            # No coordinator in range — head toward the last known coordinator position
+            # so the scout can hand off its discoveries without just waiting idly.
+            if self.last_seen_coordinator_pos:
+                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                dist_to_saved = (
+                    abs(self.last_seen_coordinator_pos[0] - my_pos[0])
+                    + abs(self.last_seen_coordinator_pos[1] - my_pos[1])
+                )
+                # Arrived at last known position but coordinator not here → it moved;
+                # do a wide scan first to find the coordinator's new position before
+                # giving up and falling through to exploration.
+                if dist_to_saved <= max(1, self.communication_radius):
+                    self.last_seen_coordinator_pos = None
+                    # Wide scan: check all coordinators within 3× comm radius
+                    new_coord_pos = self._wide_scan_for_coordinator()
+                    if new_coord_pos:
+                        self.last_seen_coordinator_pos = new_coord_pos
+                        print(
+                            f"[SCOUT {self.unique_id}] SEEK-COORD: old pos stale, "
+                            f"found coordinator at {new_coord_pos} via wide scan"
+                        )
+                    else:
+                        print(
+                            f"[SCOUT {self.unique_id}] SEEK-COORD: reached stale pos, "
+                            f"coordinator not found nearby — resuming exploration"
+                        )
+                    # Fall through (if new_coord_pos set, next step will use it)
+                else:
+                    if self.target_position != self.last_seen_coordinator_pos:
+                        self.target_position = self.last_seen_coordinator_pos
+                        self.path = []
+                    self.state = AgentState.MOVING_TO_TARGET
+                    print(
+                        f"[SCOUT {self.unique_id}] SEEK-COORD: heading to last known "
+                        f"coordinator pos {self.last_seen_coordinator_pos} "
+                        f"({len(self.newly_discovered_objects)} discoveries pending)"
+                    )
+                    return
+            # No known coordinator position — keep discoveries, but discard after 80 steps
+            # of being truly unable to locate any coordinator.
             if self._discovery_age > 80:
                 print(
                     f"[SCOUT {self.unique_id}] TIMEOUT: discarding "
@@ -142,6 +201,7 @@ class ScoutAgent(BaseAgent):
                 station = self.model.get_best_warehouse_for(
                     pos=my_pos,
                     known_entrances=visible_entrances,
+                    agent_energy=self.energy,
                 )
                 self._scout_wh_station = station
                 self._scout_wh_step = "approach"
@@ -202,6 +262,28 @@ class ScoutAgent(BaseAgent):
 
         # ---- Fallback: navigate towards a random unknown boundary cell ----
         self._pick_unexplored_target(my_pos)
+
+    def _wide_scan_for_coordinator(self) -> Optional[Tuple[int, int]]:
+        """
+        Scan all agents within 3× communication_radius to find the nearest coordinator.
+        Used after the saved coordinator position turns out to be stale, so the scout
+        can update its heading without falling back to blind exploration.
+        Returns the nearest coordinator position found, or None.
+        """
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        # Use a generous radius (quarter of grid diagonal) so the scout can detect
+        # coordinators that drifted away from the last-seen position.
+        search_radius = max(12, self.communication_radius * 4)
+        best_pos: Optional[Tuple[int, int]] = None
+        best_dist = float("inf")
+        for agent in self.model.agents:
+            if getattr(agent, "role", None) == "coordinator" and agent.pos:
+                c_pos = pos_to_tuple(agent.pos)
+                dist = abs(c_pos[0] - my_pos[0]) + abs(c_pos[1] - my_pos[1])
+                if dist <= search_radius and dist < best_dist:
+                    best_dist = dist
+                    best_pos = c_pos
+        return best_pos
 
     def _pick_unexplored_target(self, my_pos: Tuple[int, int]) -> None:
         """Navigate towards a random UNKNOWN boundary cell via A* when no frontier found."""

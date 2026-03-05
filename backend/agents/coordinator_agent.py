@@ -5,10 +5,10 @@ Coordinator Agent - Strategic planner managing task assignments
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
-from backend.algorithms.exploration import FrontierExplorer
 from backend.algorithms.pathfinding import AStarPathfinder
 from backend.core.communication import (
     CoordinatorSyncMessage,
+    MapDataMessage,
     ObjectLocationMessage,
     RetrieverEventMessage,
     TaskAssignmentMessage,
@@ -36,9 +36,9 @@ class CoordinatorAgent(BaseAgent):
         self,
         unique_id: int,
         model: "WarehouseModel",
-        vision_radius: int = 10,
-        communication_radius: int = 25,
-        max_energy: float = 120.0,
+        vision_radius: int = 2,
+        communication_radius: int = 3,
+        max_energy: float = 500.0,
         speed: float = 1.0,
     ):
         super().__init__(
@@ -50,9 +50,9 @@ class CoordinatorAgent(BaseAgent):
             max_energy=max_energy,
             speed=speed,
             energy_consumption={
-                "base": 0.12,  # Higher base (processing tasks)
-                "move": 0.5,
-                "communicate": 0.1,  # Lower comm cost (specialized)
+                "base": 0.0,
+                "move": 1.0,
+                "communicate": 0.0,
             },
         )
 
@@ -215,8 +215,10 @@ class CoordinatorAgent(BaseAgent):
         self.should_communicate_this_step = False
         self.tasks_to_assign = []
 
-        # Check if need to recharge
-        if self.energy < 50:
+        # Check if need to recharge — only start the sub-machine when energy is
+        # genuinely low.  Skip if already at or above the recharge trigger range to
+        # avoid the coordinator wandering into a warehouse and immediately exiting.
+        if self.energy < self.max_energy * 0.20:
             if self.state != AgentState.RECHARGING:
                 closest_wh = self.get_closest_warehouse()
                 if closest_wh:
@@ -263,6 +265,10 @@ class CoordinatorAgent(BaseAgent):
         # Priority 1: Communicate (send tasks OR sync)
         if self.tasks_to_assign:
             self.should_communicate_this_step = True
+            return
+
+        # Priority 1b: Tasks exist but no retrievers in range — go find them
+        if self._seek_retrievers_if_needed():
             return
 
         # Priority 2: Explore when idle — but never while a warehouse sub-sequence is active
@@ -342,6 +348,10 @@ class CoordinatorAgent(BaseAgent):
             for obj_pos, obj_value in list(self.known_objects.items()):
                 if obj_pos in self.objects_being_collected:
                     continue
+                # Skip objects already claimed by any agent (incl. self-assigned retrievers)
+                claimer = self.model.comm_manager.get_claimer(obj_pos)
+                if claimer is not None and claimer != rid:
+                    continue
                 # Skip objects already in this retriever's declared queue
                 if obj_pos in self.retriever_task_queues.get(rid, []):
                     continue
@@ -403,89 +413,156 @@ class CoordinatorAgent(BaseAgent):
                 f"sync ({len(self.known_objects)} objs)"
             )
 
+    def _seek_retrievers_if_needed(self) -> bool:
+        """
+        If there are unassigned objects but no retrievers are currently in comm
+        range, move toward the nearest last-known retriever position so that task
+        assignments can be delivered as soon as comm range is re-established.
+
+        Skips positions already in unreachable_targets (blacklisted by pathfinder)
+        and falls back to normal exploration when all known positions are stale.
+
+        Returns True if the coordinator is actively seeking retrievers (so the
+        caller can skip the normal exploration decision).
+        """
+        if self.available_retrievers:
+            return False  # already have retrievers in range
+        if self._coord_wh_step is not None:
+            return False  # busy with warehouse sequence
+
+        # Check for objects that still need assigning
+        pending = [
+            pos
+            for pos in self.known_objects
+            if pos not in self.objects_being_collected
+            and pos not in self.assigned_tasks.values()
+        ]
+        if not pending:
+            return False
+
+        # Find nearest last-known retriever from declared positions,
+        # skipping any that are already blacklisted as unreachable.
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        current_step = self.model.current_step
+        best_pos: Optional[Tuple[int, int]] = None
+        best_dist = float("inf")
+        for rid, r_pos in self.retriever_positions.items():
+            if not r_pos:
+                continue
+            r_pos_t = tuple(r_pos)  # type: ignore[arg-type]
+            # Skip position if pathfinder recently marked it unreachable
+            if r_pos_t in self.unreachable_targets:
+                failed_step = self.unreachable_targets[r_pos_t]
+                if current_step - failed_step < 30:
+                    continue  # still blacklisted
+                del self.unreachable_targets[r_pos_t]  # blacklist expired
+            dist = abs(r_pos[0] - my_pos[0]) + abs(r_pos[1] - my_pos[1])
+            if dist < best_dist:
+                best_dist = dist
+                best_pos = r_pos_t  # type: ignore[assignment]
+
+        if best_pos is None:
+            # All known retriever positions are blacklisted — fall through to exploration
+            return False
+        if best_dist <= self.communication_radius:
+            # Already close enough; retriever must have moved — stale position
+            return False
+
+        if self.target_position != best_pos:
+            self.target_position = best_pos
+            self.path = []
+        self.state = AgentState.EXPLORING
+        print(
+            f"[COORD {self.unique_id}] SEEK-RETRIEVER: "
+            f"{len(pending)} unassigned object(s), no retrievers in range — "
+            f"heading to last known retriever pos {best_pos} (dist={int(best_dist)})"
+        )
+        return True
+
     def _decide_exploration(self) -> None:
-        """Decide exploration action when idle - stay near managed agents"""
+        """
+        Position the coordinator near the centroid of its managed agents.
+        The coordinator never does frontier exploration — that is the scout's job.
+        When already close enough to the centroid, simply hold position (IDLE).
+        When too far, move toward the nearest walkable cell around the centroid.
+        """
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
-        # Calculate center of mass of managed agents (retrievers and nearby scouts)
+        # Comfortable range: half of comm radius.  Wide enough that the coordinator
+        # doesn't chase micro-shifts in the centroid, but still keeps it reachable.
+        max_distance_from_agents = max(8, self.communication_radius // 2)
+
+        _WH_TYPES = (
+            CellType.WAREHOUSE,
+            CellType.WAREHOUSE_ENTRANCE,
+            CellType.WAREHOUSE_EXIT,
+            CellType.OBSTACLE,
+        )
+
+        # Build centroid from ALL retrievers and scouts on the grid (no distance cap).
+        # Without this, a coordinator spawned far from its agents never finds them.
         agent_positions = []
         for agent in self.model.agents:
             if agent.pos and hasattr(agent, "role"):
                 role = getattr(agent, "role", None)
-                # Include retrievers and scouts in calculation
                 if role in ["retriever", "scout"]:
-                    agent_pos = pos_to_tuple(agent.pos)
-                    distance = abs(agent_pos[0] - my_pos[0]) + abs(agent_pos[1] - my_pos[1])
-                    # Only consider agents within reasonable range (< 20 cells)
-                    if distance < 20:
-                        agent_positions.append(agent_pos)
+                    agent_positions.append(pos_to_tuple(agent.pos))
 
-        # Calculate centroid if we have agents nearby
-        max_distance_from_agents = 12  # Maximum distance coordinator should be from agent centroid
+        if not agent_positions:
+            # No agents on grid — hold current position
+            self.state = AgentState.IDLE
+            return
 
-        if len(agent_positions) > 0:
-            centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
-            centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
-            centroid = (int(centroid_x), int(centroid_y))
+        centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
+        centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
+        centroid = (int(centroid_x), int(centroid_y))
 
-            # Check distance from centroid
-            dist_from_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
+        dist_from_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
 
-            # If too far from agents, move back towards them
-            if dist_from_centroid > max_distance_from_agents:
-                print(
-                    f"[COORD {self.unique_id}] REPOSITION: Too far from agents (distance: {dist_from_centroid}), moving towards centroid {centroid}"
-                )
-                self.target_position = centroid
-                self.state = AgentState.EXPLORING
-                return
+        if dist_from_centroid <= max_distance_from_agents:
+            # Already well-positioned — nothing to do this step
+            self.state = AgentState.IDLE
+            return
 
-        # Normal exploration but prefer staying near agents
-        frontiers = FrontierExplorer.find_frontiers(self.local_map)
+        # Need to reposition — snap centroid to nearest usable cell if necessary
+        reposition_target = centroid
+        if (
+            not self.model.grid.is_walkable(*centroid)
+            or self.model.grid.get_cell_type(*centroid) in _WH_TYPES
+            or centroid in self.unreachable_targets
+        ):
+            reposition_target = None
+            for radius in range(1, 6):
+                for dx in range(-radius, radius + 1):
+                    for dy in range(-radius, radius + 1):
+                        if abs(dx) != radius and abs(dy) != radius:
+                            continue  # only the outer ring
+                        cx, cy = centroid[0] + dx, centroid[1] + dy
+                        if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
+                            continue
+                        if self.model.grid.get_cell_type(cx, cy) in _WH_TYPES:
+                            continue
+                        if not self.model.grid.is_walkable(cx, cy):
+                            continue
+                        candidate = (cx, cy)
+                        if candidate in self.unreachable_targets:
+                            continue
+                        reposition_target = candidate
+                        break
+                    if reposition_target:
+                        break
 
-        if frontiers:
-            nearby = self.get_nearby_agents()
-            nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
+        if reposition_target is None or reposition_target in self.unreachable_targets:
+            # Can't find a suitable nearby cell — hold position
+            self.state = AgentState.IDLE
+            return
 
-            # Filter frontiers - prefer those not too far from agent centroid
-            if len(agent_positions) > 0:
-                centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
-                centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
-                centroid = (int(centroid_x), int(centroid_y))
-
-                # Weight frontiers by distance from centroid (closer is better)
-                weighted_frontiers = []
-                for frontier_pos, cluster_size in frontiers:
-                    dist_from_centroid = abs(frontier_pos[0] - centroid[0]) + abs(
-                        frontier_pos[1] - centroid[1]
-                    )
-                    # Penalize frontiers far from centroid
-                    if dist_from_centroid < max_distance_from_agents * 1.5:
-                        weighted_frontiers.append((frontier_pos, cluster_size))
-
-                # Use weighted frontiers if any, otherwise use all
-                frontiers = weighted_frontiers if weighted_frontiers else frontiers
-
-            best_frontier = FrontierExplorer.select_best_frontier(
-                frontiers, my_pos, nearby_positions
-            )
-
-            if best_frontier:
-                # Only update target if significantly different or we don't have one
-                if (
-                    not self.target_position
-                    or abs(best_frontier[0] - self.target_position[0]) > 5
-                    or abs(best_frontier[1] - self.target_position[1]) > 5
-                ):
-                    self.target_position = best_frontier
-                    self.path = []  # Clear old path
-                self.state = AgentState.EXPLORING
-            else:
-                self.state = AgentState.IDLE
-        else:
-            # No frontiers, stay idle or random explore
-            if not self.target_position:
-                self.state = AgentState.IDLE
+        print(
+            f"[COORD {self.unique_id}] REPOSITION: Too far from agents "
+            f"(distance: {dist_from_centroid}), moving towards {reposition_target}"
+        )
+        self.target_position = reposition_target
+        self.state = AgentState.EXPLORING
 
     def step_act(self) -> None:
         """Execute decided action: COMMUNICATE or MOVE (not both)"""
@@ -512,25 +589,10 @@ class CoordinatorAgent(BaseAgent):
                     self.state = AgentState.IDLE
 
         elif self.state == AgentState.IDLE:
-            # Light random walk to maintain map coverage
-            from backend.algorithms.exploration import RandomWalkExplorer
-
-            my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-            new_pos = RandomWalkExplorer.get_random_walk_direction(
-                my_pos,
-                getattr(self, "idle_direction", None),
-                self.model.grid,
-                momentum=0.3,
-            )
-            if new_pos != my_pos:
-                old_pos = my_pos
-                self.move_towards(new_pos)
-                my_pos_after = pos_to_tuple(self.pos) if self.pos else my_pos
-                if my_pos_after != old_pos:
-                    self.idle_direction = (
-                        my_pos_after[0] - old_pos[0],
-                        my_pos_after[1] - old_pos[1],
-                    )
+            # Hold position — the coordinator's job is coordination, not exploration.
+            # Movement is handled deliberately via _decide_exploration (centroid
+            # repositioning) and _seek_retrievers_if_needed.
+            pass
 
     def _execute_recharge_step(self) -> None:
         """Sub-state machine: approach warehouse → recharge → exit."""
@@ -714,6 +776,20 @@ class CoordinatorAgent(BaseAgent):
                 priority=priority,
             )
             self.model.comm_manager.send_message(message, [retriever_id])
+
+            # Share known warehouse cells with the retriever so it can navigate
+            # to the correct warehouse even if it has never seen one directly.
+            if self.known_warehouses:
+                wh_cells = [
+                    (wx, wy, int(self.model.grid.get_cell_type(wx, wy)))
+                    for wx, wy in self.known_warehouses
+                ]
+                map_msg = MapDataMessage(
+                    sender_id=self.unique_id or 0,
+                    timestamp=self.model.current_step,
+                    explored_cells=wh_cells,
+                )
+                self.model.comm_manager.send_message(map_msg, [retriever_id])
 
             print(
                 f"[COORD {self.unique_id}] -> [RETRIEVER {retriever_id}]: "
