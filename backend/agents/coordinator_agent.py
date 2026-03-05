@@ -434,8 +434,7 @@ class CoordinatorAgent(BaseAgent):
         pending = [
             pos
             for pos in self.known_objects
-            if pos not in self.objects_being_collected
-            and pos not in self.assigned_tasks.values()
+            if pos not in self.objects_being_collected and pos not in self.assigned_tasks.values()
         ]
         if not pending:
             return False
@@ -538,7 +537,9 @@ class CoordinatorAgent(BaseAgent):
                         if abs(dx) != radius and abs(dy) != radius:
                             continue  # only the outer ring
                         cx, cy = centroid[0] + dx, centroid[1] + dy
-                        if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
+                        if not (
+                            0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height
+                        ):
                             continue
                         if self.model.grid.get_cell_type(cx, cy) in _WH_TYPES:
                             continue
@@ -788,6 +789,8 @@ class CoordinatorAgent(BaseAgent):
                     sender_id=self.unique_id or 0,
                     timestamp=self.model.current_step,
                     explored_cells=wh_cells,
+                    known_objects=dict(self.known_objects),
+                    objects_being_collected=list(self.objects_being_collected),
                 )
                 self.model.comm_manager.send_message(map_msg, [retriever_id])
 
