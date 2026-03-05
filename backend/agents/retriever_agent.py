@@ -435,6 +435,9 @@ class RetrieverAgent(BaseAgent):
             return
 
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        # Keep our own entry in retriever_positions up to date so it gets
+        # relayed through every agent that receives our MapDataMessage
+        self.retriever_positions[self.unique_id] = my_pos
         status_msg = TaskStatusMessage(
             sender_id=self.unique_id,
             timestamp=self.model.current_step,

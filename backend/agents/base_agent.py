@@ -3,7 +3,7 @@ Base agent class with common functionality
 """
 
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -90,6 +90,11 @@ class BaseAgent(Agent):
 
         # Known object locations (position -> value)
         self.known_objects = {}
+
+        # Last-known positions of retrievers, learned via message relay
+        # {retriever_id: (x, y)} — accumulated and re-broadcast so every agent
+        # acts as a relay node (Scout, Retriever, Coordinator alike)
+        self.retriever_positions: Dict[int, Tuple[int, int]] = {}
 
         # Known warehouse locations
         self.known_warehouses: List[Tuple[int, int]] = []
@@ -304,6 +309,7 @@ class BaseAgent(Agent):
             explored_cells=explored_cells,
             known_objects=dict(self.known_objects),
             objects_being_collected=list(getattr(self, "objects_being_collected", [])),
+            retriever_positions=dict(self.retriever_positions),
         )
 
         # Send to all nearby agents
@@ -364,6 +370,11 @@ class BaseAgent(Agent):
                     pos = tuple(raw_pos)
                     if pos not in self.known_objects and (my_obc is None or pos not in my_obc):
                         self.known_objects[pos] = val
+
+                # retriever_positions relayed by sender — merge any new entries
+                for rid, raw_pos in message.retriever_positions.items():
+                    if rid not in self.retriever_positions:
+                        self.retriever_positions[rid] = tuple(raw_pos)
 
             elif isinstance(message, ObjectLocationMessage):
                 # Add discovered object to known objects

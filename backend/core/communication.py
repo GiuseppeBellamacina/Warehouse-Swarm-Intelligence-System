@@ -30,6 +30,7 @@ class MapDataMessage(Message):
     explored_cells: List[Tuple[int, int, int]]  # (x, y, cell_type)
     known_objects: Dict = field(default_factory=dict)  # {(x,y): value}
     objects_being_collected: List = field(default_factory=list)  # [(x,y), ...]
+    retriever_positions: Dict = field(default_factory=dict)  # {retriever_id: (x,y)}
 
 
 @dataclass
