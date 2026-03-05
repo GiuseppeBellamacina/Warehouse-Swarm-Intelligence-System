@@ -1,7 +1,12 @@
 // Control Panel Component
 
 import React, { useState, useRef, useEffect } from "react";
-import { SimulationConfig } from "../types/simulation";
+import {
+  GridScenarioConfig,
+  SimulationAgentsConfig,
+  AgentRoleParams,
+  DEFAULT_AGENTS_CONFIG,
+} from "../types/simulation";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
@@ -10,7 +15,10 @@ interface ControlPanelProps {
   isRunning: boolean;
   isPaused: boolean;
   isLoaded: boolean;
-  onLoad: (config: SimulationConfig) => void;
+  onLoad: (
+    scenario: GridScenarioConfig,
+    agents: SimulationAgentsConfig,
+  ) => void;
   onStartRun: () => void;
   onPause: () => void;
   onResume: () => void;
@@ -25,94 +33,45 @@ interface AgentOverrideFields {
   communication_radius: number;
   max_energy: number;
   speed: number;
-}
-
-interface RetrieverOverrideFields extends AgentOverrideFields {
   carrying_capacity: number;
 }
 
 interface Overrides {
   simulationMaxSteps: number;
-  objectsCount: number;
   scouts: AgentOverrideFields;
   coordinators: AgentOverrideFields;
-  retrievers: RetrieverOverrideFields;
+  retrievers: AgentOverrideFields;
 }
 
-function extractOverrides(config: SimulationConfig): Overrides {
-  const sc = config.agents?.scouts;
-  const co = config.agents?.coordinators;
-  const re = config.agents?.retrievers;
+function extractOverrides(config: GridScenarioConfig): Overrides {
+  const def = DEFAULT_AGENTS_CONFIG;
   return {
-    simulationMaxSteps: config.simulation?.max_steps ?? 1000,
-    objectsCount: config.objects?.count ?? 10,
+    simulationMaxSteps: config.metadata?.max_steps ?? 500,
     scouts: {
-      count: sc?.count ?? 3,
-      vision_radius: sc?.parameters?.vision_radius ?? 5,
-      communication_radius: sc?.parameters?.communication_radius ?? 10,
-      max_energy: sc?.parameters?.max_energy ?? 100,
-      speed: sc?.parameters?.speed ?? 1,
+      count: def.scouts.count,
+      vision_radius: def.scouts.vision_radius,
+      communication_radius: def.scouts.communication_radius,
+      max_energy: def.scouts.max_energy,
+      speed: def.scouts.speed,
+      carrying_capacity: def.scouts.carrying_capacity,
     },
     coordinators: {
-      count: co?.count ?? 1,
-      vision_radius: co?.parameters?.vision_radius ?? 5,
-      communication_radius: co?.parameters?.communication_radius ?? 15,
-      max_energy: co?.parameters?.max_energy ?? 100,
-      speed: co?.parameters?.speed ?? 1,
+      count: def.coordinators.count,
+      vision_radius: def.coordinators.vision_radius,
+      communication_radius: def.coordinators.communication_radius,
+      max_energy: def.coordinators.max_energy,
+      speed: def.coordinators.speed,
+      carrying_capacity: def.coordinators.carrying_capacity,
     },
     retrievers: {
-      count: re?.count ?? 5,
-      vision_radius: re?.parameters?.vision_radius ?? 4,
-      communication_radius: re?.parameters?.communication_radius ?? 8,
-      max_energy: re?.parameters?.max_energy ?? 100,
-      speed: re?.parameters?.speed ?? 1,
-      carrying_capacity: re?.parameters?.carrying_capacity ?? 1,
+      count: def.retrievers.count,
+      vision_radius: def.retrievers.vision_radius,
+      communication_radius: def.retrievers.communication_radius,
+      max_energy: def.retrievers.max_energy,
+      speed: def.retrievers.speed,
+      carrying_capacity: def.retrievers.carrying_capacity,
     },
   };
-}
-
-function applyOverrides(
-  config: SimulationConfig,
-  ovr: Overrides,
-): SimulationConfig {
-  const c: SimulationConfig = JSON.parse(JSON.stringify(config));
-  if (c.simulation) c.simulation.max_steps = ovr.simulationMaxSteps;
-  if (c.objects) c.objects.count = ovr.objectsCount;
-  if (c.agents?.scouts) {
-    c.agents.scouts.count = ovr.scouts.count;
-    if (c.agents.scouts.parameters) {
-      c.agents.scouts.parameters.vision_radius = ovr.scouts.vision_radius;
-      c.agents.scouts.parameters.communication_radius =
-        ovr.scouts.communication_radius;
-      c.agents.scouts.parameters.max_energy = ovr.scouts.max_energy;
-      c.agents.scouts.parameters.speed = ovr.scouts.speed;
-    }
-  }
-  if (c.agents?.coordinators) {
-    c.agents.coordinators.count = ovr.coordinators.count;
-    if (c.agents.coordinators.parameters) {
-      c.agents.coordinators.parameters.vision_radius =
-        ovr.coordinators.vision_radius;
-      c.agents.coordinators.parameters.communication_radius =
-        ovr.coordinators.communication_radius;
-      c.agents.coordinators.parameters.max_energy = ovr.coordinators.max_energy;
-      c.agents.coordinators.parameters.speed = ovr.coordinators.speed;
-    }
-  }
-  if (c.agents?.retrievers) {
-    c.agents.retrievers.count = ovr.retrievers.count;
-    if (c.agents.retrievers.parameters) {
-      c.agents.retrievers.parameters.vision_radius =
-        ovr.retrievers.vision_radius;
-      c.agents.retrievers.parameters.communication_radius =
-        ovr.retrievers.communication_radius;
-      c.agents.retrievers.parameters.max_energy = ovr.retrievers.max_energy;
-      c.agents.retrievers.parameters.speed = ovr.retrievers.speed;
-      c.agents.retrievers.parameters.carrying_capacity =
-        ovr.retrievers.carrying_capacity;
-    }
-  }
-  return c;
 }
 
 // ── Shared small helpers ───────────────────────────────────
@@ -173,7 +132,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 }) => {
   const [configName, setConfigName] = useState<string>("");
   const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
-  const [rawConfig, setRawConfig] = useState<SimulationConfig | null>(null);
+  const [rawConfig, setRawConfig] = useState<GridScenarioConfig | null>(null);
   const [overrides, setOverrides] = useState<Overrides | null>(null);
   const [overridesOpen, setOverridesOpen] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
@@ -205,7 +164,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       try {
         const res = await fetch(`${BACKEND_URL}/configs/${configName}.json`);
         if (!res.ok) return;
-        const cfg: SimulationConfig = await res.json();
+        const cfg: GridScenarioConfig = await res.json();
         setRawConfig(cfg);
         setOverrides(extractOverrides(cfg));
       } catch {
@@ -223,7 +182,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     if (!file) return;
     try {
       const text = await file.text();
-      const cfg: SimulationConfig = JSON.parse(text);
+      const cfg: GridScenarioConfig = JSON.parse(text);
       setRawConfig(cfg);
       setOverrides(extractOverrides(cfg));
       setConfigName(""); // deselect dropdown
@@ -241,15 +200,39 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     setOverrides((p) =>
       p ? { ...p, coordinators: { ...p.coordinators, ...patch } } : p,
     );
-  const setRetrs = (patch: Partial<RetrieverOverrideFields>) =>
+  const setRetrs = (patch: Partial<AgentOverrideFields>) =>
     setOverrides((p) =>
       p ? { ...p, retrievers: { ...p.retrievers, ...patch } } : p,
     );
 
   const handleLoad = () => {
     if (!rawConfig || !overrides) return;
-    onLoad(applyOverrides(rawConfig, overrides));
+    // Apply max_steps override to scenario metadata (clone)
+    const scenario: GridScenarioConfig = {
+      ...rawConfig,
+      metadata: {
+        ...rawConfig.metadata,
+        max_steps: overrides.simulationMaxSteps,
+      },
+    };
+    const agents: SimulationAgentsConfig = {
+      scouts: ovToRole(overrides.scouts),
+      coordinators: ovToRole(overrides.coordinators),
+      retrievers: ovToRole(overrides.retrievers),
+    };
+    onLoad(scenario, agents);
   };
+
+  function ovToRole(f: AgentOverrideFields): AgentRoleParams {
+    return {
+      count: f.count,
+      vision_radius: f.vision_radius,
+      communication_radius: f.communication_radius,
+      max_energy: f.max_energy,
+      speed: f.speed,
+      carrying_capacity: f.carrying_capacity,
+    };
+  }
 
   const handleSpeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
@@ -349,13 +332,14 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       min={1}
                       disabled={isRunning}
                     />
-                    <Field
-                      label="Objects"
-                      value={overrides.objectsCount}
-                      onChange={(v) => setOvr({ objectsCount: v })}
-                      min={1}
-                      disabled={isRunning}
-                    />
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-gray-400 text-[10px] leading-tight flex-1">
+                        Objects
+                      </span>
+                      <span className="w-16 text-right text-xs text-gray-500">
+                        {rawConfig?.objects?.length ?? "—"}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -498,12 +482,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     overrides.scouts.count +
                     overrides.coordinators.count +
                     overrides.retrievers.count;
-                  const totalObjects = overrides.objectsCount;
+                  const totalObjects = rawConfig?.objects?.length ?? 0;
                   const total = totalAgents + totalObjects;
-                  const gw = rawConfig?.simulation?.grid_width ?? 0;
-                  const gh = rawConfig?.simulation?.grid_height ?? 0;
-                  const capacity =
-                    gw * gh > 0 ? Math.floor(gw * gh * 0.25) : 50;
+                  const gs = rawConfig?.metadata?.grid_size ?? 0;
+                  const capacity = gs > 0 ? Math.floor(gs * gs * 0.25) : 50;
                   if (total <= capacity) return null;
                   const pct = Math.round((total / capacity) * 100);
                   return (
