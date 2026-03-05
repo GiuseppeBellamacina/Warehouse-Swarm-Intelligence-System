@@ -103,6 +103,7 @@ class CoordinatorSyncMessage(Message):
     assigned_tasks: Dict  # {retriever_id: obj_pos} — current assignments
     retriever_states: Dict  # {retriever_id: state_str}
     objects_being_collected: List  # list of (x,y) positions
+    retriever_positions: Dict = field(default_factory=dict)  # {retriever_id: (x,y)}
 
 
 @dataclass
