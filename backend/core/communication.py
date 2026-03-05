@@ -3,9 +3,26 @@ Agent communication and map sharing system
 """
 
 from dataclasses import dataclass, field
-from typing import ClassVar, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 import numpy as np
+
+
+@dataclass
+class Stamped:
+    """A value paired with the simulation step at which it was last confirmed.
+
+    Used inside messages so that recipients can apply 'newest wins' merge
+    semantics without resorting to parallel dicts or fragile tuple unpacking.
+
+    Attributes:
+        value: The actual payload (object value, position tuple, …).
+               Use ``None`` when only the step matters (e.g. objects_being_collected).
+        step:  Simulation step when this datum was last confirmed by the original source.
+    """
+
+    value: Any
+    step: int
 
 
 @dataclass
@@ -20,17 +37,19 @@ class Message:
 class MapDataMessage(Message):
     """Message containing explored map data.
 
-    Carries three information layers so that every agent acts as a relay:
-    - explored_cells: grid topology (cell types discovered so far)
-    - known_objects:  object positions known to the sender
-    - objects_being_collected: positions already assigned/picked up
-      (Coordinators fill this; other agents leave it empty)
+    Every agent is a relay: carries three knowledge layers where each entry is
+    wrapped in a ``Stamped`` object so recipients can apply 'newest wins' merging.
+
+    - explored_cells:          grid topology (cell types discovered so far)
+    - known_objects:           {(x,y): Stamped(value=float, step=int)}
+    - objects_being_collected: {(x,y): Stamped(value=None,  step=int)}
+    - retriever_positions:     {rid:   Stamped(value=(x,y), step=int)}
     """
 
-    explored_cells: List[Tuple[int, int, int]]  # (x, y, cell_type)
-    known_objects: Dict = field(default_factory=dict)  # {(x,y): value}
-    objects_being_collected: List = field(default_factory=list)  # [(x,y), ...]
-    retriever_positions: Dict = field(default_factory=dict)  # {retriever_id: (x,y)}
+    explored_cells: List[Tuple[int, int, int]]
+    known_objects: Dict = field(default_factory=dict)  # {(x,y): Stamped}
+    objects_being_collected: Dict = field(default_factory=dict)  # {(x,y): Stamped}
+    retriever_positions: Dict = field(default_factory=dict)  # {rid:   Stamped}
 
 
 @dataclass
@@ -97,14 +116,18 @@ class TaskStatusMessage(Message):
 
 @dataclass
 class CoordinatorSyncMessage(Message):
-    """Coordinator shares full knowledge state with another coordinator on contact"""
+    """Coordinator shares full knowledge state with another coordinator on contact.
+
+    All three shared dicts use ``Stamped`` values (same schema as MapDataMessage)
+    so the recipient applies identical 'newest wins' merge logic.
+    """
 
     sender_coordinator_id: int
-    known_objects: Dict  # {(x,y): value} — unassigned discovered objects
+    known_objects: Dict  # {(x,y): Stamped(value=float, step=int)}
     assigned_tasks: Dict  # {retriever_id: obj_pos} — current assignments
     retriever_states: Dict  # {retriever_id: state_str}
-    objects_being_collected: List  # list of (x,y) positions
-    retriever_positions: Dict = field(default_factory=dict)  # {retriever_id: (x,y)}
+    objects_being_collected: Dict  # {(x,y): Stamped(value=None, step=int)}
+    retriever_positions: Dict = field(default_factory=dict)  # {rid: Stamped(value=(x,y), step=int)}
 
 
 @dataclass
