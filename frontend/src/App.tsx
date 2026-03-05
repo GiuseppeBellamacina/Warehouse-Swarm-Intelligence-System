@@ -64,7 +64,6 @@ function App() {
     wakeBackend,
     loadConfig,
     startSimulation,
-    uploadConfig: _uploadConfig,
     pauseSimulation,
     resumeSimulation,
     stopSimulation,
