@@ -57,17 +57,17 @@ class SpawnZone(BaseModel):
 class EnergyConsumption(BaseModel):
     """Energy consumption parameters"""
 
-    base: float = Field(ge=0.0, default=0.1)
-    move: float = Field(ge=0.0, default=0.5)
-    communicate: float = Field(ge=0.0, default=0.2)
+    base: float = Field(ge=0.0, default=0.0)
+    move: float = Field(ge=0.0, default=1.0)
+    communicate: float = Field(ge=0.0, default=0.0)
 
 
 class AgentParameters(BaseModel):
     """Per-agent configuration parameters"""
 
-    vision_radius: int = Field(ge=1, default=5)
-    communication_radius: int = Field(ge=1, default=15)
-    max_energy: float = Field(gt=0, default=100.0)
+    vision_radius: int = Field(ge=1, default=3)
+    communication_radius: int = Field(ge=1, default=2)
+    max_energy: float = Field(gt=0, default=500.0)
     energy_consumption: EnergyConsumption = Field(default_factory=EnergyConsumption)
     speed: float = Field(gt=0, default=1.0)
     carrying_capacity: int = Field(ge=0, default=1)
@@ -119,7 +119,7 @@ class SimulationConfig(BaseModel):
     grid_width: int = Field(gt=0, default=100)
     grid_height: int = Field(gt=0, default=100)
     timestep_duration_ms: int = Field(gt=0, default=50)
-    max_steps: int = Field(gt=0, default=10000)
+    max_steps: int = Field(gt=0, default=500)
     seed: Optional[int] = None
 
 
@@ -151,3 +151,75 @@ class ScenarioConfig(BaseModel):
             if v.position.y + v.height > sim.grid_height:
                 raise ValueError("Warehouse exceeds grid height")
         return v
+
+
+# ── New compact grid-based format ──────────────────────────────────────────────
+
+
+class GridScenarioMetadata(BaseModel):
+    """Metadata for compact grid-based scenario"""
+
+    grid_size: int = Field(gt=0)
+    num_warehouses: int = Field(ge=1)
+    num_objects: int = Field(ge=1)
+    max_steps: int = Field(gt=0, default=500)
+    seed: Optional[int] = None
+
+
+class GridWarehouse(BaseModel):
+    """Single warehouse definition inside a grid scenario"""
+
+    id: int
+    side: str  # e.g. "north", "south", "east", "west"
+    entrance: List[int]  # [row, col]
+    exit: List[int]  # [row, col]
+    area: List[List[int]]  # [[row, col], ...]
+
+
+class GridScenarioConfig(BaseModel):
+    """Compact grid-based scenario (New A/B format)
+
+    Grid cell values:
+        0 = free / empty
+        1 = wall / obstacle
+        2 = warehouse interior
+        3 = warehouse entrance
+        4 = warehouse exit
+    Objects are stored separately in ``objects`` and NOT encoded in the grid.
+    """
+
+    metadata: GridScenarioMetadata
+    grid: List[List[int]]  # grid[row][col] — row-major
+    warehouses: List[GridWarehouse]
+    objects: List[List[int]]  # [[row, col], ...]
+
+
+class AgentRoleParams(BaseModel):
+    """Per-role agent parameters used with the new grid format"""
+
+    count: int = Field(ge=0, default=1)
+    vision_radius: int = Field(ge=1, default=3)
+    communication_radius: int = Field(ge=1, default=2)
+    max_energy: float = Field(gt=0, default=500.0)
+    speed: float = Field(gt=0, default=1.0)
+    carrying_capacity: int = Field(ge=0, default=0)
+
+
+class SimulationAgentsConfig(BaseModel):
+    """Agent composition config passed alongside a GridScenarioConfig"""
+
+    scouts: AgentRoleParams = Field(
+        default_factory=lambda: AgentRoleParams(
+            count=1, vision_radius=3, communication_radius=2, speed=1.5, carrying_capacity=0
+        )
+    )
+    coordinators: AgentRoleParams = Field(
+        default_factory=lambda: AgentRoleParams(
+            count=1, vision_radius=2, communication_radius=3, carrying_capacity=0
+        )
+    )
+    retrievers: AgentRoleParams = Field(
+        default_factory=lambda: AgentRoleParams(
+            count=3, vision_radius=2, communication_radius=2, carrying_capacity=2
+        )
+    )
