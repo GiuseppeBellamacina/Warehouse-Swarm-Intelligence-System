@@ -121,13 +121,21 @@ class CoordinatorAgent(BaseAgent):
                     self.assigned_tasks[rid] = message.task_queue[0]
                 else:
                     self.assigned_tasks.pop(rid, None)
-                # Release objects that the retriever no longer has in its queue
-                # (delivered or otherwise completed) from objects_being_collected.
+                # Release objects that the retriever no longer has in its queue.
                 now_gone = set(prev_queue) - set(message.task_queue)
+                cs_now = self.model.current_step
                 for completed_pos in now_gone:
-                    if message.carrying_objects == 0 or completed_pos not in message.task_queue:
-                        self.objects_being_collected.discard(completed_pos)
-                        self.objects_being_collected_step.pop(completed_pos, None)
+                    self.objects_being_collected.discard(completed_pos)
+                    self.objects_being_collected_step.pop(completed_pos, None)
+                    # Refresh tombstone so relay messages (explored_cells or
+                    # ObjectLocation) with a CURRENT step timestamp cannot
+                    # sneak the position back into known_objects after OBC
+                    # is cleared.  The tombstone must be ≥ current step.
+                    if cs_now > self.known_objects_cleared.get(completed_pos, -1):
+                        self.known_objects_cleared[completed_pos] = cs_now
+                    # Also purge in case the same-step relay already re-inserted it.
+                    self.known_objects.pop(completed_pos, None)
+                    self.known_objects_step.pop(completed_pos, None)
                 # Infer state
                 if message.carrying_objects > 0:
                     self.retriever_states[rid] = "delivering"
@@ -563,11 +571,26 @@ class CoordinatorAgent(BaseAgent):
                 (3 * W // 4, 3 * H // 4),
                 (W // 4, 3 * H // 4),
             ]
-            wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
-            # Advance to next waypoint when we're close enough to the current one
-            if abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= max_distance_from_agents:
-                self._search_waypoint_idx += 1
+            cs = self.model.current_step
+            # Skip waypoints that are unreachable (blacklisted) or already reached.
+            # Try at most one full cycle so we don't spin forever if all are blocked.
+            for _ in range(len(search_waypoints)):
                 wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
+                failed_step = self.unreachable_targets.get(wp, -1)
+                still_blacklisted = failed_step != -1 and cs - failed_step < 30
+                already_reached = (
+                    abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1])
+                    <= max_distance_from_agents
+                )
+                if still_blacklisted or already_reached:
+                    self._search_waypoint_idx += 1
+                    continue
+                break  # found a reachable waypoint
+            else:
+                # All waypoints currently blocked — hold position
+                self.state = AgentState.IDLE
+                return
+            wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
             print(
                 f"[COORD {self.unique_id}] SEARCH: no communicated agent positions — "
                 f"heading to waypoint {wp}"

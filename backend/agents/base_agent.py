@@ -372,12 +372,19 @@ class BaseAgent(Agent):
                     CellType.WAREHOUSE_EXIT,
                 )
 
+                # Resolve OBC references once — used by both explored_cells and
+                # known_objects relay to prevent re-adding in-flight positions.
+                my_obc = getattr(self, "objects_being_collected", None)
+                my_obc_step = getattr(self, "objects_being_collected_step", None)
+
                 # --- explored_cells: object positions with message-level timestamp ---
                 msg_ts = message.timestamp
                 for x, y, cell_type in message.explored_cells:
                     pos = (x, y)
                     if cell_type == CellType.OBJECT:
-                        # Accept only if newer than current entry and tombstone
+                        # Reject if currently being collected or tombstoned
+                        if my_obc is not None and pos in my_obc:
+                            continue
                         if msg_ts > self.known_objects_step.get(
                             pos, -1
                         ) and msg_ts > self.known_objects_cleared.get(pos, -1):
@@ -395,8 +402,6 @@ class BaseAgent(Agent):
                                 self.known_warehouses.append(pos)
 
                 # --- objects_being_collected: Stamped(value=None, step), newest wins ---
-                my_obc = getattr(self, "objects_being_collected", None)
-                my_obc_step = getattr(self, "objects_being_collected_step", None)
                 for raw_pos, stamped in message.objects_being_collected.items():
                     pos = tuple(raw_pos)
                     step = stamped.step if isinstance(stamped, Stamped) else int(stamped)
@@ -432,10 +437,12 @@ class BaseAgent(Agent):
                         self.retriever_positions_step[rid] = step
 
             elif isinstance(message, ObjectLocationMessage):
-                # Accept only if newer than current entry and not tombstoned
+                # Accept only if newer, not tombstoned, and not currently being collected
                 pos = message.object_position
+                _obc = getattr(self, "objects_being_collected", None)
                 if (
-                    message.timestamp > self.known_objects_step.get(pos, -1)
+                    (_obc is None or pos not in _obc)
+                    and message.timestamp > self.known_objects_step.get(pos, -1)
                     and self.known_objects_cleared.get(pos, -1) < message.timestamp
                 ):
                     self.known_objects[pos] = message.object_value
