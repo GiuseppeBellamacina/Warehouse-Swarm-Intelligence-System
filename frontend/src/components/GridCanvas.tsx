@@ -1,7 +1,7 @@
 // Grid Canvas Component for visualization
 
 import React, { useRef, useEffect, useState } from "react";
-import { SimulationState } from "../types/simulation";
+import { SimulationState, WallData, BoxData } from "../types/simulation";
 
 interface GridCanvasProps {
   state: SimulationState;
@@ -152,7 +152,8 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     ctx.fillStyle = "#4a4a4a";
     state.grid.obstacles.forEach((obstacle) => {
       if (obstacle.type === "wall") {
-        const { start, end } = obstacle.data;
+        const wallData = obstacle.data as WallData;
+        const { start, end } = wallData;
         const x0 = start.x,
           y0 = start.y,
           x1 = end.x,
@@ -164,9 +165,13 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         let err = dx - dy,
           x = x0,
           y = y0;
-        while (true) {
+        let running = true;
+        while (running) {
           ctx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
-          if (x === x1 && y === y1) break;
+          if (x === x1 && y === y1) {
+            running = false;
+            break;
+          }
           const e2 = 2 * err;
           if (e2 > -dy) {
             err -= dy;
@@ -178,7 +183,8 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
           }
         }
       } else if (obstacle.type === "box") {
-        const { top_left, width: w, height: h } = obstacle.data;
+        const boxData = obstacle.data as BoxData;
+        const { top_left, width: w, height: h } = boxData;
         ctx.fillRect(
           top_left.x * cellWidth,
           top_left.y * cellHeight,
@@ -320,7 +326,8 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       const barY = (agent.y + 0.9) * cellHeight;
       ctx.fillStyle = "#334155";
       ctx.fillRect(barX, barY, barWidth, 3);
-      const ep = agent.energy / 100;
+      const maxEnergy = agent.max_energy || 100;
+      const ep = Math.min(agent.energy / maxEnergy, 1);
       ctx.fillStyle = ep > 0.5 ? "#22c55e" : ep > 0.25 ? "#facc15" : "#ef4444";
       ctx.fillRect(barX, barY, barWidth * ep, 3);
 
