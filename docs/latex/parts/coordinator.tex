@@ -1,0 +1,61 @@
+\chapter{Coordinator Agent}
+
+Il Coordinator \`e l'unico agente con visione globale \textit{aggregata}: non pu\`o vedere
+tutta la griglia, ma riceve informazioni da tutti gli Scout vicini e costruisce un modello
+del mondo pi\`u completo rispetto ai Retriever. Il suo ruolo \`e pianificare chi deve
+recuperare cosa, evitando ridondanze e massimizzando l'efficienza del sistema.
+
+\section{Raccolta delle Informazioni}
+
+Ogni volta che riceve un \texttt{ObjectSpottedMessage} da uno Scout, il Coordinator aggiorna
+il proprio \texttt{known\_objects} con la posizione e il valore dell'oggetto. Ogni
+\texttt{TaskStatusMessage} ricevuto da un Retriever aggiorna uno dei dizionari interni:
+\texttt{retriever\_carrying} (numero di oggetti trasportati), \texttt{retriever\_energy}
+(energia residua) e \texttt{objects\_being\_collected} (set degli oggetti già in recupero).
+Il set \texttt{objects\_being\_collected} \`e la protezione principale contro la doppia
+assegnazione: qualsiasi oggetto gi\`a assegnato o dichiarato in recupero da un Retriever
+viene escluso dalla lista di candidati per le nuove assegnazioni.
+
+\section{Logica di Assegnazione}
+
+La funzione \texttt{\_send\_task\_assignments} viene invocata periodicamente (ogni
+\texttt{assignment\_interval} passi). Per ogni Retriever libero (non in consegna, non in
+ricarica, energia sufficiente), il Coordinator calcola lo score composto per ogni oggetto
+non ancora assegnato:
+
+$$\text{score}(o, r) = w_v \cdot \text{value}(o) - w_d \cdot d(r, o) - w_c \cdot \text{capacity\_penalty}(r)$$
+
+dove $w_v$, $w_d$ e $w_c$ sono pesi configurabili. Agli oggetti pi\`u vicini al Retriever
+corrente vengono preferiti quelli con valore pi\`u alto ma non troppo lontani: il rapporto
+valore/distanza bilancia la priorit\`a economica con il costo logistico. Al momento
+dell'assegnazione, il Coordinator invia al Retriever sia il \texttt{TaskAssignmentMessage}
+che un \texttt{MapDataMessage} con le celle magazzino note, accelerando la scoperta delle
+stazioni di ricarica/deposito.
+
+\section{Riposizionamento verso il Centroide}
+
+Quando il Coordinator non ha compiti da assegnare, il suo unico obiettivo di movimento
+\`e rimanere raggiungibile dalla propria flotta. A ogni passo calcola il centroide medio
+di tutti i Retriever e Scout presenti nella simulazione e, se la propria distanza da quel
+punto supera una soglia configurabile (pari a met\`a del raggio di comunicazione), si
+sposta verso la cella libera pi\`u vicina al centroide.
+
+Se la distanza \`e gi\`a entro la soglia, il Coordinator rimane fermo (\texttt{IDLE}):
+non esegue n\`e esplorazione frontier-based n\`e passeggiate casuali, poich\`e il suo
+compito non \`e esplorare ma coordinarsi. Questa scelta riduce il consumo energetico e
+evita che l'agente si allontani involontariamente dagli agenti che gestisce.
+
+Se esistono oggetti noti ma nessun Retriever \`e nel raggio di comunicazione, il Coordinator
+entra in modalit\`a \textbf{SEEK-RETRIEVER}: si dirige verso l'ultima posizione dichiarata
+di un Retriever noto, con l'obiettivo di ristabilire il canale di comunicazione e procedere
+con l'assegnazione appena possibile.
+
+\section{Sincronizzazione tra Coordinator Multipli}
+
+In configurazioni con pi\`u di un Coordinator, il rischio di doppia assegnazione aumenta.
+Il \texttt{CoordinatorSyncMessage} viene scambiato periodicamente tra Coordinator vicini
+e contiene la lista delle assegnazioni attive (\texttt{assigned\_tasks}) e degli oggetti
+in recupero (\texttt{objects\_being\_collected}). Alla ricezione, ogni Coordinator fonde
+le informazioni ricevute con le proprie, aggiornando i set interni. Questa sincronizzazione
+non \`e istantanea — si propaga a onde tramite la comunicazione locale — ma \`e sufficiente
+per eliminare la stragrande maggioranza delle doppie assegnazioni in scenari realistici.

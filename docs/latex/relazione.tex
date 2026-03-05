@@ -1,0 +1,100 @@
+\documentclass[12pt,a4paper,openany,oneside]{book}
+
+\usepackage{hyperref}
+\usepackage[italian]{babel}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+\usepackage{graphicx}
+\usepackage[font=small,labelfont=bf,tableposition=top]{caption}
+
+\usepackage[headheight=12pt, textheight=592pt, marginparsep=7pt, footskip=30pt, hoffset=0pt, paperwidth=597pt,
+            top=127pt, headsep=19pt, textwidth=390pt, marginparwidth=38pt, voffset=0pt, paperheight=845pt,
+            left=117pt, right=90pt]{geometry}
+            
+\usepackage{listings}
+\usepackage{inconsolata}
+\usepackage{xcolor}
+\usepackage[framemethod=tikz]{mdframed}
+
+% Colori per il codice Python
+\definecolor{commentsgreen}{rgb}{0, 0.6, 0}
+\definecolor{codegray}{rgb}{0.5, 0.5, 0.5}
+\definecolor{keywordpurple}{rgb}{0.77, 0.525, 0.75}
+\definecolor{backcolour}{rgb}{0.12, 0.12, 0.12}
+\definecolor{functionyellow}{rgb}{0.86, 0.86, 0.667}
+\definecolor{basicblue}{rgb}{0.61, 0.86, 1}
+\definecolor{classgreen}{rgb}{0.294, 0.745, 0.6}
+\definecolor{numberyellow}{rgb}{0.686, 0.705, 0.435}
+\definecolor{stringbrown}{rgb}{0.8, 0.51, 0.298}
+
+\lstset{
+    language=Python,
+    basicstyle=\footnotesize\ttfamily\color{basicblue},
+    numbers=left,
+    numberstyle=\tiny\ttfamily\color{codegray},
+    numbersep=8pt,
+    tabsize=4,
+    escapeinside={(*@}{@*)},
+    extendedchars=true,
+    breaklines=true,
+    backgroundcolor=\color{backcolour},
+    commentstyle=\ttfamily\color{commentsgreen},
+    keywordstyle=\ttfamily\color{keywordpurple},
+    stringstyle=\ttfamily\color{stringbrown},
+    showspaces=false,
+    showtabs=false,
+    xleftmargin=17pt,
+    framexleftmargin=17pt,
+    framexrightmargin=5pt,
+    framexbottommargin=4pt,
+    showstringspaces=false,
+    captionpos=b,
+    morekeywords=[2]{find_path, find_frontiers, select_best_frontier, compute_collision_cone, select_safe_velocity, reserve_cell, get_or_create, cleanup_loop, broadcast_to_session, broadcast_state_to_session, broadcast_event_to_session, load_simulation, start_simulation, stop_simulation, get_session_id, process_received_messages, step_sense, step_communicate, step_decide, step_act, _deposit_objects, _recharge, _setup_warehouse, _compute_warehouse_stations, _setup_obstacles, _spawn_objects, get_neighbors, heuristic},
+    keywordstyle=[2]\ttfamily\color{functionyellow},
+    morekeywords=[3]{AgentState, BaseAgent, ScoutAgent, CoordinatorAgent, RetrieverAgent, WarehouseModel, GridManager, CellType, AStarPathfinder, FrontierExplorer, VelocityObstacles, CellReservation, SimulationManager, SessionRegistry, WebSocketManager, MetricsCollector, CommunicationManager, CoordinationSystem, SimulationConfig, ScenarioConfig, AgentConfig, WarehouseConfig, EntranceExit, Position, MapDataMessage, ObjectLocationMessage, TaskAssignmentMessage, TaskStatusMessage, ClearWayMessage, CoordinatorSyncMessage, FastAPI, Request, asynccontextmanager, BaseModel, Enum, Dict, List, Set, Tuple, Optional, asyncio, np, heapq, io},
+    keywordstyle=[3]\ttfamily\color{classgreen},
+    literate={.}{{\textcolor{white}{.}}}1 
+             {=}{{\textcolor{white}{=}}}1
+             {,}{{\textcolor{white}{,}}}1
+             {:}{{\textcolor{white}{:}}}1
+             {|}{{\textcolor{white}{|}}}1
+             {+}{{\textcolor{white}{+}}}1
+             {-}{{\textcolor{white}{-}}}1
+             {>}{{\textcolor{white}{>}}}1
+             {<}{{\textcolor{white}{<}}}1
+             {*}{{\textcolor{white}{*}}}1
+}
+
+\addto\captionsitalian{
+    \renewcommand{\lstlistingname}{Codice}
+}
+
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{2}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{float}
+\usepackage{framed}
+\usepackage{booktabs}
+\usepackage{array}
+
+\begin{document}
+
+\newgeometry{top=2.5cm, bottom=3cm, left=2.5cm, right=2.5cm}
+\input{parts/frontespizio}
+\restoregeometry
+
+\tableofcontents
+
+\input{parts/baseagent}
+
+\input{parts/scout}
+
+\input{parts/coordinator}
+
+\input{parts/retriever}
+
+\end{document}

@@ -1,0 +1,38 @@
+\chapter{Struttura Comune: BaseAgent}
+
+Tutti e tre i tipi di agente ereditano da \texttt{BaseAgent}, che implementa le funzionalit\`a
+condivise: percezione dell'ambiente, ricezione e invio messaggi, movimento tramite A*,
+gestione dell'energia e rilevamento dello stato di stallo.
+
+\section{Percezione e Mappa Locale}
+
+Ogni agente mantiene una \textit{mappa locale} rappresentata come matrice numpy, inizialmente
+tutta \texttt{UNKNOWN}. Ad ogni passo, la fase \texttt{STAGE\_SENSE} aggiorna le celle entro
+il raggio di visione con il tipo reale della griglia, applicando la logica di \textit{ray
+casting}: le celle dietro un ostacolo non vengono aggiornate anche se geometricamente entro
+il raggio, simulando la visibilit\`a lineare degli agenti fisici. Gli oggetti nella zona di
+visione vengono aggiunti alla lista \texttt{known\_objects}; le celle magazzino vengono
+aggiunte a \texttt{known\_warehouses}.
+
+\section{Integrazione della Mappa Condivisa}
+
+Alla ricezione di un \texttt{MapDataMessage}, l'agente aggiorna le celle della propria
+mappa ancora \texttt{UNKNOWN} con i dati del mittente. Il merge estrae anche le celle
+magazzino, popolando \texttt{known\_warehouses}: in questo modo i Retriever scoprono
+le stazioni di ricarica ben prima di visitarle, purché uno Scout o un Coordinator
+vicino le abbia già esplorate.
+
+\section{Rilevamento dello Stallo}
+
+L'agente registra lo storico delle posizioni recenti. Se per un certo numero di passi
+consecutivi (\texttt{stuck\_threshold}) la posizione non cambia, il campo
+\texttt{stuck\_counter} viene incrementato. Superata la soglia, l'agente esegue una
+\textit{stuck recovery}: invalida il percorso corrente, aggiunge le posizioni degli
+agenti vicini come evitate e ricalcola un percorso alternativo verso una destinazione
+leggermente ruotata. Se lo stallo persiste, l'agente si sposta temporaneamente verso
+una cella casuale libera per sbloccarsi.
+
+Quando il rilevatore di loop o di stallo abbandona un target, la posizione viene inserita
+nella blacklist \texttt{unreachable\_targets} con il passo corrente: in questo modo il
+ciclo decisionale dell'agente non riassegna immediatamente lo stesso obiettivo irraggiungibile
+nel passo successivo.

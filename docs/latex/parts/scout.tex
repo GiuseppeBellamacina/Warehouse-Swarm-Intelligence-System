@@ -1,0 +1,48 @@
+\chapter{Scout Agent}
+
+Lo Scout \`e ottimizzato per la copertura massima della griglia nel minor numero di passi.
+Non recupera oggetti e non riceve compiti: la sua unica responsabilit\`a \`e esplorare
+e condividere informazioni.
+
+\section{Ciclo Decisionale}
+
+La priorit\`a dello Scout \`e deterministica e segue questa sequenza:
+
+\begin{enumerate}
+    \item \textbf{Ricarica energetica}: Se l'energia scende sotto la soglia critica (calcolata
+          come la distanza stimata al magazzino pi\`u vicino moltiplicata per un fattore di
+          sicurezza), lo Scout interrompe l'esplorazione e si dirige al magazzino. Durante
+          la ricarica, continua a comunicare la mappa locale e gli oggetti scoperti.
+    \item \textbf{Consegna scoperte al Coordinator}: Se lo Scout ha scoperto nuovi oggetti
+          e un Coordinator si trova nel raggio di comunicazione, li trasmette immediatamente
+          tramite \texttt{ObjectSpottedMessage}. Se nessun Coordinator \`e a portata, lo Scout
+          si dirige verso l'ultima posizione nota del Coordinator (\texttt{last\_seen\_coordinator\_pos})
+          per consegnare le informazioni al pi\`u presto. Se \`e trascorso troppo tempo senza
+          trovarlo, viene effettuata una scansione estesa fino a $4\times$ il raggio di
+          comunicazione per localizzarlo.
+    \item \textbf{Selezione frontiera}: Se non \`e in ricarica, \texttt{FrontierExplorer}
+          calcola le frontiere disponibili dalla mappa locale e seleziona quella con utilit\`a
+          massima. La funzione $U(f)$ favorisce cluster grandi e vicini, penalizzando cluster
+          gi\`a puntati da altri Scout (comunicazione implicita via \texttt{target\_position}
+          osservata nei messaggi di stato).
+    \item \textbf{Movimento}: A* calcola il percorso ottimale verso la frontiera selezionata,
+          con le posizioni degli altri agenti come penalizzazione soft.
+    \item \textbf{Comunicazione}: Ad ogni passo, lo Scout condivide con tutti gli agenti
+          entro il raggio \texttt{comm\_radius} la propria mappa locale aggiornata tramite
+          \texttt{MapDataMessage} e la lista degli oggetti scoperti tramite
+          \texttt{ObjectSpottedMessage} indirizzati ai Coordinator vicini.
+\end{enumerate}
+
+\section{Anti-Clustering}
+
+L'anti-clustering \`e implementato in due livelli. Il primo \`e un filtro hard: le frontiere
+che si trovano a meno di 8 celle da un altro Scout (visibile nel raggio di comunicazione) vengono
+escluse completamente dall'insieme dei candidati. Il secondo \`e una penalizzazione soft nella
+funzione di utilit\`a:
+
+$$U(f) = \frac{\text{cluster\_size}}{d(f) + 1} - 0{,}5 \cdot n_{\text{agenti}}(f)$$
+
+dove $n_{\text{agenti}}(f)$ \`e il numero di agenti entro 10 celle dalla frontiera $f$.
+Se il filtro hard elimina tutte le frontiere (caso raro, ad esempio con molti Scout su
+una griglia piccola), si ricade sull'insieme completo applicando solo la penalizzazione soft.
+Il risultato pratico \`e una divisione organica del territorio senza alcuna coordinazione esplicita.
