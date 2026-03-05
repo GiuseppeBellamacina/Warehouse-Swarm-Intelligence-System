@@ -1,6 +1,9 @@
-# Start Backend
-Write-Host "Starting Warehouse Swarm Intelligence System" -ForegroundColor Green
-Write-Host "==========================================" -ForegroundColor Green
+#!/usr/bin/env pwsh
+# Start the Warehouse Swarm Intelligence System (backend + frontend)
+
+Write-Host "================================" -ForegroundColor Cyan
+Write-Host "  Warehouse Swarm Intelligence" -ForegroundColor Cyan
+Write-Host "================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Save the root directory path
@@ -9,23 +12,44 @@ if ([string]::IsNullOrEmpty($ROOT_DIR)) {
     $ROOT_DIR = $PWD.Path
 }
 
-Write-Host "Starting Backend Server..." -ForegroundColor Yellow
+# Start Backend
+Write-Host "🚀 Starting Backend Server..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ROOT_DIR'; Write-Host 'Backend server starting on http://localhost:8000' -ForegroundColor Cyan; uv run python -m backend.api.main"
+$backendStarted = $?
 
-Write-Host "Waiting for backend to initialize..." -ForegroundColor Yellow
+if ($backendStarted) {
+    Write-Host "✅ Backend process launched successfully" -ForegroundColor Green
+} else {
+    Write-Host "❌ Failed to launch backend process" -ForegroundColor Red
+}
+
+Write-Host ""
+
+# Wait for backend to initialize
+Write-Host "⏳ Waiting for backend to initialize..." -ForegroundColor Yellow
 Start-Sleep -Seconds 5
 
 Write-Host ""
-Write-Host "Starting Frontend Development Server..." -ForegroundColor Yellow
+
+# Start Frontend
+Write-Host "🌐 Starting Frontend Development Server..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ROOT_DIR\frontend'; Write-Host 'Frontend starting on http://localhost:3000' -ForegroundColor Cyan; bun run dev"
+$frontendStarted = $?
+
+if ($frontendStarted) {
+    Write-Host "✅ Frontend process launched successfully" -ForegroundColor Green
+} else {
+    Write-Host "❌ Failed to launch frontend process" -ForegroundColor Red
+}
 
 Write-Host ""
-Write-Host "==========================================" -ForegroundColor Green
-Write-Host "System is starting up!" -ForegroundColor Green
+Write-Host "================================" -ForegroundColor Cyan
+Write-Host "  System is starting up!" -ForegroundColor Cyan
+Write-Host "================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Backend:  http://localhost:8000" -ForegroundColor Cyan
-Write-Host "Frontend: http://localhost:3000" -ForegroundColor Cyan
-Write-Host "API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
+Write-Host "  Backend:  http://localhost:8000" -ForegroundColor White
+Write-Host "  Frontend: http://localhost:3000" -ForegroundColor White
+Write-Host "  API Docs: http://localhost:8000/docs" -ForegroundColor White
 Write-Host ""
-Write-Host "Press any key to exit..." -ForegroundColor Gray
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host "Startup completed" -ForegroundColor Green
+
