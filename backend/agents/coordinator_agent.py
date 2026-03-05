@@ -562,18 +562,50 @@ class CoordinatorAgent(BaseAgent):
             # No communicated positions yet — enter search mode: cycle through
             # strategic waypoints until we come within comm range of any agent.
             W, H = self.model.grid.width, self.model.grid.height
-            search_waypoints = [
+            raw_waypoints = [
                 (W // 2, H // 2),
                 (W // 4, H // 4),
                 (3 * W // 4, H // 4),
                 (3 * W // 4, 3 * H // 4),
                 (W // 4, 3 * H // 4),
             ]
+            # Snap each ideal waypoint to the nearest walkable floor cell so we
+            # never try to path-find to an obstacle or warehouse interior.
+            search_waypoints = []
+            for raw in raw_waypoints:
+                if self.model.grid.is_walkable(*raw) and \
+                        self.model.grid.get_cell_type(*raw) not in _WH_TYPES:
+                    search_waypoints.append(raw)
+                    continue
+                found = None
+                for r in range(1, max(W, H)):
+                    for dx in range(-r, r + 1):
+                        for dy in range(-r, r + 1):
+                            if abs(dx) != r and abs(dy) != r:
+                                continue  # inner cells already checked at smaller r
+                            cx, cy = raw[0] + dx, raw[1] + dy
+                            if not (0 <= cx < W and 0 <= cy < H):
+                                continue
+                            if self.model.grid.get_cell_type(cx, cy) in _WH_TYPES:
+                                continue
+                            if not self.model.grid.is_walkable(cx, cy):
+                                continue
+                            found = (cx, cy)
+                            break
+                        if found:
+                            break
+                    if found:
+                        break
+                search_waypoints.append(found or raw)
+
             cs = self.model.current_step
             # Skip waypoints that are unreachable (blacklisted) or already reached.
             # Try at most one full cycle so we don't spin forever if all are blocked.
             for _ in range(len(search_waypoints)):
                 wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
+                if wp is None:
+                    self._search_waypoint_idx += 1
+                    continue
                 failed_step = self.unreachable_targets.get(wp, -1)
                 still_blacklisted = failed_step != -1 and cs - failed_step < 30
                 already_reached = (
@@ -584,7 +616,9 @@ class CoordinatorAgent(BaseAgent):
                     continue
                 break  # found a reachable waypoint
             else:
-                # All waypoints currently blocked — hold position
+                # All waypoints currently blocked — reset blacklist and try again
+                # next step rather than idling forever.
+                self.unreachable_targets.clear()
                 self.state = AgentState.IDLE
                 return
             wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
