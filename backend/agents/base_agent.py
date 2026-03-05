@@ -57,9 +57,9 @@ class BaseAgent(Agent):
         unique_id: int,
         model: "WarehouseModel",
         role: str,
-        vision_radius: int = 5,
-        communication_radius: int = 15,
-        max_energy: float = 100.0,
+        vision_radius: int = 3,
+        communication_radius: int = 2,
+        max_energy: float = 500.0,
         speed: float = 1.0,
         energy_consumption: Optional[dict] = None,
     ):
@@ -78,9 +78,9 @@ class BaseAgent(Agent):
         self.max_energy = max_energy
         self.energy = max_energy
         self.energy_consumption = energy_consumption or {
-            "base": 0.1,
-            "move": 0.5,
-            "communicate": 0.2,
+            "base": 0.0,
+            "move": 1.0,
+            "communicate": 0.0,
         }
 
         # Local map memory (initialized to UNKNOWN)
@@ -326,10 +326,26 @@ class BaseAgent(Agent):
                 self.local_map = MapSharingSystem.apply_shared_map_data(
                     self.local_map, message.explored_cells
                 )
-                # Extract object locations from shared data
+                # Extract object locations and warehouse cells from shared data
+                _WH_CELL_TYPES = (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                )
                 for x, y, cell_type in message.explored_cells:
                     if cell_type == CellType.OBJECT:
                         self.known_objects[(x, y)] = 1.0
+                    else:
+                        # If a peer reports this cell as non-object, the object was
+                        # likely already picked up — prune the stale entry so agents
+                        # don't waste time heading to empty cells.
+                        if (x, y) in self.known_objects:
+                            del self.known_objects[(x, y)]
+                        if cell_type in _WH_CELL_TYPES:
+                            # Populate known_warehouses so agents can navigate to
+                            # warehouses discovered through map sharing, not just vision
+                            if (x, y) not in self.known_warehouses:
+                                self.known_warehouses.append((x, y))
 
             elif isinstance(message, ObjectLocationMessage):
                 # Add discovered object to known objects
@@ -396,6 +412,7 @@ class BaseAgent(Agent):
                 CellType.WAREHOUSE_EXIT,
             ) and self.model.grid.is_cell_empty(np_):
                 self.model.grid.move_agent(self, np_)
+                self.consume_energy(self.energy_consumption["move"])
                 print(
                     f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
                     f"moved off {my_pos} → {np_}"
@@ -472,15 +489,36 @@ class BaseAgent(Agent):
             return True  # Already at target
 
         # Determine whether warehouse doors may be used as transit nodes.
-        # Allow transit only when heading TO or THROUGH a warehouse cell.
+        #
+        # Rules (prevent EXIT→ENTRANCE shortcuts and ENTRANCE→EXIT shortcuts):
+        #
+        #  1. Agent is already INSIDE a warehouse cell (any WH type):
+        #     → no restrictions — agent must be able to exit via any door.
+        #
+        #  2. Agent is OUTSIDE and heading to an ENTRANCE (or internal WH cell):
+        #     → forbid EXIT cells as transit (block the wrong-door shortcut).
+        #
+        #  3. Agent is OUTSIDE and heading to an EXIT (shouldn't happen in normal
+        #     operation, but guard anyway):
+        #     → forbid ENTRANCE cells as transit.
+        #
+        #  4. Pure external navigation (target is not a warehouse cell):
+        #     → forbid ALL door types as transit.
         target_type = self.model.grid.get_cell_type(*target)
+        my_type = self.model.grid.get_cell_type(*pos_tuple)
         _DOOR_TYPES = {CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
         _WH_TYPES = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
-        if target_type in _WH_TYPES:
-            # Heading into/through warehouse — doors are allowed as transit
+        if my_type in _WH_TYPES:
+            # Case 1: inside warehouse — no restrictions so agent can always exit
             forbidden_types = None
+        elif target_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE):
+            # Case 2: approaching via entrance — only block exit-cell shortcuts
+            forbidden_types = {CellType.WAREHOUSE_EXIT}
+        elif target_type == CellType.WAREHOUSE_EXIT:
+            # Case 3: targeting exit from outside — only block entrance shortcuts
+            forbidden_types = {CellType.WAREHOUSE_ENTRANCE}
         else:
-            # External navigation — never shortcut through warehouse doors
+            # Case 4: external navigation — never shortcut through any door
             forbidden_types = _DOOR_TYPES
 
         # If waiting due to temporary blockage, decrement wait counter
@@ -638,6 +676,9 @@ class BaseAgent(Agent):
                     print(
                         f"[{self.role.upper()} {self.unique_id}] LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}"
                     )
+                    # Blacklist the stuck target so step_decide doesn't immediately re-assign it
+                    if self.target_position is not None:
+                        self.unreachable_targets[self.target_position] = self.model.current_step
                     self.target_position = None
                     self.path = []
                     self.stuck_counter = 0
@@ -650,6 +691,9 @@ class BaseAgent(Agent):
                 print(
                     f"[{self.role.upper()} {self.unique_id}] STUCK: Stuck for {self.stuck_counter} steps at {pos_to_tuple(self.pos)}, abandoning target {self.target_position}"
                 )
+                # Blacklist the stuck target so step_decide doesn't immediately re-assign it
+                if self.target_position is not None:
+                    self.unreachable_targets[self.target_position] = self.model.current_step
                 self.target_position = None
                 self.path = []
                 self.stuck_counter = 0
@@ -720,6 +764,7 @@ class BaseAgent(Agent):
                                 CellType.WAREHOUSE_EXIT,
                             ] and self.model.grid.is_cell_empty(new_pos):
                                 self.model.grid.move_agent(self, new_pos)
+                                self.consume_energy(self.energy_consumption["move"])
                                 print(
                                     f"[{self.role.upper()} {self.unique_id}] UNBLOCK: Moving out of entrance/exit to {new_pos}"
                                 )
@@ -736,6 +781,10 @@ class BaseAgent(Agent):
         """
         if self.energy <= 0:
             return  # Agent is out of energy
+
+        # Respect global tick limit (ticks are incremented per individual move)
+        if not self.model.running or self.model.current_step >= self.model.max_steps:
+            return
 
         # Execute all stages sequentially
         self.step_sense()
