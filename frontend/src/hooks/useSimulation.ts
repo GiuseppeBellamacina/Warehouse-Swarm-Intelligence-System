@@ -2,7 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { io, Socket } from "socket.io-client";
-import { SimulationState, SimulationConfig } from "../types/simulation";
+import {
+  SimulationState,
+  GridScenarioConfig,
+  SimulationAgentsConfig,
+} from "../types/simulation";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
@@ -130,29 +134,32 @@ export const useSimulation = () => {
     setBackendStatus("offline");
   }, []);
 
-  /** Load a config: initialises backend + broadcasts step 0, does NOT start the loop */
-  const loadConfig = useCallback(async (config: SimulationConfig) => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/simulation/load`, {
-        method: "POST",
-        headers: SESSION_HEADERS,
-        body: JSON.stringify({ config }),
-      });
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || "Failed to load simulation");
+  /** Load a grid-based scenario: initialises backend + broadcasts step 0, does NOT start the loop */
+  const loadConfig = useCallback(
+    async (scenario: GridScenarioConfig, agents?: SimulationAgentsConfig) => {
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/simulation/load`, {
+          method: "POST",
+          headers: SESSION_HEADERS,
+          body: JSON.stringify({ scenario, agents: agents ?? null }),
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || "Failed to load simulation");
+        }
+        const result = await response.json();
+        console.log("Simulation loaded:", result);
+        setIsLoaded(true);
+        setIsRunning(false);
+        setIsPaused(false);
+        return result;
+      } catch (error) {
+        console.error("Error loading simulation:", error);
+        throw error;
       }
-      const result = await response.json();
-      console.log("Simulation loaded:", result);
-      setIsLoaded(true);
-      setIsRunning(false);
-      setIsPaused(false);
-      return result;
-    } catch (error) {
-      console.error("Error loading simulation:", error);
-      throw error;
-    }
-  }, []);
+    },
+    [],
+  );
 
   /** Start the simulation loop (requires prior call to loadConfig) */
   const startSimulation = useCallback(async () => {

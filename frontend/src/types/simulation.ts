@@ -19,6 +19,7 @@ export interface Agent {
   x: number;
   y: number;
   energy: number;
+  max_energy: number;
   state: string;
   carrying: number;
   vision_radius: number;
@@ -33,9 +34,20 @@ export interface SimObject {
   retrieved: boolean;
 }
 
+export interface WallData {
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+}
+
+export interface BoxData {
+  top_left: { x: number; y: number };
+  width: number;
+  height: number;
+}
+
 export interface Obstacle {
   type: "wall" | "box";
-  data: any;
+  data: WallData | BoxData;
 }
 
 export interface Warehouse {
@@ -75,6 +87,7 @@ export interface SimulationState {
   };
 }
 
+/** Legacy verbose format kept for compatibility with MapEditor internal use */
 export interface SimulationConfig {
   simulation: {
     grid_width: number;
@@ -83,9 +96,89 @@ export interface SimulationConfig {
     max_steps: number;
     seed?: number;
   };
-  warehouse: any;
-  obstacles: any[];
-  objects: any;
-  agents: any;
-  logging?: any;
+  warehouse: Record<string, unknown>;
+  obstacles: Record<string, unknown>[];
+  objects: Record<string, unknown>;
+  agents: Record<string, unknown>;
+  logging?: Record<string, unknown>;
 }
+
+// ── Compact grid-based format (A/B) ──────────────────────────────────────────
+
+export interface GridScenarioMetadata {
+  grid_size: number;
+  num_warehouses: number;
+  num_objects: number;
+  max_steps: number;
+  seed?: number;
+}
+
+export interface GridWarehouse {
+  id: number;
+  side: string;
+  entrance: [number, number]; // [row, col]
+  exit: [number, number]; // [row, col]
+  area: [number, number][]; // [[row, col], ...]
+}
+
+/**
+ * Compact grid-based scenario config (new A/B format).
+ *
+ * Grid cell encoding:
+ *   0 = free / empty
+ *   1 = wall / obstacle
+ *   2 = warehouse interior
+ *   3 = warehouse entrance
+ *   4 = warehouse exit
+ *
+ * Objects are stored separately in ``objects`` and are NOT encoded in the grid.
+ */
+export interface GridScenarioConfig {
+  metadata: GridScenarioMetadata;
+  grid: number[][]; // grid[row][col]
+  warehouses: GridWarehouse[];
+  objects: [number, number][]; // [[row, col], ...]
+}
+
+export interface AgentRoleParams {
+  count: number;
+  vision_radius: number;
+  communication_radius: number;
+  max_energy: number;
+  speed: number;
+  carrying_capacity: number;
+}
+
+export interface SimulationAgentsConfig {
+  scouts: AgentRoleParams;
+  coordinators: AgentRoleParams;
+  retrievers: AgentRoleParams;
+}
+
+/** Default agent configuration matching the backend SimulationAgentsConfig defaults */
+export const DEFAULT_AGENTS_CONFIG: SimulationAgentsConfig = {
+  scouts: {
+    count: 1,
+    vision_radius: 3,
+    communication_radius: 2,
+    max_energy: 500,
+    speed: 1.5,
+    carrying_capacity: 0,
+  },
+  coordinators: {
+    count: 1,
+    vision_radius: 2,
+    communication_radius: 3,
+    max_energy: 500,
+    speed: 1.0,
+    carrying_capacity: 0,
+  },
+  retrievers: {
+    count: 3,
+    vision_radius: 2,
+    communication_radius: 2,
+    max_energy: 500,
+    speed: 1.0,
+    carrying_capacity: 2,
+  },
+};
