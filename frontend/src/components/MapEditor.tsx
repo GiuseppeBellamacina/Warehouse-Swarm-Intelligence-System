@@ -1,7 +1,11 @@
 // Map Editor Component - Visual configuration creator
 
 import React, { useState, useRef, useEffect } from "react";
-import { SimulationConfig } from "../types/simulation";
+import {
+  GridScenarioConfig,
+  GridWarehouse,
+  SimulationAgentsConfig,
+} from "../types/simulation";
 import { MAP_PRESETS } from "../presets";
 
 type CellType =
@@ -26,7 +30,10 @@ interface EditorState {
 }
 
 export const MapEditor: React.FC<{
-  onExport: (config: SimulationConfig) => void;
+  onExport: (
+    scenario: GridScenarioConfig,
+    agents: SimulationAgentsConfig,
+  ) => void;
 }> = ({ onExport }) => {
   const [state, setState] = useState<EditorState>({
     gridWidth: 25,
@@ -57,6 +64,7 @@ export const MapEditor: React.FC<{
       .fill(null)
       .map(() => Array(state.gridWidth).fill("free"));
     setState((prev) => ({ ...prev, cells: newCells }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.gridWidth, state.gridHeight]);
 
   // Draw grid
@@ -141,7 +149,65 @@ export const MapEditor: React.FC<{
   };
 
   // ---------- JSON import ----------
-  const loadFromConfig = (json: any) => {
+  const loadFromConfig = (
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    json: Record<string, any>,
+  ) => {
+    // Detect format: new grid-based (has metadata.grid_size + grid matrix) vs old verbose
+    if (json.metadata?.grid_size !== undefined && Array.isArray(json.grid)) {
+      // ── New compact format ───────────────────────────────────────────────
+      const size: number = json.metadata.grid_size;
+      // The grid matrix may be smaller than grid_size if it was saved with explicit height
+      const height: number = json.grid.length || size;
+      const width: number = json.grid[0]?.length || size;
+
+      const newCells: CellType[][] = Array(height)
+        .fill(null)
+        .map(() => Array(width).fill("free" as CellType));
+
+      // Map grid values to editor cell types
+      // 0=free, 1=obstacle, 2=warehouse, 3=entrance, 4=exit
+      for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+          const v: number = json.grid[row]?.[col] ?? 0;
+          switch (v) {
+            case 1:
+              newCells[row][col] = "obstacle";
+              break;
+            case 2:
+              newCells[row][col] = "warehouse";
+              break;
+            case 3:
+              newCells[row][col] = "entrance";
+              break;
+            case 4:
+              newCells[row][col] = "exit";
+              break;
+            default:
+              newCells[row][col] = "free";
+          }
+        }
+      }
+
+      // Mark object positions as object_zone
+      if (Array.isArray(json.objects)) {
+        for (const [row, col] of json.objects) {
+          if (row >= 0 && row < height && col >= 0 && col < width)
+            newCells[row][col] = "object_zone";
+        }
+      }
+
+      setState((prev) => ({
+        ...prev,
+        gridWidth: width,
+        gridHeight: height,
+        cells: newCells,
+        objectCount: json.metadata.num_objects ?? prev.objectCount,
+      }));
+      return;
+    }
+
+    // ── Old verbose format ───────────────────────────────────────────────────
     const width: number = json.simulation?.grid_width ?? state.gridWidth;
     const height: number = json.simulation?.grid_height ?? state.gridHeight;
 
@@ -241,178 +307,15 @@ export const MapEditor: React.FC<{
   };
 
   const handleExport = () => {
-    // Extract positions for each cell type
-    const obstacles: Array<{ x: number; y: number }> = [];
-    const warehouseCells: Array<{ x: number; y: number }> = [];
-    const entrances: Array<{ x: number; y: number }> = [];
-    const exits: Array<{ x: number; y: number }> = [];
-    const objectZones: Array<{ x: number; y: number }> = [];
-
-    for (let y = 0; y < state.gridHeight; y++) {
-      for (let x = 0; x < state.gridWidth; x++) {
-        const cell = state.cells[y][x];
-        switch (cell) {
-          case "obstacle":
-            obstacles.push({ x, y });
-            break;
-          case "warehouse":
-            warehouseCells.push({ x, y });
-            break;
-          case "entrance":
-            entrances.push({ x, y });
-            break;
-          case "exit":
-            exits.push({ x, y });
-            break;
-          case "object_zone":
-            objectZones.push({ x, y });
-            break;
-        }
-      }
-    }
-
-    // Find object zone bounds
-    let minX = state.gridWidth,
-      maxX = 0,
-      minY = state.gridHeight,
-      maxY = 0;
-    if (objectZones.length > 0) {
-      objectZones.forEach(({ x, y }) => {
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
-      });
-    } else {
-      // Default to center area
-      minX = Math.floor(state.gridWidth * 0.2);
-      maxX = Math.floor(state.gridWidth * 0.8);
-      minY = Math.floor(state.gridHeight * 0.2);
-      maxY = Math.floor(state.gridHeight * 0.8);
-    }
-
-    // Build configuration
-    const config: SimulationConfig = {
-      simulation: {
-        grid_width: state.gridWidth,
-        grid_height: state.gridHeight,
-        timestep_duration_ms: 50,
-        max_steps: 5000,
-        seed: 42,
-      },
-      warehouse: {
-        position: { x: 1, y: 1 },
-        width: 2,
-        height: 2,
-        warehouse_cells: warehouseCells.length > 0 ? warehouseCells : undefined,
-        entrances:
-          entrances.length > 0
-            ? entrances
-            : [
-                {
-                  x: Math.floor(state.gridWidth / 2),
-                  y: 5,
-                },
-              ],
-        exits:
-          exits.length > 0
-            ? exits
-            : [
-                {
-                  x: Math.floor(state.gridWidth / 2) + 1,
-                  y: 5,
-                },
-              ],
-        recharge_rate: 5.0,
-      },
-      obstacles: obstacles
-        .map((obs, idx) => {
-          if (
-            idx === 0 ||
-            obstacles[idx - 1].x !== obs.x ||
-            obstacles[idx - 1].y !== obs.y - 1
-          ) {
-            // Start of new wall segment
-            return {
-              type: "wall" as const,
-              start: { x: obs.x, y: obs.y },
-              end: { x: obs.x, y: obs.y },
-            };
-          }
-          return null;
-        })
-        .filter((w): w is NonNullable<typeof w> => w !== null),
-      objects: {
-        count: state.objectCount,
-        spawn_zones: [
-          {
-            x_range: [minX, maxX] as [number, number],
-            y_range: [minY, maxY] as [number, number],
-            probability: 1.0,
-          },
-        ],
-      },
-      agents: {
-        scouts: {
-          count: state.scouts,
-          spawn_location: {
-            x: Math.floor(state.gridWidth / 2),
-            y: Math.floor(state.gridHeight / 2),
-          },
-          parameters: {
-            vision_radius: 5,
-            communication_radius: 15,
-            max_energy: 100.0,
-            speed: 1.5,
-            carrying_capacity: 0,
-          },
-        },
-        coordinators: {
-          count: state.coordinators,
-          spawn_location: {
-            x: Math.floor(state.gridWidth / 2),
-            y: Math.floor(state.gridHeight / 2),
-          },
-          parameters: {
-            vision_radius: 7,
-            communication_radius: 20,
-            max_energy: 120.0,
-            speed: 1.0,
-            carrying_capacity: 0,
-          },
-        },
-        retrievers: {
-          count: state.retrievers,
-          spawn_location: {
-            x: Math.floor(state.gridWidth / 2),
-            y: Math.floor(state.gridHeight / 2),
-          },
-          parameters: {
-            vision_radius: 4,
-            communication_radius: 12,
-            max_energy: 100.0,
-            speed: 1.0,
-            carrying_capacity: 2,
-          },
-        },
-      },
-      logging: {
-        enabled: true,
-        log_interval: 10,
-        metrics: ["coverage", "energy", "objects_retrieved"],
-      },
-    };
-
-    onExport(config);
+    const { scenario, agents } = buildGridConfig();
+    onExport(scenario, agents);
   };
 
   const handleDownloadJSON = () => {
-    // Extract config same as handleExport
     handleExport();
-
-    // But also download the file
-    const config = buildConfig();
-    const blob = new Blob([JSON.stringify(config, null, 2)], {
+    const { scenario, agents } = buildGridConfig();
+    const combined = { ...scenario, agents };
+    const blob = new Blob([JSON.stringify(combined, null, 2)], {
       type: "application/json",
     });
     const url = URL.createObjectURL(blob);
@@ -423,152 +326,138 @@ export const MapEditor: React.FC<{
     URL.revokeObjectURL(url);
   };
 
-  const buildConfig = () => {
-    const obstacles: Array<{ x: number; y: number }> = [];
-    const warehouseCells: Array<{ x: number; y: number }> = [];
-    const entrances: Array<{ x: number; y: number }> = [];
-    const exits: Array<{ x: number; y: number }> = [];
-    const objectZones: Array<{ x: number; y: number }> = [];
+  /**
+   * Build a GridScenarioConfig + SimulationAgentsConfig from the current editor state.
+   *
+   * Grid encoding:
+   *   0 = free, 1 = obstacle, 2 = warehouse, 3 = entrance, 4 = exit
+   *   object_zone cells → 0 in grid, stored as objects list
+   */
+  const buildGridConfig = (): {
+    scenario: GridScenarioConfig;
+    agents: SimulationAgentsConfig;
+  } => {
+    const warehouseArea: [number, number][] = [];
+    const entrances: { row: number; col: number }[] = [];
+    const exits: { row: number; col: number }[] = [];
+    const objects: [number, number][] = [];
 
-    for (let y = 0; y < state.gridHeight; y++) {
-      for (let x = 0; x < state.gridWidth; x++) {
-        const cell = state.cells[y][x];
+    const gridMatrix: number[][] = [];
+
+    for (let row = 0; row < state.gridHeight; row++) {
+      const rowArr: number[] = [];
+      for (let col = 0; col < state.gridWidth; col++) {
+        const cell = state.cells[row][col];
         switch (cell) {
           case "obstacle":
-            obstacles.push({ x, y });
+            rowArr.push(1);
             break;
           case "warehouse":
-            warehouseCells.push({ x, y });
+            rowArr.push(2);
+            warehouseArea.push([row, col]);
             break;
           case "entrance":
-            entrances.push({ x, y });
+            rowArr.push(3);
+            entrances.push({ row, col });
             break;
           case "exit":
-            exits.push({ x, y });
+            rowArr.push(4);
+            exits.push({ row, col });
             break;
           case "object_zone":
-            objectZones.push({ x, y });
+            rowArr.push(0); // not encoded in grid
+            if (objects.length < state.objectCount) objects.push([row, col]);
             break;
+          default:
+            rowArr.push(0);
+        }
+      }
+      gridMatrix.push(rowArr);
+    }
+
+    // If no object_zone cells, generate objects in the center area
+    if (objects.length === 0) {
+      const cRow = Math.floor(state.gridHeight / 2);
+      const cCol = Math.floor(state.gridWidth / 2);
+      const spread = Math.min(
+        5,
+        Math.floor(Math.min(state.gridHeight, state.gridWidth) * 0.2),
+      );
+      for (let i = 0; i < state.objectCount; i++) {
+        const r = cRow + Math.floor(Math.random() * (spread * 2 + 1)) - spread;
+        const c = cCol + Math.floor(Math.random() * (spread * 2 + 1)) - spread;
+        if (r >= 0 && r < state.gridHeight && c >= 0 && c < state.gridWidth) {
+          objects.push([r, c]);
         }
       }
     }
 
-    let minX = state.gridWidth,
-      maxX = 0,
-      minY = state.gridHeight,
-      maxY = 0;
-    if (objectZones.length > 0) {
-      objectZones.forEach(({ x, y }) => {
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
+    // Build warehouse records — pair entrances with exits
+    const warehouses: GridWarehouse[] = entrances.map((ent, idx) => {
+      const ex = exits[idx] ?? ent;
+      return {
+        id: idx,
+        side: "south",
+        entrance: [ent.row, ent.col],
+        exit: [ex.row, ex.col],
+        area: warehouseArea,
+      };
+    });
+
+    // If no entrances defined, create a default one at top-left area
+    if (warehouses.length === 0) {
+      warehouses.push({
+        id: 0,
+        side: "south",
+        entrance: [2, Math.floor(state.gridWidth / 2)],
+        exit: [2, Math.floor(state.gridWidth / 2) + 1],
+        area: warehouseArea,
       });
-    } else {
-      minX = Math.floor(state.gridWidth * 0.2);
-      maxX = Math.floor(state.gridWidth * 0.8);
-      minY = Math.floor(state.gridHeight * 0.2);
-      maxY = Math.floor(state.gridHeight * 0.8);
     }
 
-    return {
-      simulation: {
-        grid_width: state.gridWidth,
-        grid_height: state.gridHeight,
-        timestep_duration_ms: 50,
-        max_steps: 5000,
+    const gridSize = Math.max(state.gridWidth, state.gridHeight);
+
+    const scenario: GridScenarioConfig = {
+      metadata: {
+        grid_size: gridSize,
+        num_warehouses: warehouses.length,
+        num_objects: objects.length,
+        max_steps: 500,
         seed: 42,
       },
-      warehouse: {
-        position: { x: 1, y: 1 },
-        width: 2,
-        height: 2,
-        warehouse_cells: warehouseCells.length > 0 ? warehouseCells : undefined,
-        entrances:
-          entrances.length > 0
-            ? entrances
-            : [
-                {
-                  x: Math.floor(state.gridWidth / 2),
-                  y: 5,
-                },
-              ],
-        exits:
-          exits.length > 0
-            ? exits
-            : [
-                {
-                  x: Math.floor(state.gridWidth / 2) + 1,
-                  y: 5,
-                },
-              ],
-        recharge_rate: 5.0,
+      grid: gridMatrix,
+      warehouses,
+      objects,
+    };
+
+    const agents: SimulationAgentsConfig = {
+      scouts: {
+        count: state.scouts,
+        vision_radius: 3,
+        communication_radius: 2,
+        max_energy: 500,
+        speed: 1.5,
+        carrying_capacity: 0,
       },
-      obstacles: obstacles.map((obs) => ({
-        type: "wall",
-        start: { x: obs.x, y: obs.y },
-        end: { x: obs.x, y: obs.y },
-      })),
-      objects: {
-        count: state.objectCount,
-        spawn_zones: [
-          {
-            x_range: [minX, maxX],
-            y_range: [minY, maxY],
-            probability: 1.0,
-          },
-        ],
+      coordinators: {
+        count: state.coordinators,
+        vision_radius: 2,
+        communication_radius: 3,
+        max_energy: 500,
+        speed: 1.0,
+        carrying_capacity: 0,
       },
-      agents: {
-        scouts: {
-          count: state.scouts,
-          spawn_location: {
-            x: Math.floor(state.gridWidth / 2),
-            y: Math.floor(state.gridHeight / 2),
-          },
-          parameters: {
-            vision_radius: 5,
-            communication_radius: 15,
-            max_energy: 100.0,
-            speed: 1.5,
-            carrying_capacity: 0,
-          },
-        },
-        coordinators: {
-          count: state.coordinators,
-          spawn_location: {
-            x: Math.floor(state.gridWidth / 2),
-            y: Math.floor(state.gridHeight / 2),
-          },
-          parameters: {
-            vision_radius: 7,
-            communication_radius: 20,
-            max_energy: 120.0,
-            speed: 1.0,
-            carrying_capacity: 0,
-          },
-        },
-        retrievers: {
-          count: state.retrievers,
-          spawn_location: {
-            x: Math.floor(state.gridWidth / 2),
-            y: Math.floor(state.gridHeight / 2),
-          },
-          parameters: {
-            vision_radius: 4,
-            communication_radius: 12,
-            max_energy: 100.0,
-            speed: 1.0,
-            carrying_capacity: 2,
-          },
-        },
-      },
-      logging: {
-        enabled: true,
-        log_interval: 10,
-        metrics: ["coverage", "energy", "objects_retrieved"],
+      retrievers: {
+        count: state.retrievers,
+        vision_radius: 2,
+        communication_radius: 2,
+        max_energy: 500,
+        speed: 1.0,
+        carrying_capacity: 2,
       },
     };
+
+    return { scenario, agents };
   };
 
   return (
