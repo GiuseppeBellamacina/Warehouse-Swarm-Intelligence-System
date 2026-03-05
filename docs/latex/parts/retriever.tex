@@ -74,24 +74,20 @@ ottimale tra tutte quelle note all'agente. Il punteggio per ogni stazione combin
 
 \section{Peer Negotiation tra Retriever}
 
-La peer negotiation \`e un protocollo a tre livelli per gestire i conflitti quando pi\`u
-Retriever tentano di recuperare lo stesso oggetto:
+I conflitti tra Retriever che puntano allo stesso oggetto si risolvono in due livelli:
 
 \begin{enumerate}
-    \item \textbf{Global claim atomico}: Il primo tentativo avviene tramite
-          \texttt{CommunicationManager.try\_claim\_object}, che \`e un'operazione atomica
-          thread-safe. Solo un Retriever pu\`o reclamare un oggetto; tutti gli altri
-          ricevono un fallimento immediato e devono cercare un'alternativa.
-    \item \textbf{Peer queue}: Se un Retriever non riesce a reclamare un oggetto perch\'e
-          gi\`a reclamato, invia un \texttt{TaskStatusMessage} con tipo
-          \texttt{peer\_request} all'attuale detentore del claim. Il detentore valuta se
-          cedere il claim (se \`e pi\`u lontano dall'oggetto del richiedente) o rifiutare.
-          In caso di cessione, risponde con \texttt{peer\_yield} e rilascia il claim.
-    \item \textbf{Fallback}: Se nessuna peer negotiation si conclude positivamente entro
-          un certo numero di passi, il Retriever rinuncia all'oggetto e passa al prossimo
-          compito in coda o avvia la mini-esplorazione.
+    \item \textbf{Claim atomico}: Ogni auto-assegnazione passa per
+          \texttt{CommunicationManager.try\_claim\_object}, operazione atomica condivisa
+          da tutti gli agenti. Solo un Retriever ottiene il claim; i contendenti ricevono
+          immediatamente un fallimento e selezionano un altro oggetto.
+    \item \textbf{Aggiornamento reattivo via TaskStatusMessage}: Dopo ogni claim
+          riuscito, il Retriever diffonde un \texttt{TaskStatusMessage} a tutti i vicini.
+          Alla ricezione, ogni peer rimuove dalla propria \texttt{task\_queue} gli oggetti
+          gi\`a presenti nella coda del mittente (\texttt{PEER-YIELD}), aggiornando
+          preventivamente la propria pianificazione senza attendere un fallimento esplicito.
 \end{enumerate}
 
-Questo protocollo distribuisce efficacemente il lavoro senza richiedere un arbitro
-centralizzato: la decisione di cedere o meno \`e locale a ciascun Retriever e si basa
-esclusivamente su informazioni disponibili nella propria mappa locale (distanza).
+L'assenza di un arbitro centralizzato e la natura broadcast del \texttt{TaskStatusMessage}
+garantiscono convergenza rapida: nella pratica, le collisioni residue dopo il claim atomico
+sono rare e vengono risolte entro uno-due passi di comunicazione.

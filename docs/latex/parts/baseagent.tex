@@ -22,6 +22,18 @@ magazzino, popolando \texttt{known\_warehouses}: in questo modo i Retriever scop
 le stazioni di ricarica ben prima di visitarle, purché uno Scout o un Coordinator
 vicino le abbia già esplorate.
 
+\section{Protocollo ClearWay}
+
+Quando un agente calcola un percorso A* verso il proprio obiettivo ma la cella successiva
+\`e occupata da un altro agente fermo, anzich\'e attendere o ricalcolare un percorso
+alternativo, invia un \texttt{ClearWayMessage} direttamente all'occupante. L'agente
+ricevente, se libero da vincoli immediati, si sposta sulla cella adiacente pi\`u vicina
+libera. Questa negoziazione \`e ricorsiva (\texttt{depth} nel messaggio) fino a una
+profondità massima: se la catena di spostamenti non si risolve, l'agente iniziante
+rilascia il messaggio e lascia che A* trovi una via alternativa al passo successivo.
+Il meccanismo riduce significativamente i blocchi in corridoi stretti senza richiedere
+alcuna struttura di prenotazione globale.
+
 \section{Rilevamento dello Stallo}
 
 L'agente registra lo storico delle posizioni recenti. Se per un certo numero di passi

@@ -18,27 +18,30 @@ viene escluso dalla lista di candidati per le nuove assegnazioni.
 
 \section{Logica di Assegnazione}
 
-La funzione \texttt{\_send\_task\_assignments} viene invocata periodicamente (ogni
-\texttt{assignment\_interval} passi). Per ogni Retriever libero (non in consegna, non in
-ricarica, energia sufficiente), il Coordinator calcola lo score composto per ogni oggetto
-non ancora assegnato:
+La funzione \texttt{\_plan\_task\_assignments} calcola per ogni coppia (Retriever, oggetto)
+una priorit\`a greedy:
 
-$$\text{score}(o, r) = w_v \cdot \text{value}(o) - w_d \cdot d(r, o) - w_c \cdot \text{capacity\_penalty}(r)$$
+$$\text{priority}(o, r) = \frac{\text{value}(o)}{d(r, o) + 1} + b_{\text{spotted}}$$
 
-dove $w_v$, $w_d$ e $w_c$ sono pesi configurabili. Agli oggetti pi\`u vicini al Retriever
-corrente vengono preferiti quelli con valore pi\`u alto ma non troppo lontani: il rapporto
-valore/distanza bilancia la priorit\`a economica con il costo logistico. Al momento
-dell'assegnazione, il Coordinator invia al Retriever sia il \texttt{TaskAssignmentMessage}
+dove $b_{\text{spotted}} = 0{,}5$ se il Retriever ha gi\`a visto l'oggetto direttamente
+(campo \texttt{\_spotted\_by}), altrimenti $0$. I candidati vengono ordinati per priorit\`a
+decrescente e assegnati in modo greedy rispettando i slot liberi di ciascun Retriever.
+Al momento dell'invio, il Coordinator trasmette sia il \texttt{TaskAssignmentMessage}
 che un \texttt{MapDataMessage} con le celle magazzino note, accelerando la scoperta delle
-stazioni di ricarica/deposito.
+stazioni di deposito da parte dei Retriever che non le hanno ancora esplorate.
 
 \section{Riposizionamento verso il Centroide}
 
-Quando il Coordinator non ha compiti da assegnare, il suo unico obiettivo di movimento
-\`e rimanere raggiungibile dalla propria flotta. A ogni passo calcola il centroide medio
-di tutti i Retriever e Scout presenti nella simulazione e, se la propria distanza da quel
-punto supera una soglia configurabile (pari a met\`a del raggio di comunicazione), si
-sposta verso la cella libera pi\`u vicina al centroide.
+Quando il Coordinator non ha compiti da assegnare, il suo obiettivo di movimento \`e
+rimanere raggiungibile dalla propria flotta. All'avvio, finch\'e non riceve nessuna
+posizione recente da un Retriever, il Coordinator percorre un circuito di cinque waypoint
+strategici (centro e quattro quadranti della griglia, agganciati alla cella libera pi\`u
+vicina) per coprire tutta la griglia e ristabilire il contatto nel minor numero di passi.
+
+Non appena arrivano posizioni fresche (pi\`u recenti di 25 passi), calcola il centroide
+medio di tutti i Retriever e, se la propria distanza da quel punto supera una soglia
+(pari a $\frac{1}{4}$ del raggio di comunicazione), si sposta verso la cella libera pi\`u
+vicina al centroide.
 
 Se la distanza \`e gi\`a entro la soglia, il Coordinator rimane fermo (\texttt{IDLE}):
 non esegue n\`e esplorazione frontier-based n\`e passeggiate casuali, poich\`e il suo
