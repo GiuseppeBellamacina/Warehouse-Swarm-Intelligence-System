@@ -84,6 +84,9 @@ class CoordinatorAgent(BaseAgent):
         # Coordinator sync: track last step we synced with each other coordinator
         self.last_sync_step: Dict[int, int] = {}
 
+        # Search mode: cycle through waypoints when no agent positions are known
+        self._search_waypoint_idx: int = 0
+
         # Track recharge attempts to avoid getting stuck
         self.recharge_attempt_start: Optional[int] = None
 
@@ -208,6 +211,10 @@ class CoordinatorAgent(BaseAgent):
                 for rid, state_str in message.retriever_states.items():
                     if rid not in self.retriever_states:
                         self.retriever_states[rid] = state_str
+                # Merge retriever positions (indirect learning via other coordinators)
+                for rid, pos in message.retriever_positions.items():
+                    if rid not in self.retriever_positions:
+                        self.retriever_positions[rid] = tuple(pos)
 
     def step_decide(self) -> None:
         """Decide on task assignments and own actions"""
@@ -322,23 +329,17 @@ class CoordinatorAgent(BaseAgent):
         if not self.known_objects or not self.available_retrievers:
             return
 
-        # Build retriever positions (prefer freshly declared, fall back to direct read)
+        # Build retriever info from communicated positions only (no direct model access)
         retriever_info = {}
-        for agent in self.model.agents:
-            if getattr(agent, "role", None) != "retriever":
-                continue
-            rid = getattr(agent, "unique_id", None)
-            if rid not in self.available_retrievers:
-                continue
+        for rid in self.available_retrievers:
             pos = self.retriever_positions.get(rid)
-            if pos is None and agent.pos:
-                pos = pos_to_tuple(agent.pos)
-            if pos:
-                cap = self.retriever_capacity.get(rid, 2)
-                declared_q = self.retriever_task_queues.get(rid, [])
-                carrying = self.retriever_carrying.get(rid, 0)
-                free_slots = cap - len(declared_q) - carrying
-                retriever_info[rid] = {"pos": pos, "free_slots": max(0, free_slots)}
+            if pos is None:
+                continue  # no communicated position yet — skip until we hear from them
+            cap = self.retriever_capacity.get(rid, 2)
+            declared_q = self.retriever_task_queues.get(rid, [])
+            carrying = self.retriever_carrying.get(rid, 0)
+            free_slots = cap - len(declared_q) - carrying
+            retriever_info[rid] = {"pos": pos, "free_slots": max(0, free_slots)}
 
         # Build candidate (retriever, object) pairs with priority
         candidates = []
@@ -406,6 +407,7 @@ class CoordinatorAgent(BaseAgent):
                 assigned_tasks=dict(self.assigned_tasks),
                 retriever_states=dict(self.retriever_states),
                 objects_being_collected=list(self.objects_being_collected),
+                retriever_positions={k: tuple(v) for k, v in self.retriever_positions.items() if v},
             )
             self.model.comm_manager.send_message(sync_msg, [cid])
             print(
@@ -498,18 +500,32 @@ class CoordinatorAgent(BaseAgent):
             CellType.OBSTACLE,
         )
 
-        # Build centroid from ALL retrievers and scouts on the grid (no distance cap).
-        # Without this, a coordinator spawned far from its agents never finds them.
-        agent_positions = []
-        for agent in self.model.agents:
-            if agent.pos and hasattr(agent, "role"):
-                role = getattr(agent, "role", None)
-                if role in ["retriever", "scout"]:
-                    agent_positions.append(pos_to_tuple(agent.pos))
+        # Build centroid from communicated (last-known) positions only.
+        # No direct access to model.agents positions — positions must arrive via messages.
+        agent_positions = [tuple(p) for p in self.retriever_positions.values() if p]
 
         if not agent_positions:
-            # No agents on grid — hold current position
-            self.state = AgentState.IDLE
+            # No communicated positions yet — enter search mode: cycle through
+            # strategic waypoints until we come within comm range of any agent.
+            W, H = self.model.grid.width, self.model.grid.height
+            search_waypoints = [
+                (W // 2, H // 2),
+                (W // 4, H // 4),
+                (3 * W // 4, H // 4),
+                (3 * W // 4, 3 * H // 4),
+                (W // 4, 3 * H // 4),
+            ]
+            wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
+            # Advance to next waypoint when we're close enough to the current one
+            if abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= max_distance_from_agents:
+                self._search_waypoint_idx += 1
+                wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
+            print(
+                f"[COORD {self.unique_id}] SEARCH: no communicated agent positions — "
+                f"heading to waypoint {wp}"
+            )
+            self.target_position = wp
+            self.state = AgentState.EXPLORING
             return
 
         centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
