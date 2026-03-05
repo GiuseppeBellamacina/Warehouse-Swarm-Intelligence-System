@@ -390,27 +390,29 @@ class BaseAgent(Agent):
             f"asking agent {recipient_id} to vacate {cell} (depth={chain_depth})"
         )
 
-    def _try_move_off_entrance_exit(self) -> bool:
+    def _try_move_off_cell(self, avoid_warehouse: bool = False) -> bool:
         """
-        Try to step off an entrance / exit cell by moving to any adjacent free,
-        non-warehouse, non-obstacle cell.
+        Try to step off the current cell to any adjacent free non-obstacle cell.
+
+        When ``avoid_warehouse`` is True (e.g. when standing on an entrance/exit),
+        warehouse cells are also excluded so we don't immediately re-block a door.
 
         Returns True if the agent managed to move.
         """
         if not self.pos:
             return False
         my_pos = pos_to_tuple(self.pos)
+        _wh = (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             np_ = (my_pos[0] + dx, my_pos[1] + dy)
             if not (0 <= np_[0] < self.model.grid.width and 0 <= np_[1] < self.model.grid.height):
                 continue
             nc = self.model.grid.get_cell_type(*np_)
-            if nc not in (
-                CellType.OBSTACLE,
-                CellType.WAREHOUSE,
-                CellType.WAREHOUSE_ENTRANCE,
-                CellType.WAREHOUSE_EXIT,
-            ) and self.model.grid.is_cell_empty(np_):
+            if nc == CellType.OBSTACLE:
+                continue
+            if avoid_warehouse and nc in _wh:
+                continue
+            if self.model.grid.is_cell_empty(np_):
                 self.model.grid.move_agent(self, np_)
                 self.consume_energy(self.energy_consumption["move"])
                 print(
@@ -419,6 +421,10 @@ class BaseAgent(Agent):
                 )
                 return True
         return False
+
+    def _try_move_off_entrance_exit(self) -> bool:
+        """Backward-compat wrapper: vacate a warehouse door, staying off WH cells."""
+        return self._try_move_off_cell(avoid_warehouse=True)
 
     def _handle_clear_way_message(self, message: ClearWayMessage) -> None:
         """
@@ -434,15 +440,16 @@ class BaseAgent(Agent):
             return  # message delivered to wrong agent or we already moved
 
         cell_type = self.model.grid.get_cell_type(*my_pos)
-        if cell_type not in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT):
-            return  # safety: only vacate actual entrance/exit cells
+        # On a warehouse door, avoid stepping onto another door; for plain cells
+        # any free adjacent non-obstacle cell is acceptable.
+        avoid_wh = cell_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
 
         print(
             f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
             f"received request to vacate {my_pos} (depth={message.chain_depth})"
         )
 
-        if self._try_move_off_entrance_exit():
+        if self._try_move_off_cell(avoid_warehouse=avoid_wh):
             return  # successfully moved — done
 
         # Could not move; try to forward the chain if budget allows
@@ -593,6 +600,10 @@ class BaseAgent(Agent):
                                 break
 
                         self.stuck_counter += 1
+
+                        # Ask the blocker to step aside (works for any cell type)
+                        if blocking_agent is not None and self.stuck_counter >= 3:
+                            self._send_clear_way_request(next_pos, blocking_agent.unique_id)
 
                         # If blocking agent has higher ID (lower priority), wait less
                         # If blocking agent has lower ID (higher priority), wait more
