@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from backend.agents.base_agent import BaseAgent
-from backend.config.schemas import ScenarioConfig
+from backend.config.schemas import GridScenarioConfig, ScenarioConfig
 from backend.core.communication import CommunicationManager, CoordinationSystem
 from backend.core.framework import DataCollector, Model
 from backend.core.grid_manager import CellType, GridManager
@@ -39,6 +39,7 @@ class WarehouseModel(Model):
         super().__init__(seed=rng_seed)
 
         self.config = config
+        self._grid_config: Optional[GridScenarioConfig] = None  # set when using from_grid()
 
         # Set random seed for reproducibility (NumPy)
         if config.simulation.seed is not None:
@@ -93,6 +94,209 @@ class WarehouseModel(Model):
                 "total_objects": config.objects.count,
             },
         )
+
+    # ── Grid-based factory ────────────────────────────────────────────────────
+
+    @classmethod
+    def from_grid(cls, grid_config: GridScenarioConfig) -> "WarehouseModel":
+        """
+        Create a WarehouseModel directly from a compact GridScenarioConfig.
+
+        This bypasses the old ScenarioConfig format entirely.
+        Coordinate mapping: grid[row][col] → internal x=col, y=row.
+        Cell encoding: 0=free, 1=wall, 2=warehouse, 3=entrance, 4=exit.
+        Objects are placed explicitly from the ``objects`` list.
+
+        Args:
+            grid_config: Validated GridScenarioConfig (A/B format).
+
+        Returns:
+            Fully-initialised WarehouseModel ready for agent spawning.
+        """
+        meta = grid_config.metadata
+        size = meta.grid_size
+
+        # Build a minimal pseudo-ScenarioConfig so Model.__init__ can run.
+        # We override everything that matters immediately after.
+        from backend.config.schemas import (
+            AgentConfig,
+            AgentParameters,
+            EntranceExit,
+            MultiRoleAgentConfig,
+            ObjectsConfig,
+            Position,
+            SimulationConfig,
+            SpawnZone,
+            WarehouseConfig,
+        )
+
+        dummy_sim = SimulationConfig(
+            grid_width=size,
+            grid_height=size,
+            max_steps=meta.max_steps,
+            seed=meta.seed,
+        )
+        dummy_entrance = EntranceExit(x=0, y=0)
+        dummy_warehouse = WarehouseConfig(
+            position=Position(x=0, y=0),
+            width=1,
+            height=1,
+            warehouse_cells=[],
+            entrances=[dummy_entrance],
+            exits=[],
+        )
+        dummy_objects = ObjectsConfig(
+            count=meta.num_objects,
+            spawn_zones=[SpawnZone(x_range=(0, size), y_range=(0, size), probability=1.0)],
+        )
+        dummy_agents = MultiRoleAgentConfig(
+            scouts=AgentConfig(count=0, parameters=AgentParameters()),
+            coordinators=AgentConfig(count=0, parameters=AgentParameters()),
+            retrievers=AgentConfig(count=0, parameters=AgentParameters()),
+        )
+
+        # Import ScenarioConfig locally to avoid circular issue at top level
+        from backend.config.schemas import LoggingConfig
+
+        dummy_scenario = ScenarioConfig(
+            simulation=dummy_sim,
+            warehouse=dummy_warehouse,
+            obstacles=[],
+            objects=dummy_objects,
+            agents=dummy_agents,
+            logging=LoggingConfig(),
+        )
+
+        # Use object.__new__ to skip __init__ and build everything manually
+        model = object.__new__(cls)
+        # Call Model.__init__ equivalent (parent init)
+        rng_seed = meta.seed
+        super(WarehouseModel, model).__init__(seed=rng_seed)
+
+        model.config = dummy_scenario
+        model._grid_config = grid_config
+
+        if meta.seed is not None:
+            np.random.seed(meta.seed)
+
+        model.grid = GridManager(size, size, torus=False)
+        model.comm_manager = CommunicationManager()
+        model.coordination = CoordinationSystem()
+
+        model.running = True
+        model.current_step = 0
+        model.max_steps = meta.max_steps
+
+        model.warehouse_entrances = []
+        model.warehouse_exits = []
+        model.warehouse_stations = []
+        model.total_objects = meta.num_objects
+        model.objects_retrieved = 0
+
+        # Build environment from grid matrix
+        model._setup_from_grid(grid_config.grid)
+        model._setup_warehouses_from_config(grid_config.warehouses)
+        model._compute_warehouse_stations()
+        model._spawn_objects_from_list(grid_config.objects)
+
+        # Derive a sensible warehouse_position (first entrance, fallback (0,0))
+        if model.warehouse_entrances:
+            model.warehouse_position = model.warehouse_entrances[0]
+        else:
+            model.warehouse_position = (0, 0)
+
+        model.scouts = []
+        model.coordinators = []
+        model.retrievers = []
+
+        model._setup_data_collector()
+        model.metrics_collector = MetricsCollector(
+            simulation_id=f"sim_{meta.seed or 'random'}",
+            grid_size=(size, size),
+            config={
+                "scouts": 0,
+                "coordinators": 0,
+                "retrievers": 0,
+                "total_objects": meta.num_objects,
+            },
+        )
+
+        return model
+
+    def _setup_from_grid(self, grid: List[List[int]]) -> None:
+        """
+        Populate grid cells from the NxN integer matrix.
+
+        Mapping:
+            grid[row][col] → x=col, y=row (standard screen/math coords).
+        Value meaning:
+            0 = free/empty   → leave as FREE
+            1 = wall          → place_obstacle
+            2 = warehouse     → WAREHOUSE cell type
+            3 = entrance      → WAREHOUSE_ENTRANCE (also added to warehouse_entrances)
+            4 = exit          → WAREHOUSE_EXIT    (also added to warehouse_exits)
+        """
+        for row, row_cells in enumerate(grid):
+            for col, cell_val in enumerate(row_cells):
+                x, y = col, row
+                if cell_val == 1:
+                    self.grid.place_obstacle(x, y)
+                elif cell_val == 2:
+                    self.grid.set_cell_type(x, y, CellType.WAREHOUSE)
+                elif cell_val == 3:
+                    self.grid.set_cell_type(x, y, CellType.WAREHOUSE_ENTRANCE)
+                    self.warehouse_entrances.append((x, y))
+                elif cell_val == 4:
+                    self.grid.set_cell_type(x, y, CellType.WAREHOUSE_EXIT)
+                    self.warehouse_exits.append((x, y))
+                # 0 = free — no action needed
+
+    def _setup_warehouses_from_config(self, warehouses: List) -> None:  # List[GridWarehouse]
+        """
+        Register any entrance/exit cells declared in the ``warehouses`` list
+        that were not already registered via ``_setup_from_grid``.
+
+        The grid matrix is authoritative; this method only fills gaps.
+        """
+        for wh in warehouses:
+            # entrance: [row, col] → x=col, y=row
+            ent_row, ent_col = wh.entrance
+            ent_x, ent_y = ent_col, ent_row
+            if (ent_x, ent_y) not in self.warehouse_entrances:
+                self.grid.set_cell_type(ent_x, ent_y, CellType.WAREHOUSE_ENTRANCE)
+                self.warehouse_entrances.append((ent_x, ent_y))
+
+            # exit: [row, col] → x=col, y=row
+            exit_row, exit_col = wh.exit
+            exit_x, exit_y = exit_col, exit_row
+            if (exit_x, exit_y) not in self.warehouse_exits:
+                self.grid.set_cell_type(exit_x, exit_y, CellType.WAREHOUSE_EXIT)
+                self.warehouse_exits.append((exit_x, exit_y))
+
+    def _spawn_objects_from_list(self, objects: List[List[int]]) -> None:
+        """
+        Place objects at explicit grid positions from the compact format.
+
+        Each item is ``[row, col]`` → x=col, y=row.
+        Only places objects on walkable, non-warehouse cells.
+        """
+        placed = 0
+        for obj in objects:
+            row, col = obj[0], obj[1]
+            x, y = col, row
+            if self.grid.is_walkable(x, y):
+                cell_type = self.grid.get_cell_type(x, y)
+                if cell_type not in (
+                    CellType.WAREHOUSE,
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                    CellType.OBJECT,
+                ):
+                    self.grid.place_object(x, y)
+                    placed += 1
+
+        # Update total_objects to reflect what was actually placed
+        self.total_objects = placed
 
     def _setup_warehouse(self) -> None:
         """Setup warehouse cells on the grid"""
@@ -252,12 +456,15 @@ class WarehouseModel(Model):
         known_entrances: List[Tuple[int, int]],
         excluded_entrance: Optional[Tuple[int, int]] = None,
         congestion_penalty: int = 8,
+        agent_energy: float = float("inf"),
     ) -> dict:
         """
         Select the best warehouse station for an agent at *pos*.
 
         Scoring (lower is better):
-          score = Manhattan-distance(pos, entrance) + congestion_penalty * num_agents_heading_there
+          score = Manhattan-distance(pos, entrance)
+                + congestion_penalty * num_agents_heading_there
+                + energy_penalty  (large constant when station is likely unreachable)
 
         Args:
             pos: agent's current position
@@ -265,6 +472,10 @@ class WarehouseModel(Model):
                              If empty, all stations are considered.
             excluded_entrance: entrance to exclude (e.g. one the agent is already at).
             congestion_penalty: extra distance units per agent already heading to a station.
+            agent_energy: agent's remaining energy (to penalise unreachable stations).
+                          Assumes ~1 energy unit per step of Manhattan distance plus a
+                          40 % detour buffer.  Stations beyond this budget get a +200
+                          penalty so nearer ones win, but the agent still has a fallback.
         """
         # Build candidate station list
         if known_entrances:
@@ -299,7 +510,10 @@ class WarehouseModel(Model):
             ent = s["entrance"]
             dist = abs(ent[0] - pos[0]) + abs(ent[1] - pos[1])
             congestion = heading_count.get(ent, 0)
-            return dist + congestion_penalty * congestion
+            # Penalise stations that the agent likely cannot reach with remaining energy.
+            # We use a 1.4× detour factor over Manhattan distance as a conservative buffer.
+            energy_penalty = 200.0 if dist * 1.4 > agent_energy else 0.0
+            return dist + congestion_penalty * congestion + energy_penalty
 
         return min(candidates, key=score)
 
@@ -485,6 +699,9 @@ class WarehouseModel(Model):
         agent_positions = [agent.pos for agent in self.agents if agent.pos]
         self.grid.update_agent_spatial_index(agent_positions)
 
+        # Advance round counter — one step = all agents act once
+        self.current_step += 1
+
         # Step all agents
         for agent in list(self.agents):
             agent.step()
@@ -495,9 +712,6 @@ class WarehouseModel(Model):
         # Collect detailed metrics
         if hasattr(self, "metrics_collector"):
             self.metrics_collector.collect_step_metrics(self)
-
-        # Update step counter
-        self.current_step += 1
 
         # Check termination conditions
         if self.current_step >= self.max_steps:
@@ -531,6 +745,7 @@ class WarehouseModel(Model):
                     "x": agent.pos[0],
                     "y": agent.pos[1],
                     "energy": getattr(agent, "energy", 0),
+                    "max_energy": getattr(agent, "max_energy", 100),
                     "state": state,
                     "carrying": getattr(agent, "carrying_objects", 0),
                     "vision_radius": getattr(agent, "vision_radius", 5),

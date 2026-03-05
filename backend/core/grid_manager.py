@@ -159,26 +159,83 @@ class GridManager(MultiGrid):
         indices = self._kdtree.query_ball_point([x, y], radius)
         return indices
 
+    def _has_line_of_sight(self, x0: int, y0: int, x1: int, y1: int) -> bool:
+        """
+        Check line-of-sight using Bresenham's algorithm with obstacle occlusion.
+
+        Traces a line from (x0, y0) to (x1, y1).  Any intermediate cell (i.e.
+        every cell except the origin) that is an OBSTACLE blocks the ray and
+        returns False.  The target cell itself is NOT tested for obstruction so
+        that observers can "see" the obstacle that blocks them.
+
+        Args:
+            x0, y0: Observer position
+            x1, y1: Target position
+
+        Returns:
+            True if there is clear line-of-sight
+        """
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        cx, cy = x0, y0
+        while (cx, cy) != (x1, y1):
+            # Check all intermediate cells (not the origin)
+            if (cx, cy) != (x0, y0):
+                if (
+                    0 <= cx < self.width
+                    and 0 <= cy < self.height
+                    and self.cell_types[cx, cy] == CellType.OBSTACLE
+                ):
+                    return False
+
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                cx += sx
+            if e2 < dx:
+                err += dx
+                cy += sy
+
+        return True
+
     def get_visible_cells(
         self, x: int, y: int, vision_radius: int
     ) -> List[Tuple[int, int, CellType]]:
         """
-        Get all visible cells within vision radius
-        Simple implementation without line-of-sight occlusion
+        Get all visible cells within vision radius using Manhattan distance and
+        Bresenham ray-casting for obstacle occlusion.
 
         Args:
             x, y: Observer position
-            vision_radius: Vision range
+            vision_radius: Vision range (Manhattan distance)
 
         Returns:
-            List of (x, y, cell_type) tuples
+            List of (x, y, cell_type) tuples for all visible cells
         """
         visible = []
-        neighbors = self.get_neighbors_in_radius(x, y, vision_radius, include_center=True)
 
-        for nx, ny in neighbors:
-            cell_type = self.get_cell_type(nx, ny)
-            visible.append((nx, ny, cell_type))
+        for dx in range(-vision_radius, vision_radius + 1):
+            for dy in range(-vision_radius, vision_radius + 1):
+                # Manhattan distance check
+                if abs(dx) + abs(dy) > vision_radius:
+                    continue
+
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < self.width and 0 <= ny < self.height):
+                    continue
+
+                # Observer's own cell is always visible
+                if dx == 0 and dy == 0:
+                    visible.append((nx, ny, self.get_cell_type(nx, ny)))
+                    continue
+
+                # Check line-of-sight with Bresenham occlusion
+                if self._has_line_of_sight(x, y, nx, ny):
+                    visible.append((nx, ny, self.get_cell_type(nx, ny)))
 
         return visible
 
