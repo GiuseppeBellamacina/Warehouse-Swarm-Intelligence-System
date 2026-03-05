@@ -5,7 +5,7 @@ Retriever Agent - Heavy lifter for object collection and delivery
 import random
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
-from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
+from backend.agents.base_agent import AgentState, BaseAgent, agent_tag, pos_to_tuple
 from backend.algorithms.pathfinding import AStarPathfinder
 from backend.core.communication import (
     RetrieverEventMessage,
@@ -138,7 +138,7 @@ class RetrieverAgent(BaseAgent):
                 self.target_position = None
                 self.path = []
             print(
-                f"[RETRIEVER {self.unique_id}] MAP-PRUNE: cancelled stale task {stale} "
+                f"{self.tag} MAP-PRUNE: cancelled stale task {stale} "
                 f"(object no longer on grid — learned via map share)"
             )
         # -------------------------------------------------------------------------
@@ -153,8 +153,8 @@ class RetrieverAgent(BaseAgent):
                     if target not in self.task_queue and target in self.known_objects:
                         self.task_queue.append(target)
                         print(
-                            f"[RETRIEVER {self.unique_id}] <- [COORD "
-                            f"{message.sender_id}]: queued task {target} "
+                            f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
+                            f"queued task {target} "
                             f"(queue depth={len(self.task_queue)})"
                         )
                         self.log_message(
@@ -169,8 +169,8 @@ class RetrieverAgent(BaseAgent):
                         if target not in self.task_queue:
                             self.task_queue.append(target)
                         print(
-                            f"[RETRIEVER {self.unique_id}] <- [COORD "
-                            f"{message.sender_id}]: queued unknown task {target}"
+                            f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
+                            f"queued unknown task {target}"
                         )
 
             elif isinstance(message, TaskStatusMessage):
@@ -190,7 +190,7 @@ class RetrieverAgent(BaseAgent):
                         self.task_queue.remove(peer_task)
                         self.model.comm_manager.release_claim(peer_task, self.unique_id)
                         print(
-                            f"[RETRIEVER {self.unique_id}] PEER-YIELD: "
+                            f"{self.tag} PEER-YIELD: "
                             f"dropped {peer_task} (peer {peer_id} has it)"
                         )
 
@@ -250,8 +250,7 @@ class RetrieverAgent(BaseAgent):
             else:
                 # Object claimed by someone else, abort
                 print(
-                    f"[RETRIEVER {self.unique_id}] SKIP: task {next_target} "
-                    f"already claimed, removing from queue"
+                    f"{self.tag} SKIP: task {next_target} " f"already claimed, removing from queue"
                 )
                 self.task_queue.pop(0)
                 self.model.comm_manager.release_claim(next_target, self.unique_id)
@@ -313,7 +312,7 @@ class RetrieverAgent(BaseAgent):
             if can_claim:
                 self.task_queue.append(obj_pos)
                 print(
-                    f"[RETRIEVER {self.unique_id}] OPP: claimed nearby {obj_pos} "
+                    f"{self.tag} OPP: claimed nearby {obj_pos} "
                     f"dist={dist} (queue depth={len(self.task_queue)})"
                 )
                 claimed += 1
@@ -403,7 +402,7 @@ class RetrieverAgent(BaseAgent):
             if can_claim:
                 self.task_queue.append(obj_pos)
                 print(
-                    f"[RETRIEVER {self.unique_id}] SELF-ASSIGN: claimed {obj_pos} "
+                    f"{self.tag} SELF-ASSIGN: claimed {obj_pos} "
                     f"dist={dist} from known_objects "
                     f"({'nearby' if dist <= self.vision_radius else 'remote via shared map'})"
                 )
@@ -487,8 +486,7 @@ class RetrieverAgent(BaseAgent):
             self.state = AgentState.RECHARGING
 
         print(
-            f"[RETRIEVER {self.unique_id}] WH-SEQ: starting {purpose} → "
-            f"entrance={self._wh_station['entrance']}"
+            f"{self.tag} WH-SEQ: starting {purpose} → " f"entrance={self._wh_station['entrance']}"
         )
 
     def _update_explore_target(self) -> None:
@@ -592,7 +590,7 @@ class RetrieverAgent(BaseAgent):
                 elif self.energy >= self.max_energy * 0.80:
                     # Enough energy — skip recharge entirely, exit immediately
                     print(
-                        f"[RETRIEVER {self.unique_id}] WH: energy sufficient "
+                        f"{self.tag} WH: energy sufficient "
                         f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
                     )
                     self._wh_step = "exit"
@@ -627,7 +625,7 @@ class RetrieverAgent(BaseAgent):
                 self.carrying_objects = 0
                 self.energy_consumption["move"] = 0.6  # normal move cost
                 print(
-                    f"[RETRIEVER {self.unique_id}] DELIVERY: "
+                    f"{self.tag} DELIVERY: "
                     f"delivered {delivered} → total "
                     f"{self.model.objects_retrieved}/{self.model.total_objects}"
                 )
@@ -666,7 +664,7 @@ class RetrieverAgent(BaseAgent):
                 rate = self.model.config.warehouse.recharge_rate
                 self.recharge_energy(rate)
                 if self.energy >= self.max_energy * 0.90:
-                    print(f"[RETRIEVER {self.unique_id}] RECHARGED: heading to exit")
+                    print(f"{self.tag} RECHARGED: heading to exit")
                     self._wh_step = "exit"
                     self.target_position = station["exit"]
                     self.state = AgentState.RECHARGING
@@ -687,7 +685,7 @@ class RetrieverAgent(BaseAgent):
                 CellType.WAREHOUSE_EXIT,
             )
             if left_wh:
-                print(f"[RETRIEVER {self.unique_id}] EXIT: exited warehouse")
+                print(f"{self.tag} EXIT: exited warehouse")
                 self._wh_step = None
                 self._wh_station = None
                 self.pending_events.append("idle")
@@ -731,7 +729,7 @@ class RetrieverAgent(BaseAgent):
                 self.carrying_objects += 1
                 self.energy_consumption["move"] = 0.6 + self.carrying_objects * 0.2
                 print(
-                    f"[RETRIEVER {self.unique_id}] PICKUP: {pos_tuple} "
+                    f"{self.tag} PICKUP: {pos_tuple} "
                     f"(carrying {self.carrying_objects}/{self.carrying_capacity})"
                 )
                 self.pending_events.append("object_picked")
@@ -762,7 +760,7 @@ class RetrieverAgent(BaseAgent):
                     self.task_queue.remove(pos_tuple)
                 if pos_tuple in self.known_objects:
                     del self.known_objects[pos_tuple]
-            print(f"[RETRIEVER {self.unique_id}] PICKUP: object gone at {pos_tuple}")
+            print(f"{self.tag} PICKUP: object gone at {pos_tuple}")
             self.state = AgentState.EXPLORING
             self.target_position = None
 
@@ -824,7 +822,7 @@ class RetrieverAgent(BaseAgent):
 
         if self.pending_events or self.newly_spotted_objects:
             print(
-                f"[RETRIEVER {self.unique_id}] -> COORD {coord_ids}: "
+                f"{self.tag} -> COORD {coord_ids}: "
                 f"status (queue={len(self.task_queue)}, "
                 f"carrying={self.carrying_objects}, "
                 f"events={self.pending_events}, "

@@ -98,7 +98,7 @@ class ScoutAgent(BaseAgent):
 
         if discovered:
             print(
-                f"[SCOUT {self.unique_id}] SENSE: Discovered {len(discovered)} new objects at positions: {list(discovered)}"
+                f"{self.tag} SENSE: Discovered {len(discovered)} new objects at positions: {list(discovered)}"
             )
             # Add to list of objects to communicate
             for obj_pos in discovered:
@@ -155,12 +155,12 @@ class ScoutAgent(BaseAgent):
                     if new_coord_pos:
                         self.last_seen_coordinator_pos = new_coord_pos
                         print(
-                            f"[SCOUT {self.unique_id}] SEEK-COORD: old pos stale, "
+                            f"{self.tag} SEEK-COORD: old pos stale, "
                             f"found coordinator at {new_coord_pos} via wide scan"
                         )
                     else:
                         print(
-                            f"[SCOUT {self.unique_id}] SEEK-COORD: reached stale pos, "
+                            f"{self.tag} SEEK-COORD: reached stale pos, "
                             f"coordinator not found nearby — resuming exploration"
                         )
                     # Fall through (if new_coord_pos set, next step will use it)
@@ -170,7 +170,7 @@ class ScoutAgent(BaseAgent):
                         self.path = []
                     self.state = AgentState.MOVING_TO_TARGET
                     print(
-                        f"[SCOUT {self.unique_id}] SEEK-COORD: heading to last known "
+                        f"{self.tag} SEEK-COORD: heading to last known "
                         f"coordinator pos {self.last_seen_coordinator_pos} "
                         f"({len(self.newly_discovered_objects)} discoveries pending)"
                     )
@@ -179,7 +179,7 @@ class ScoutAgent(BaseAgent):
             # of being truly unable to locate any coordinator.
             if self._discovery_age > 80:
                 print(
-                    f"[SCOUT {self.unique_id}] TIMEOUT: discarding "
+                    f"{self.tag} TIMEOUT: discarding "
                     f"{len(self.newly_discovered_objects)} stale discoveries"
                 )
                 self.newly_discovered_objects = []
@@ -207,7 +207,7 @@ class ScoutAgent(BaseAgent):
                 self.state = AgentState.RECHARGING
                 self.target_position = station.get("entrance")
                 print(
-                    f"[SCOUT {self.unique_id}] LOW-E ({self.energy:.1f}), "
+                    f"{self.tag} LOW-E ({self.energy:.1f}), "
                     f"heading to WH entrance {self.target_position}"
                 )
             # Sub-machine runs in step_act — just return here
@@ -353,10 +353,7 @@ class ScoutAgent(BaseAgent):
                 if not moved:
                     self.consecutive_failures_on_target += 1
                     if self.consecutive_failures_on_target >= 8:
-                        print(
-                            f"[SCOUT {self.unique_id}] STUCK: giving up on "
-                            f"{self.target_position}"
-                        )
+                        print(f"{self.tag} STUCK: giving up on " f"{self.target_position}")
                         if self.target_position:
                             self.unreachable_targets[self.target_position] = self.model.current_step
                         self.target_position = None
@@ -413,7 +410,7 @@ class ScoutAgent(BaseAgent):
                 if self.energy >= self.max_energy * 0.80:
                     # Enough energy — skip recharge, exit immediately
                     print(
-                        f"[SCOUT {self.unique_id}] WH: energy sufficient "
+                        f"{self.tag} WH: energy sufficient "
                         f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
                     )
                     exit_cell = station.get("exit") or entrance
@@ -426,9 +423,7 @@ class ScoutAgent(BaseAgent):
                     queue_cell = self.model.get_queue_slot(station)
                     self._scout_wh_step = "recharge"
                     self.target_position = queue_cell
-                    print(
-                        f"[SCOUT {self.unique_id}] WH: at entrance, joining queue at {queue_cell}"
-                    )
+                    print(f"{self.tag} WH: at entrance, joining queue at {queue_cell}")
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
@@ -459,7 +454,7 @@ class ScoutAgent(BaseAgent):
                     exit_cell = station.get("exit") or station.get("entrance")
                     self._scout_wh_step = "exit"
                     self.target_position = exit_cell
-                    print(f"[SCOUT {self.unique_id}] WH: recharged, heading to exit {exit_cell}")
+                    print(f"{self.tag} WH: recharged, heading to exit {exit_cell}")
                     # Move toward exit immediately
                     if exit_cell and my_pos != exit_cell:
                         self.move_towards(exit_cell)
@@ -483,7 +478,7 @@ class ScoutAgent(BaseAgent):
                 )
             )
             if left_wh:
-                print(f"[SCOUT {self.unique_id}] WH: exited, resuming exploration")
+                print(f"{self.tag} WH: exited, resuming exploration")
                 self._scout_wh_step = None
                 self._scout_wh_station = None
                 self.state = AgentState.EXPLORING
@@ -523,7 +518,7 @@ class ScoutAgent(BaseAgent):
             getattr(c, "unique_id", 0) for c in coordinators if hasattr(c, "unique_id")
         ]
         print(
-            f"[SCOUT {self.unique_id}] COMM: Broadcasting "
+            f"{self.tag} COMM: Broadcasting "
             f"{len(self.newly_discovered_objects)} objects to "
             f"coordinators {coordinator_ids}"
         )
@@ -539,7 +534,7 @@ class ScoutAgent(BaseAgent):
             if coordinator_ids:
                 self.model.comm_manager.send_message(message, coordinator_ids)
                 print(
-                    f"[SCOUT {self.unique_id}] -> COORD {coordinator_ids}: "
+                    f"{self.tag} -> COORD {coordinator_ids}: "
                     f"object at {obj_pos} (v={obj_value:.1f})"
                 )
 
