@@ -13,7 +13,11 @@ import numpy as np
 from backend.agents.coordinator_agent import CoordinatorAgent
 from backend.agents.retriever_agent import RetrieverAgent
 from backend.agents.scout_agent import ScoutAgent
-from backend.config.schemas import ScenarioConfig
+from backend.config.schemas import (
+    GridScenarioConfig,
+    ScenarioConfig,
+    SimulationAgentsConfig,
+)
 from backend.core.grid_manager import CellType
 from backend.core.warehouse_model import WarehouseModel
 
@@ -40,6 +44,8 @@ class SimulationManager:
         self.is_running = False
         self.is_paused = False
         self.config: Optional[ScenarioConfig] = None
+        self._grid_config: Optional[GridScenarioConfig] = None
+        self._agents_config: Optional[SimulationAgentsConfig] = None
         self.simulation_task: Optional[asyncio.Task] = None
         self.update_rate = 30  # Updates per second
         self.occupied_spawn_positions: Set[Tuple[int, int]] = set()
@@ -84,11 +90,18 @@ class SimulationManager:
 
             pos = (x, y)
 
-            # Check if position is valid and not occupied
+            # Check if position is valid, not occupied, and not inside a warehouse
+            cell_type = self.model.grid.get_cell_type(x, y)
+            _WAREHOUSE_TYPES = (
+                CellType.WAREHOUSE,
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
+            )
             if (
                 pos not in self.occupied_spawn_positions
                 and self.model.grid.is_walkable(x, y)
                 and self.model.grid.is_cell_empty(pos)
+                and cell_type not in _WAREHOUSE_TYPES
             ):
 
                 # Mark as occupied
@@ -107,10 +120,17 @@ class SimulationManager:
                         continue
 
                     pos = (x, y)
+                    cell_type = self.model.grid.get_cell_type(x, y)
                     if (
                         pos not in self.occupied_spawn_positions
                         and self.model.grid.is_walkable(x, y)
                         and self.model.grid.is_cell_empty(pos)
+                        and cell_type
+                        not in (
+                            CellType.WAREHOUSE,
+                            CellType.WAREHOUSE_ENTRANCE,
+                            CellType.WAREHOUSE_EXIT,
+                        )
                     ):
                         self.occupied_spawn_positions.add(pos)
                         return pos
@@ -246,6 +266,131 @@ class SimulationManager:
         """
         self.session_id = session_id
         self.initialize_simulation(config)
+        self.is_running = False
+        self.is_paused = False
+        state = self.get_simulation_state()
+        await ws_manager.broadcast_state_to_session(session_id, state)
+
+    def initialize_from_grid(
+        self,
+        grid_config: GridScenarioConfig,
+        agents_config: Optional[SimulationAgentsConfig] = None,
+    ) -> None:
+        """
+        Initialize a simulation from a compact GridScenarioConfig.
+
+        Args:
+            grid_config: Grid-based scenario (A/B format).
+            agents_config: Agent composition. Falls back to SimulationAgentsConfig
+                           defaults (1 Scout, 1 Coordinator, 3 Retrievers) if None.
+        """
+        if agents_config is None:
+            agents_config = SimulationAgentsConfig()
+
+        self._grid_config = grid_config
+        self._agents_config = agents_config
+        self.config = None  # not used in grid mode
+
+        # Build model from grid
+        self.model = WarehouseModel.from_grid(grid_config)
+
+        # Reset occupied spawn positions
+        self.occupied_spawn_positions = set()
+
+        meta = grid_config.metadata
+        sc = agents_config.scouts
+        co = agents_config.coordinators
+        re = agents_config.retrievers
+
+        # — spawn scouts —
+        for i in range(sc.count):
+            agent = ScoutAgent(
+                unique_id=i,
+                model=self.model,
+                vision_radius=sc.vision_radius,
+                communication_radius=sc.communication_radius,
+                max_energy=sc.max_energy,
+                speed=sc.speed,
+            )
+            free_pos = self._find_random_spawn_position()
+            if free_pos:
+                self.model.grid.place_agent(agent, free_pos)
+                self.model.add_agent(agent)
+                import numpy as _np
+
+                angle = (2 * 3.14159 * i) / max(sc.count, 1)
+                agent.previous_direction = (
+                    int(round(10 * _np.cos(angle))),
+                    int(round(10 * _np.sin(angle))),
+                )
+                agent.step_sense()
+            else:
+                print(f"Warning: Could not find free cell for scout {i}")
+
+        # — spawn coordinators —
+        base_id = sc.count
+        for i in range(co.count):
+            agent = CoordinatorAgent(
+                unique_id=base_id + i,
+                model=self.model,
+                vision_radius=co.vision_radius,
+                communication_radius=co.communication_radius,
+                max_energy=co.max_energy,
+                speed=co.speed,
+            )
+            free_pos = self._find_random_spawn_position()
+            if free_pos:
+                self.model.grid.place_agent(agent, free_pos)
+                self.model.add_agent(agent)
+                agent.step_sense()
+            else:
+                print(f"Warning: Could not find free cell for coordinator {i}")
+
+        # — spawn retrievers —
+        base_id = sc.count + co.count
+        for i in range(re.count):
+            agent = RetrieverAgent(
+                unique_id=base_id + i,
+                model=self.model,
+                vision_radius=re.vision_radius,
+                communication_radius=re.communication_radius,
+                max_energy=re.max_energy,
+                speed=re.speed,
+                carrying_capacity=re.carrying_capacity,
+            )
+            free_pos = self._find_random_spawn_position()
+            if free_pos:
+                self.model.grid.place_agent(agent, free_pos)
+                self.model.add_agent(agent)
+                agent.step_sense()
+            else:
+                print(f"Warning: Could not find free cell for retriever {i}")
+
+        print(f"Grid simulation initialized with {len(self.model.agents)} agents")
+        print(f"  Scenario: {meta.grid_size}x{meta.grid_size}, {meta.num_warehouses} warehouses")
+        print(f"  - {len(self.model.scouts)} scouts")
+        print(f"  - {len(self.model.coordinators)} coordinators")
+        print(f"  - {len(self.model.retrievers)} retrievers")
+        print(f"  - {self.model.total_objects} objects to retrieve (max_steps={meta.max_steps})")
+
+    async def load_from_grid(
+        self,
+        grid_config: GridScenarioConfig,
+        agents_config: Optional[SimulationAgentsConfig],
+        ws_manager,
+        session_id: str = "default",
+    ) -> None:
+        """
+        Initialize from grid format and broadcast step 0 state.
+
+        Args:
+            grid_config: Grid-based scenario.
+            agents_config: Agent composition (uses defaults if None).
+            ws_manager: WebSocket manager for broadcasting.
+            session_id: Owning session identifier.
+        """
+        self.session_id = session_id
+        self.initialize_from_grid(grid_config, agents_config)
         self.is_running = False
         self.is_paused = False
         state = self.get_simulation_state()
@@ -453,7 +598,10 @@ class SimulationManager:
         else:
             self.stop_simulation()
 
-        if self.config:
+        if self._grid_config is not None:
+            # Grid-format mode
+            self.initialize_from_grid(self._grid_config, self._agents_config)
+        elif self.config:
             self.initialize_simulation(self.config)
         print("Simulation reset")
 
@@ -482,17 +630,22 @@ class SimulationManager:
 
         state = self.model.get_state_dict()
 
-        if not self.config:
-            return state
-
-        # Add grid info for initial setup
-        # Collect all warehouse cells from the grid
+        # Collect warehouse and obstacle cells directly from the live grid
         warehouse_cells = []
+        obstacle_cells = []
+        entrance_cells = []
+        exit_cells = []
         for x in range(self.model.grid.width):
             for y in range(self.model.grid.height):
                 cell_type = self.model.grid.get_cell_type(x, y)
                 if cell_type == CellType.WAREHOUSE:
                     warehouse_cells.append({"x": x, "y": y})
+                elif cell_type == CellType.OBSTACLE:
+                    obstacle_cells.append({"x": x, "y": y})
+                elif cell_type == CellType.WAREHOUSE_ENTRANCE:
+                    entrance_cells.append({"x": x, "y": y})
+                elif cell_type == CellType.WAREHOUSE_EXIT:
+                    exit_cells.append({"x": x, "y": y})
 
         state["grid"] = {
             "width": self.model.grid.width,
@@ -500,17 +653,18 @@ class SimulationManager:
             "warehouse": {
                 "x": self.model.warehouse_position[0],
                 "y": self.model.warehouse_position[1],
-                "width": self.config.warehouse.width,
-                "height": self.config.warehouse.height,
-                "cells": warehouse_cells,  # All warehouse cells
-                "entrances": [{"x": e.x, "y": e.y} for e in self.config.warehouse.entrances],
-                "exits": [
-                    {"x": e.x, "y": e.y}
-                    for e in (self.config.warehouse.exits or self.config.warehouse.entrances)
-                ],
+                "width": 1,
+                "height": 1,
+                "cells": warehouse_cells,
+                "entrances": entrance_cells,
+                "exits": exit_cells if exit_cells else entrance_cells,
             },
             "obstacles": [
-                {"type": obs.type, "data": obs.model_dump()} for obs in self.config.obstacles
+                {
+                    "type": "box",
+                    "data": {"top_left": {"x": c["x"], "y": c["y"]}, "width": 1, "height": 1},
+                }
+                for c in obstacle_cells
             ],
         }
 

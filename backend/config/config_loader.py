@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Union
 
-from backend.config.schemas import ScenarioConfig
+from backend.config.schemas import GridScenarioConfig, ScenarioConfig
 
 
 class ConfigLoader:
@@ -70,3 +70,51 @@ class ConfigLoader:
 
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(config.model_dump(), f, indent=2)
+
+
+class GridConfigLoader:
+    """Load and validate compact grid-based scenario configurations (A/B format)"""
+
+    @staticmethod
+    def load_from_file(file_path: Union[str, Path]) -> GridScenarioConfig:
+        """
+        Load a grid-based scenario from a JSON file.
+
+        Args:
+            file_path: Path to JSON file in A/B format.
+
+        Returns:
+            Validated GridScenarioConfig object.
+
+        Raises:
+            FileNotFoundError: If file doesn't exist.
+            ValueError: If JSON is invalid or doesn't match schema.
+        """
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Configuration file not found: {file_path}")
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return GridConfigLoader.load_from_dict(data)
+
+    @staticmethod
+    def load_from_dict(data: dict) -> GridScenarioConfig:
+        """
+        Load a grid-based scenario from a dictionary.
+
+        Args:
+            data: Raw dictionary (must have ``metadata``, ``grid``,
+                  ``warehouses``, ``objects`` keys).
+
+        Returns:
+            Validated GridScenarioConfig object.
+
+        Raises:
+            ValueError: If data doesn't match schema.
+        """
+        try:
+            return GridScenarioConfig(**data)
+        except Exception as e:
+            raise ValueError(f"Invalid grid configuration: {e}")
