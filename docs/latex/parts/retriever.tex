@@ -1,0 +1,97 @@
+\chapter{Retriever Agent}
+
+Il Retriever \`e l'agente pi\`u complesso: deve recuperare oggetti fisicamente sulla griglia,
+gestire la capacit\`a di carico, navigare verso il magazzino, ricaricarsi e uscire, tutto
+mantenendo una comunicazione attiva con Coordinator e altri Retriever.
+
+\section{Gerarchia delle Priorit\`a}
+
+Il ciclo decisionale del Retriever \`e una gerarchia di priorit\`a decrescenti, valutate
+in sequenza ad ogni passo della fase \texttt{STAGE\_DECIDE}:
+
+\begin{enumerate}
+    \item \textbf{P1 — Consegna}: Se trasporta almeno un oggetto, si dirige al magazzino
+          tramite la sequenza di consegna. Questa priorit\`a non \`e mai interrotta da
+          nuovi compiti assegnati: il Retriever completa sempre la consegna prima di
+          iniziare il prossimo recupero.
+    \item \textbf{P2 — Ricarica d'emergenza}: Se l'energia scende sotto la soglia critica
+          e non sta gi\`a consegnando, il Retriever interrompe qualsiasi operazione e si
+          dirige al magazzino per ricaricarsi. La soglia \`e dinamica: se il magazzino
+          pi\`u vicino noto dista $d$ celle, la soglia di allarme \`e $d \times 1.5$
+          unit\`a di energia, garantendo sempre un margine di sicurezza.
+    \item \textbf{P3 — Esecuzione compiti assegnati}: Se ha una coda di compiti assegnati
+          dal Coordinator, preleva il prossimo oggetto dalla coda e si dirige verso di esso.
+    \item \textbf{P4 — Auto-assegnazione (modalit\`a hive-mind)}: In assenza di compiti
+          assegnati, il Retriever scansiona l'intero \texttt{known\_objects} accumulato
+          (non solo le celle visibili) e si auto-assegna l'oggetto pi\`u conveniente
+          tramite \texttt{try\_claim\_object} atomico. Questo meccanismo elimina i tempi
+          morti tra un'assegnazione e l'altra, sfruttando la conoscenza condivisa tramite
+          le mappe ricevute dagli altri agenti.
+    \item \textbf{P5 — Mini-esplorazione}: Se non ha n\'e compiti n\'e oggetti noti,
+          il Retriever esegue una breve frontier-based exploration locale per scoprire oggetti
+          nell'area circostante.
+\end{enumerate}
+
+\section{Sequenza di Consegna al Magazzino}
+
+La navigazione al magazzino avviene in quattro sotto-fasi gestite da una macchina a stati
+interna (\texttt{\_wh\_step}):
+
+\begin{enumerate}
+    \item \textbf{Approach}: Il Retriever si dirige verso la cella \texttt{WAREHOUSE\_ENTRANCE}
+          pi\`u vicina del magazzino ottimale (selezionato da \texttt{get\_best\_warehouse\_for}).
+          Il percorso A* usa le forbidden types per forzare il passaggio dall'ingresso,
+          escludendo le celle di uscita come nodi intermedi.
+    \item \textbf{Deposit}: Entrato nel magazzino attraverso l'ingresso, il Retriever
+          deposita tutti gli oggetti trasportati, che vengono conteggiati nelle metriche
+          e rimossi dalla griglia. Lo stato passa a \texttt{RECHARGE} se l'energia \`e
+          sotto soglia, altrimenti direttamente a \texttt{EXIT}.
+    \item \textbf{Recharge}: Il Retriever rimane sulla cella magazzino mentre viene ricaricato
+          a tasso costante (\texttt{recharge\_rate} unit\`a per passo) fino al recupero
+          completo dell'energia massima. Durante la ricarica continua a ricevere messaggi.
+    \item \textbf{Exit}: Il Retriever si dirige verso la cella \texttt{WAREHOUSE\_EXIT} e
+          la attraversa. Uscito dal magazzino, \texttt{\_wh\_step} viene azzerato; prima
+          di tornare all'esplorazione, il Retriever tenta immediatamente una nuova
+          auto-assegnazione tramite \texttt{known\_objects}, riducendo i passi a vuoto
+          tra una consegna e la successiva.
+\end{enumerate}
+
+\section{Selezione del Magazzino Ottimale}
+
+La funzione \texttt{get\_best\_warehouse\_for} seleziona la stazione di deposito/ricarica
+ottimale tra tutte quelle note all'agente. Il punteggio per ogni stazione combina tre fattori:
+
+\begin{itemize}
+    \item \textbf{Distanza}: La distanza euclidea dalla posizione corrente del Retriever.
+    \item \textbf{Capacit\`a}: Le stazioni con pi\`u Retriever gi\`a in coda vengono
+          penalizzate per distribuire il carico.
+    \item \textbf{Fattibilit\`a energetica}: Se la distanza stimata (moltiplicata per un
+          fattore di percorso 1.4 per tenere conto degli ostacoli) supera l'energia residua
+          dell'agente, la stazione riceve una penalizzazione aggiuntiva di 200 punti,
+          rendendola di fatto non preferibile. Questo impedisce al Retriever di dirigersi
+          verso un magazzino irraggiungibile e rimanere senza energia a met\`a percorso.
+\end{itemize}
+
+\section{Peer Negotiation tra Retriever}
+
+La peer negotiation \`e un protocollo a tre livelli per gestire i conflitti quando pi\`u
+Retriever tentano di recuperare lo stesso oggetto:
+
+\begin{enumerate}
+    \item \textbf{Global claim atomico}: Il primo tentativo avviene tramite
+          \texttt{CommunicationManager.try\_claim\_object}, che \`e un'operazione atomica
+          thread-safe. Solo un Retriever pu\`o reclamare un oggetto; tutti gli altri
+          ricevono un fallimento immediato e devono cercare un'alternativa.
+    \item \textbf{Peer queue}: Se un Retriever non riesce a reclamare un oggetto perch\'e
+          gi\`a reclamato, invia un \texttt{TaskStatusMessage} con tipo
+          \texttt{peer\_request} all'attuale detentore del claim. Il detentore valuta se
+          cedere il claim (se \`e pi\`u lontano dall'oggetto del richiedente) o rifiutare.
+          In caso di cessione, risponde con \texttt{peer\_yield} e rilascia il claim.
+    \item \textbf{Fallback}: Se nessuna peer negotiation si conclude positivamente entro
+          un certo numero di passi, il Retriever rinuncia all'oggetto e passa al prossimo
+          compito in coda o avvia la mini-esplorazione.
+\end{enumerate}
+
+Questo protocollo distribuisce efficacemente il lavoro senza richiedere un arbitro
+centralizzato: la decisione di cedere o meno \`e locale a ciascun Retriever e si basa
+esclusivamente su informazioni disponibili nella propria mappa locale (distanza).

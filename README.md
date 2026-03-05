@@ -1,6 +1,8 @@
 # Warehouse Swarm Intelligence System
 
-**Live demo → [warehouse-swarm-intelligence-system.vercel.app](https://warehouse-swarm-intelligence-system.vercel.app)**
+**[Live demo](https://warehouse-swarm-intelligence-system.vercel.app)**
+
+**[Relazione PDF](docs/relazione.pdf)**
 
 A real-time swarm intelligence simulation where autonomous agents cooperate to explore warehouses and retrieve objects. Built with a Python/FastAPI backend and a React/TypeScript frontend.
 
@@ -19,11 +21,14 @@ A real-time swarm intelligence simulation where autonomous agents cooperate to e
 ### Algorithms
 
 - A\* pathfinding with dynamic replanning and forbidden-zone support
-- Frontier-based and random-walk exploration
+- Frontier-based exploration with two-level anti-clustering (hard distance filter + soft utility penalty)
 - Priority-based collision avoidance with wait/replan back-off
 - `ClearWayMessage` chain protocol — agents negotiate to unblock entrances
 - FIFO task queue with opportunistic multi-carry optimisation
 - Radius-based inter-agent communication (scout → coordinator → retriever)
+- **Hive-mind retrieval**: Retrievers self-assign from the full shared `known_objects` map without waiting for coordinator commands
+- **SEEK-RETRIEVER**: Coordinator actively moves toward retrievers when tasks are pending but no retriever is in comm range
+- **Centroid repositioning**: Coordinator stays near the fleet centroid; holds position when already within range
 
 ### Real-time interface
 
@@ -56,6 +61,7 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 │   ├── 📁 api
 │   │   ├── 🐍 __init__.py
 │   │   ├── 🐍 main.py
+│   │   ├── 🐍 session_registry.py
 │   │   ├── 🐍 simulation_manager.py
 │   │   ├── 🐍 telegram_notifier.py
 │   │   └── 🐍 websocket_manager.py
@@ -76,9 +82,9 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 │   │   └── 🐍 collector.py
 │   └── 🐍 __init__.py
 ├── 📁 configs
-│   └── ⚙️ pavone.json
+│   ├── ⚙️ A.json
+│   └── ⚙️ B.json
 ├── 📁 docs
-│   └── 📕 20260226-progetto.pdf
 ├── 📁 frontend
 │   ├── 📁 public
 │   │   └── 🖼️ favicon.svg
@@ -91,12 +97,15 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 │   │   │   └── 📄 MetricsDisplay.tsx
 │   │   ├── 📁 hooks
 │   │   │   └── 📄 useSimulation.ts
+│   │   ├── 📁 presets
+│   │   │   └── 📄 index.ts
 │   │   ├── 📁 types
 │   │   │   └── 📄 simulation.ts
 │   │   ├── 📄 App.tsx
 │   │   ├── 🎨 index.css
 │   │   ├── 📄 main.tsx
 │   │   └── 📄 vite-env.d.ts
+│   ├── ⚙️ .eslintrc.cjs
 │   ├── 📄 bun.lock
 │   ├── 🌐 index.html
 │   ├── ⚙️ package.json
@@ -106,6 +115,7 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 │   ├── ⚙️ tsconfig.node.json
 │   └── 📄 vite.config.ts
 ├── ⚙️ .gitignore
+├── 📄 LICENSE
 ├── 📝 QUICK_START.md
 ├── 📝 README.md
 ├── 📄 format.ps1
@@ -183,34 +193,6 @@ bun run dev
 | Variable           | Default                 | Description      |
 | ------------------ | ----------------------- | ---------------- |
 | `VITE_BACKEND_URL` | `http://localhost:8000` | Backend base URL |
-
----
-
-## Scenario configuration
-
-Scenarios are defined as JSON files in `configs/`. Example structure:
-
-```jsonc
-{
-  "name": "my_scenario",
-  "grid": { "width": 30, "height": 30 },
-  "warehouses": [
-    {
-      "id": 1,
-      "entrance": [5, 0],
-      "exit": [6, 0],
-      "recharge_stations": [{ "recharge_cell": [5, 2] }],
-    },
-  ],
-  "agents": {
-    "scouts": { "count": 2 },
-    "coordinators": { "count": 1 },
-    "retrievers": { "count": 3 },
-  },
-}
-```
-
-See `configs/pavone.json` for a full working example.
 
 ---
 
