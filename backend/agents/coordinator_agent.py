@@ -11,6 +11,7 @@ from backend.core.communication import (
     MapDataMessage,
     ObjectLocationMessage,
     RetrieverEventMessage,
+    Stamped,
     TaskAssignmentMessage,
     TaskStatusMessage,
 )
@@ -74,6 +75,8 @@ class CoordinatorAgent(BaseAgent):
 
         # Objects currently being collected (prevents double-assignment)
         self.objects_being_collected: Set[Tuple[int, int]] = set()
+        # Step at which each objects_being_collected entry was last updated
+        self.objects_being_collected_step: Dict[Tuple, int] = {}
 
         # Hint: which retriever spotted each object (used for opportunistic assignment)
         self._spotted_by: Dict[Tuple[int, int], int] = {}
@@ -106,16 +109,25 @@ class CoordinatorAgent(BaseAgent):
             if isinstance(message, TaskStatusMessage):
                 # Retriever declares its current task queue — authoritative source
                 rid = message.retriever_id
+                prev_queue = self.retriever_task_queues.get(rid, [])
                 self.retriever_task_queues[rid] = list(message.task_queue)
                 self.retriever_carrying[rid] = message.carrying_objects
                 self.retriever_energy[rid] = message.energy_level
                 self.retriever_positions[rid] = message.position
+                self.retriever_positions_step[rid] = message.timestamp
                 # Update assigned_tasks to match reality
                 if message.task_queue:
                     # Primary task is first in queue
                     self.assigned_tasks[rid] = message.task_queue[0]
                 else:
                     self.assigned_tasks.pop(rid, None)
+                # Release objects that the retriever no longer has in its queue
+                # (delivered or otherwise completed) from objects_being_collected.
+                now_gone = set(prev_queue) - set(message.task_queue)
+                for completed_pos in now_gone:
+                    if message.carrying_objects == 0 or completed_pos not in message.task_queue:
+                        self.objects_being_collected.discard(completed_pos)
+                        self.objects_being_collected_step.pop(completed_pos, None)
                 # Infer state
                 if message.carrying_objects > 0:
                     self.retriever_states[rid] = "delivering"
@@ -140,8 +152,12 @@ class CoordinatorAgent(BaseAgent):
 
                 if event == "object_picked":
                     if message.object_position:
-                        self.objects_being_collected.add(message.object_position)
-                        self.known_objects.pop(message.object_position, None)
+                        opos = message.object_position
+                        self.objects_being_collected.add(opos)
+                        self.objects_being_collected_step[opos] = self.model.current_step
+                        self.known_objects.pop(opos, None)
+                        self.known_objects_step.pop(opos, None)
+                        self.known_objects_cleared[opos] = self.model.current_step
 
                 elif event in ("object_delivered", "idle"):
                     self.retriever_states[rid] = "idle"
@@ -150,6 +166,7 @@ class CoordinatorAgent(BaseAgent):
                     completed_obj = self.assigned_tasks.pop(rid, None)
                     if completed_obj:
                         self.objects_being_collected.discard(completed_obj)
+                        self.objects_being_collected_step.pop(completed_obj, None)
 
                 elif event == "busy":
                     self.retriever_states[rid] = "busy"
@@ -162,10 +179,10 @@ class CoordinatorAgent(BaseAgent):
                             obj_pos not in self.objects_being_collected
                             and obj_pos not in self.assigned_tasks.values()
                         ):
-                            self.known_objects[obj_pos] = 1.0
-                            # Remember who spotted it so _plan_task_assignments
-                            # can prefer assigning it back to the same retriever
-                            # (better cache locality, avoids cross-assignments)
+                            cs = self.model.current_step
+                            if cs > self.known_objects_step.get(obj_pos, -1):
+                                self.known_objects[obj_pos] = 1.0
+                                self.known_objects_step[obj_pos] = cs
                             self._spotted_by[obj_pos] = rid
                             print(
                                 f"[COORD {self.unique_id}] SPOTTED: "
@@ -173,13 +190,16 @@ class CoordinatorAgent(BaseAgent):
                             )
 
             elif isinstance(message, ObjectLocationMessage):
-                # Scout discovered an object
+                # Scout discovered an object — accept if newer
                 obj_pos = message.object_position
                 if (
                     obj_pos not in self.objects_being_collected
                     and obj_pos not in self.assigned_tasks.values()
+                    and message.timestamp > self.known_objects_step.get(obj_pos, -1)
+                    and self.known_objects_cleared.get(obj_pos, -1) < message.timestamp
                 ):
                     self.known_objects[obj_pos] = message.object_value
+                    self.known_objects_step[obj_pos] = message.timestamp
                     print(
                         f"[COORD {self.unique_id}] <- [SCOUT {message.sender_id}]: "
                         f"object at {obj_pos}"
@@ -192,29 +212,45 @@ class CoordinatorAgent(BaseAgent):
                     )
 
             elif isinstance(message, CoordinatorSyncMessage):
-                # Another coordinator sharing its knowledge
+                # Another coordinator sharing its knowledge — apply "newest wins" per item
                 other_id = message.sender_coordinator_id
                 print(
                     f"[COORD {self.unique_id}] <- [COORD {other_id}]: "
                     f"sync ({len(message.known_objects)} objs, "
                     f"{len(message.assigned_tasks)} tasks)"
                 )
-                # Merge known objects (don't overwrite existing entries)
-                for pos, val in message.known_objects.items():
-                    if pos not in self.known_objects and pos not in self.objects_being_collected:
-                        self.known_objects[pos] = val
-                # Merge objects being collected
-                for pos in message.objects_being_collected:
-                    self.objects_being_collected.add(tuple(pos))
-                    self.known_objects.pop(tuple(pos), None)
+                # Merge known_objects: {pos: Stamped(value, step)}
+                for raw_pos, stamped in message.known_objects.items():
+                    pos = tuple(raw_pos)
+                    val, step = stamped.value, stamped.step
+                    if pos not in self.objects_being_collected:
+                        if (
+                            step > self.known_objects_step.get(pos, -1)
+                            and self.known_objects_cleared.get(pos, -1) < step
+                        ):
+                            self.known_objects[pos] = val
+                            self.known_objects_step[pos] = step
+                # Merge objects_being_collected: {pos: Stamped(None, step)}
+                for raw_pos, stamped in message.objects_being_collected.items():
+                    pos = tuple(raw_pos)
+                    step = stamped.step
+                    if step > self.objects_being_collected_step.get(pos, -1):
+                        self.objects_being_collected.add(pos)
+                        self.objects_being_collected_step[pos] = step
+                        self.known_objects.pop(pos, None)
+                        self.known_objects_step.pop(pos, None)
+                        if step > self.known_objects_cleared.get(pos, -1):
+                            self.known_objects_cleared[pos] = step
                 # Merge retriever state knowledge
                 for rid, state_str in message.retriever_states.items():
                     if rid not in self.retriever_states:
                         self.retriever_states[rid] = state_str
-                # Merge retriever positions (indirect learning via other coordinators)
-                for rid, pos in message.retriever_positions.items():
-                    if rid not in self.retriever_positions:
-                        self.retriever_positions[rid] = tuple(pos)
+                # Merge retriever positions: {rid: Stamped((x,y), step)}
+                for rid, stamped in message.retriever_positions.items():
+                    step = stamped.step
+                    if step > self.retriever_positions_step.get(rid, -1):
+                        self.retriever_positions[rid] = tuple(stamped.value)
+                        self.retriever_positions_step[rid] = step
 
     def step_decide(self) -> None:
         """Decide on task assignments and own actions"""
@@ -272,13 +308,14 @@ class CoordinatorAgent(BaseAgent):
         # Priority 1: Communicate (send tasks OR sync)
         if self.tasks_to_assign:
             self.should_communicate_this_step = True
-            return
+            # Fall through to exploration so the coordinator's movement state is kept
+            # up-to-date even in steps where it is busy sending assignments.
 
         # Priority 1b: Tasks exist but no retrievers in range — go find them
-        if self._seek_retrievers_if_needed():
+        if not self.tasks_to_assign and self._seek_retrievers_if_needed():
             return
 
-        # Priority 2: Explore when idle — but never while a warehouse sub-sequence is active
+        # Priority 2: Explore / reposition — runs every step so state is always current
         if self.state in (AgentState.IDLE, AgentState.EXPLORING) and self._coord_wh_step is None:
             self._decide_exploration()
 
@@ -403,11 +440,21 @@ class CoordinatorAgent(BaseAgent):
                 sender_id=self.unique_id,
                 timestamp=current_step,
                 sender_coordinator_id=self.unique_id,
-                known_objects=dict(self.known_objects),
+                known_objects={
+                    pos: Stamped(val, self.known_objects_step.get(pos, 0))
+                    for pos, val in self.known_objects.items()
+                },
                 assigned_tasks=dict(self.assigned_tasks),
                 retriever_states=dict(self.retriever_states),
-                objects_being_collected=list(self.objects_being_collected),
-                retriever_positions={k: tuple(v) for k, v in self.retriever_positions.items() if v},
+                objects_being_collected={
+                    pos: Stamped(None, self.objects_being_collected_step.get(pos, 0))
+                    for pos in self.objects_being_collected
+                },
+                retriever_positions={
+                    rid: Stamped(tuple(p), self.retriever_positions_step.get(rid, 0))
+                    for rid, p in self.retriever_positions.items()
+                    if p
+                },
             )
             self.model.comm_manager.send_message(sync_msg, [cid])
             print(
@@ -489,9 +536,10 @@ class CoordinatorAgent(BaseAgent):
         """
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
-        # Comfortable range: half of comm radius.  Wide enough that the coordinator
-        # doesn't chase micro-shifts in the centroid, but still keeps it reachable.
-        max_distance_from_agents = max(8, self.communication_radius // 2)
+        # Comfortable range: a quarter of comm radius.  Small enough that the
+        # coordinator actively tracks the retriever swarm and shows movement in
+        # the UI, yet large enough to avoid micro-oscillation.
+        max_distance_from_agents = max(2, self.communication_radius // 4)
 
         _WH_TYPES = (
             CellType.WAREHOUSE,
@@ -805,8 +853,19 @@ class CoordinatorAgent(BaseAgent):
                     sender_id=self.unique_id or 0,
                     timestamp=self.model.current_step,
                     explored_cells=wh_cells,
-                    known_objects=dict(self.known_objects),
-                    objects_being_collected=list(self.objects_being_collected),
+                    known_objects={
+                        pos: Stamped(val, self.known_objects_step.get(pos, 0))
+                        for pos, val in self.known_objects.items()
+                    },
+                    objects_being_collected={
+                        pos: Stamped(None, self.objects_being_collected_step.get(pos, 0))
+                        for pos in self.objects_being_collected
+                    },
+                    retriever_positions={
+                        rid: Stamped(tuple(p), self.retriever_positions_step.get(rid, 0))
+                        for rid, p in self.retriever_positions.items()
+                        if p
+                    },
                 )
                 self.model.comm_manager.send_message(map_msg, [retriever_id])
 
@@ -823,8 +882,12 @@ class CoordinatorAgent(BaseAgent):
 
             # Update local tracking (optimistic — will be overwritten by next TaskStatusMessage)
             self.assigned_tasks[retriever_id] = obj_pos
+            cs = self.model.current_step
             self.objects_being_collected.add(obj_pos)
+            self.objects_being_collected_step[obj_pos] = cs
             self.known_objects.pop(obj_pos, None)
+            self.known_objects_step.pop(obj_pos, None)
+            self.known_objects_cleared[obj_pos] = cs
             self.retriever_states[retriever_id] = "busy"
 
             # Update our local cache of the retriever's task queue

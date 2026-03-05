@@ -12,6 +12,7 @@ from backend.core.communication import (
     MapDataMessage,
     MapSharingSystem,
     ObjectLocationMessage,
+    Stamped,
 )
 from backend.core.decision_maker import DecisionMaker
 from backend.core.framework import Agent
@@ -89,12 +90,17 @@ class BaseAgent(Agent):
         self.local_map = np.zeros((grid_height, grid_width), dtype=np.int8)
 
         # Known object locations (position -> value)
-        self.known_objects = {}
+        self.known_objects: Dict[Tuple, float] = {}
+        # Step at which each known_objects entry was last confirmed
+        self.known_objects_step: Dict[Tuple, int] = {}
+        # Tombstone: step at which we (or a peer) last confirmed a position is NOT an object
+        self.known_objects_cleared: Dict[Tuple, int] = {}
 
         # Last-known positions of retrievers, learned via message relay
-        # {retriever_id: (x, y)} — accumulated and re-broadcast so every agent
-        # acts as a relay node (Scout, Retriever, Coordinator alike)
+        # {retriever_id: (x, y)} — re-broadcast so every agent is a relay
         self.retriever_positions: Dict[int, Tuple[int, int]] = {}
+        # Step at which each retriever_positions entry was last updated
+        self.retriever_positions_step: Dict[int, int] = {}
 
         # Known warehouse locations
         self.known_warehouses: List[Tuple[int, int]] = []
@@ -211,7 +217,19 @@ class BaseAgent(Agent):
 
                 # Track discovered objects
                 if cell_type == CellType.OBJECT:
-                    self.known_objects[(x, y)] = 1.0
+                    pos = (x, y)
+                    self.known_objects[pos] = 1.0
+                    self.known_objects_step[pos] = self.model.current_step
+                    self.known_objects_cleared.pop(pos, None)  # re-seen: remove tombstone
+                else:
+                    # Direct vision confirms this cell is NOT an object right now
+                    pos = (x, y)
+                    if pos in self.known_objects:
+                        self.known_objects.pop(pos, None)
+                        self.known_objects_step.pop(pos, None)
+                        self.known_objects_cleared[pos] = self.model.current_step
+                    elif self.known_objects_cleared.get(pos, -1) < self.model.current_step:
+                        self.known_objects_cleared[pos] = self.model.current_step
 
                 # Track discovered warehouses (entrance cells are navigation targets)
                 if (
@@ -302,14 +320,26 @@ class BaseAgent(Agent):
         # Extract explored cells from local map
         explored_cells = MapSharingSystem.extract_explored_cells(self.local_map)
 
-        # Create message — carry full knowledge so every agent is a relay
+        # Create message — carry full knowledge with Stamped timestamps so every
+        # recipient can apply "newest wins" and use this agent as a relay node.
+        cs = self.model.current_step
         message = MapDataMessage(
             sender_id=self.unique_id or 0,
-            timestamp=self.model.current_step,
+            timestamp=cs,
             explored_cells=explored_cells,
-            known_objects=dict(self.known_objects),
-            objects_being_collected=list(getattr(self, "objects_being_collected", [])),
-            retriever_positions=dict(self.retriever_positions),
+            known_objects={
+                pos: Stamped(val, self.known_objects_step.get(pos, 0))
+                for pos, val in self.known_objects.items()
+            },
+            objects_being_collected={
+                pos: Stamped(None, getattr(self, "objects_being_collected_step", {}).get(pos, 0))
+                for pos in getattr(self, "objects_being_collected", [])
+            },
+            retriever_positions={
+                rid: Stamped(tuple(p), self.retriever_positions_step.get(rid, 0))
+                for rid, p in self.retriever_positions.items()
+                if p
+            },
         )
 
         # Send to all nearby agents
@@ -327,58 +357,89 @@ class BaseAgent(Agent):
         Process messages received this step.
         Uses self._step_messages which was drained exactly once in step_communicate.
         Subclasses call super() then iterate self._step_messages for their own types.
+
+        All knowledge merges apply a "newest wins" rule using per-item timestamps.
         """
         for message in self._step_messages:
             if isinstance(message, MapDataMessage):
-                # Merge received map data
+                # Merge raw topology first
                 self.local_map = MapSharingSystem.apply_shared_map_data(
                     self.local_map, message.explored_cells
                 )
-                # Extract object locations and warehouse cells from shared data
                 _WH_CELL_TYPES = (
                     CellType.WAREHOUSE,
                     CellType.WAREHOUSE_ENTRANCE,
                     CellType.WAREHOUSE_EXIT,
                 )
+
+                # --- explored_cells: object positions with message-level timestamp ---
+                msg_ts = message.timestamp
                 for x, y, cell_type in message.explored_cells:
+                    pos = (x, y)
                     if cell_type == CellType.OBJECT:
-                        self.known_objects[(x, y)] = 1.0
+                        # Accept only if newer than current entry and tombstone
+                        if msg_ts > self.known_objects_step.get(
+                            pos, -1
+                        ) and msg_ts > self.known_objects_cleared.get(pos, -1):
+                            self.known_objects[pos] = 1.0
+                            self.known_objects_step[pos] = msg_ts
                     else:
-                        # If a peer reports this cell as non-object, the object was
-                        # likely already picked up — prune the stale entry so agents
-                        # don't waste time heading to empty cells.
-                        if (x, y) in self.known_objects:
-                            del self.known_objects[(x, y)]
-                        if cell_type in _WH_CELL_TYPES:
-                            # Populate known_warehouses so agents can navigate to
-                            # warehouses discovered through map sharing, not just vision
-                            if (x, y) not in self.known_warehouses:
-                                self.known_warehouses.append((x, y))
+                        # Sender confirms no object here — clear if their info is newer
+                        if pos in self.known_objects:
+                            if msg_ts >= self.known_objects_step.get(pos, 0):
+                                del self.known_objects[pos]
+                                self.known_objects_step.pop(pos, None)
+                                self.known_objects_cleared[pos] = msg_ts
+                        elif cell_type in _WH_CELL_TYPES:
+                            if pos not in self.known_warehouses:
+                                self.known_warehouses.append(pos)
 
-                # ---- relay: merge explicit object knowledge ----
-                # objects_being_collected from the sender (may be empty for non-coordinators)
+                # --- objects_being_collected: Stamped(value=None, step), newest wins ---
                 my_obc = getattr(self, "objects_being_collected", None)
-                for raw_pos in message.objects_being_collected:
+                my_obc_step = getattr(self, "objects_being_collected_step", None)
+                for raw_pos, stamped in message.objects_being_collected.items():
                     pos = tuple(raw_pos)
-                    if my_obc is not None:
-                        my_obc.add(pos)
-                    # Remove from known_objects: it's already assigned/collected
-                    self.known_objects.pop(pos, None)
+                    step = stamped.step if isinstance(stamped, Stamped) else int(stamped)
+                    if my_obc is not None and my_obc_step is not None:
+                        if step > my_obc_step.get(pos, -1):
+                            my_obc.add(pos)
+                            my_obc_step[pos] = step
+                    # Remove from known_objects when OBC entry is at least as recent
+                    if step >= self.known_objects_step.get(pos, -1):
+                        self.known_objects.pop(pos, None)
+                        self.known_objects_step.pop(pos, None)
+                        if step > self.known_objects_cleared.get(pos, -1):
+                            self.known_objects_cleared[pos] = step
 
-                # known_objects relayed by sender — add anything we don't know yet
-                for raw_pos, val in message.known_objects.items():
+                # --- known_objects relay: Stamped(value=float, step), newest wins ---
+                for raw_pos, stamped in message.known_objects.items():
                     pos = tuple(raw_pos)
-                    if pos not in self.known_objects and (my_obc is None or pos not in my_obc):
-                        self.known_objects[pos] = val
+                    val = stamped.value if isinstance(stamped, Stamped) else stamped
+                    step = stamped.step if isinstance(stamped, Stamped) else 0
+                    if self.known_objects_cleared.get(pos, -1) >= step:
+                        continue
+                    if step > self.known_objects_step.get(pos, -1):
+                        if my_obc is None or pos not in my_obc:
+                            self.known_objects[pos] = val
+                            self.known_objects_step[pos] = step
 
-                # retriever_positions relayed by sender — merge any new entries
-                for rid, raw_pos in message.retriever_positions.items():
-                    if rid not in self.retriever_positions:
-                        self.retriever_positions[rid] = tuple(raw_pos)
+                # --- retriever_positions relay: Stamped(value=(x,y), step), newest wins ---
+                for rid, stamped in message.retriever_positions.items():
+                    pos_val = stamped.value if isinstance(stamped, Stamped) else stamped[0]
+                    step = stamped.step if isinstance(stamped, Stamped) else stamped[1]
+                    if step > self.retriever_positions_step.get(rid, -1):
+                        self.retriever_positions[rid] = tuple(pos_val)
+                        self.retriever_positions_step[rid] = step
 
             elif isinstance(message, ObjectLocationMessage):
-                # Add discovered object to known objects
-                self.known_objects[message.object_position] = message.object_value
+                # Accept only if newer than current entry and not tombstoned
+                pos = message.object_position
+                if (
+                    message.timestamp > self.known_objects_step.get(pos, -1)
+                    and self.known_objects_cleared.get(pos, -1) < message.timestamp
+                ):
+                    self.known_objects[pos] = message.object_value
+                    self.known_objects_step[pos] = message.timestamp
 
             elif isinstance(message, ClearWayMessage):
                 self._handle_clear_way_message(message)
