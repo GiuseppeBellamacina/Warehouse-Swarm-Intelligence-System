@@ -70,7 +70,7 @@ class CoordinatorAgent(BaseAgent):
         self.retriever_carrying: Dict[int, int] = {}  # retriever_id -> carrying count
         self.retriever_energy: Dict[int, float] = {}  # retriever_id -> energy
         self.retriever_capacity: Dict[int, int] = {}  # retriever_id -> carrying_capacity
-        self.retriever_positions: Dict[int, Tuple] = {}  # retriever_id -> position
+        # retriever_positions inherited from BaseAgent (Dict[int, Tuple[int,int]])
 
         # Objects currently being collected (prevents double-assignment)
         self.objects_being_collected: Set[Tuple[int, int]] = set()
