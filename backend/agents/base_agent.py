@@ -30,6 +30,22 @@ def pos_to_tuple(pos) -> Tuple[int, int]:
     return (int(pos), int(pos))  # Fallback
 
 
+_AGENT_COLORS: Dict[str, str] = {
+    "scout": "\033[1;32m",  # bold green
+    "coordinator": "\033[1;34m",  # bold blue
+    "retriever": "\033[1;33m",  # bold yellow
+}
+_RESET = "\033[0m"
+
+
+def agent_tag(role: str, uid: int) -> str:
+    """Return a colored terminal label, e.g. \033[1;32m[SCOUT 0]\033[0m."""
+    color = _AGENT_COLORS.get(role, "")
+    name = "COORD" if role == "coordinator" else role.upper()
+    reset = _RESET if color else ""
+    return f"{color}[{name} {uid}]{reset}"
+
+
 class AgentState(Enum):
     """Possible agent states"""
 
@@ -133,6 +149,11 @@ class BaseAgent(Agent):
         self._step_messages: list = []
         # Throttle ClearWayMessage sending: track the step we last sent one
         self._last_clearway_sent: int = -99
+
+    @property
+    def tag(self) -> str:
+        """Colored terminal label for this agent, e.g. \033[1;32m[SCOUT 0]\033[0m."""
+        return agent_tag(self.role, self.unique_id)
 
     @property
     def energy_percentage(self) -> float:
@@ -483,7 +504,7 @@ class BaseAgent(Agent):
         )
         self.model.comm_manager.send_message(msg, [recipient_id])
         print(
-            f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
+            f"{self.tag} CLEARWAY: "
             f"asking agent {recipient_id} to vacate {cell} (depth={chain_depth})"
         )
 
@@ -512,10 +533,7 @@ class BaseAgent(Agent):
             if self.model.grid.is_cell_empty(np_):
                 self.model.grid.move_agent(self, np_)
                 self.consume_energy(self.energy_consumption["move"])
-                print(
-                    f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
-                    f"moved off {my_pos} → {np_}"
-                )
+                print(f"{self.tag} CLEARWAY: " f"moved off {my_pos} → {np_}")
                 return True
         return False
 
@@ -542,7 +560,7 @@ class BaseAgent(Agent):
         avoid_wh = cell_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
 
         print(
-            f"[{self.role.upper()} {self.unique_id}] CLEARWAY: "
+            f"{self.tag} CLEARWAY: "
             f"received request to vacate {my_pos} (depth={message.chain_depth})"
         )
 
@@ -659,9 +677,7 @@ class BaseAgent(Agent):
 
                 # If no path found, target is unreachable
                 if new_path is None:
-                    print(
-                        f"[{self.role.upper()} {self.unique_id}] PATH: No path found to {target}, target unreachable"
-                    )
+                    print(f"{self.tag} PATH: No path found to {target}, target unreachable")
                     # Blacklist this target for 100 steps
                     self.unreachable_targets[target] = self.model.current_step
                     self.target_position = None
@@ -721,7 +737,7 @@ class BaseAgent(Agent):
                         else:
                             # Too long stuck - give up on this target
                             print(
-                                f"[{self.role.upper()} {self.unique_id}] STUCK: Too long stuck at {pos_tuple}, abandoning target {target}"
+                                f"{self.tag} STUCK: Too long stuck at {pos_tuple}, abandoning target {target}"
                             )
                             self.target_position = None
                             self.path = []
@@ -782,7 +798,7 @@ class BaseAgent(Agent):
                 if len(recent_positions) <= 3:
                     # Oscillating between few positions - clear target
                     print(
-                        f"[{self.role.upper()} {self.unique_id}] LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}"
+                        f"{self.tag} LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}"
                     )
                     # Blacklist the stuck target so step_decide doesn't immediately re-assign it
                     if self.target_position is not None:
@@ -797,7 +813,7 @@ class BaseAgent(Agent):
             # If stuck for too long, clear target and path to find alternative
             if self.stuck_counter > 20:
                 print(
-                    f"[{self.role.upper()} {self.unique_id}] STUCK: Stuck for {self.stuck_counter} steps at {pos_to_tuple(self.pos)}, abandoning target {self.target_position}"
+                    f"{self.tag} STUCK: Stuck for {self.stuck_counter} steps at {pos_to_tuple(self.pos)}, abandoning target {self.target_position}"
                 )
                 # Blacklist the stuck target so step_decide doesn't immediately re-assign it
                 if self.target_position is not None:
@@ -874,7 +890,7 @@ class BaseAgent(Agent):
                                 self.model.grid.move_agent(self, new_pos)
                                 self.consume_energy(self.energy_consumption["move"])
                                 print(
-                                    f"[{self.role.upper()} {self.unique_id}] UNBLOCK: Moving out of entrance/exit to {new_pos}"
+                                    f"{self.tag} UNBLOCK: Moving out of entrance/exit to {new_pos}"
                                 )
                                 return
 

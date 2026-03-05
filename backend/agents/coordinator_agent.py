@@ -4,7 +4,7 @@ Coordinator Agent - Strategic planner managing task assignments
 
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
-from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
+from backend.agents.base_agent import AgentState, BaseAgent, agent_tag, pos_to_tuple
 from backend.algorithms.pathfinding import AStarPathfinder
 from backend.core.communication import (
     CoordinatorSyncMessage,
@@ -148,7 +148,7 @@ class CoordinatorAgent(BaseAgent):
                 rid = message.retriever_id
                 event = message.event_type
                 print(
-                    f"[COORD {self.unique_id}] <- [RETRIEVER {rid}]: "
+                    f"{self.tag} <- {agent_tag('retriever', rid)}: "
                     f"event='{event}' at {message.position}"
                 )
                 self.log_message(
@@ -193,8 +193,8 @@ class CoordinatorAgent(BaseAgent):
                                 self.known_objects_step[obj_pos] = cs
                             self._spotted_by[obj_pos] = rid
                             print(
-                                f"[COORD {self.unique_id}] SPOTTED: "
-                                f"retriever {rid} saw object at {obj_pos}"
+                                f"{self.tag} SPOTTED: "
+                                f"{agent_tag('retriever', rid)} saw object at {obj_pos}"
                             )
 
             elif isinstance(message, ObjectLocationMessage):
@@ -209,7 +209,7 @@ class CoordinatorAgent(BaseAgent):
                     self.known_objects[obj_pos] = message.object_value
                     self.known_objects_step[obj_pos] = message.timestamp
                     print(
-                        f"[COORD {self.unique_id}] <- [SCOUT {message.sender_id}]: "
+                        f"{self.tag} <- {agent_tag('scout', message.sender_id)}: "
                         f"object at {obj_pos}"
                     )
                     self.log_message(
@@ -223,7 +223,7 @@ class CoordinatorAgent(BaseAgent):
                 # Another coordinator sharing its knowledge — apply "newest wins" per item
                 other_id = message.sender_coordinator_id
                 print(
-                    f"[COORD {self.unique_id}] <- [COORD {other_id}]: "
+                    f"{self.tag} <- {agent_tag('coordinator', other_id)}: "
                     f"sync ({len(message.known_objects)} objs, "
                     f"{len(message.assigned_tasks)} tasks)"
                 )
@@ -273,9 +273,7 @@ class CoordinatorAgent(BaseAgent):
             if self.state != AgentState.RECHARGING:
                 closest_wh = self.get_closest_warehouse()
                 if closest_wh:
-                    print(
-                        f"[COORD {self.unique_id}] LOW-E ({self.energy:.1f}), heading to WH {closest_wh}"
-                    )
+                    print(f"{self.tag} LOW-E ({self.energy:.1f}), heading to WH {closest_wh}")
                     self.state = AgentState.RECHARGING
                     self.target_position = closest_wh
                     self.recharge_attempt_start = self.model.current_step
@@ -289,7 +287,7 @@ class CoordinatorAgent(BaseAgent):
                     steps_attempting = self.model.current_step - self.recharge_attempt_start
                     if steps_attempting > 50:
                         print(
-                            f"[COORD {self.unique_id}] EMERGENCY: cannot reach WH after {steps_attempting} steps"
+                            f"{self.tag} EMERGENCY: cannot reach WH after {steps_attempting} steps"
                         )
                         # Full reset — sub-machine MUST be cleared or step_act will keep running it
                         self._coord_wh_step = None
@@ -361,7 +359,7 @@ class CoordinatorAgent(BaseAgent):
 
         if self.available_retrievers:
             print(
-                f"[COORD {self.unique_id}] SCAN: {len(self.available_retrievers)} "
+                f"{self.tag} SCAN: {len(self.available_retrievers)} "
                 f"retrievers with free slots: {self.available_retrievers}"
             )
 
@@ -466,7 +464,7 @@ class CoordinatorAgent(BaseAgent):
             )
             self.model.comm_manager.send_message(sync_msg, [cid])
             print(
-                f"[COORD {self.unique_id}] -> [COORD {cid}]: "
+                f"{self.tag} -> {agent_tag('coordinator', cid)}: "
                 f"sync ({len(self.known_objects)} objs)"
             )
 
@@ -529,7 +527,7 @@ class CoordinatorAgent(BaseAgent):
             self.path = []
         self.state = AgentState.EXPLORING
         print(
-            f"[COORD {self.unique_id}] SEEK-RETRIEVER: "
+            f"{self.tag} SEEK-RETRIEVER: "
             f"{len(pending)} unassigned object(s), no retrievers in range — "
             f"heading to last known retriever pos {best_pos} (dist={int(best_dist)})"
         )
@@ -579,8 +577,7 @@ class CoordinatorAgent(BaseAgent):
                 failed_step = self.unreachable_targets.get(wp, -1)
                 still_blacklisted = failed_step != -1 and cs - failed_step < 30
                 already_reached = (
-                    abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1])
-                    <= max_distance_from_agents
+                    abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= max_distance_from_agents
                 )
                 if still_blacklisted or already_reached:
                     self._search_waypoint_idx += 1
@@ -592,8 +589,7 @@ class CoordinatorAgent(BaseAgent):
                 return
             wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
             print(
-                f"[COORD {self.unique_id}] SEARCH: no communicated agent positions — "
-                f"heading to waypoint {wp}"
+                f"{self.tag} SEARCH: no communicated agent positions — " f"heading to waypoint {wp}"
             )
             self.target_position = wp
             self.state = AgentState.EXPLORING
@@ -646,7 +642,7 @@ class CoordinatorAgent(BaseAgent):
             return
 
         print(
-            f"[COORD {self.unique_id}] REPOSITION: Too far from agents "
+            f"{self.tag} REPOSITION: Too far from agents "
             f"(distance: {dist_from_centroid}), moving towards {reposition_target}"
         )
         self.target_position = reposition_target
@@ -694,7 +690,7 @@ class CoordinatorAgent(BaseAgent):
             if entrance:
                 self._coord_wh_step = "approach"
                 self.target_position = entrance
-                print(f"[COORD {self.unique_id}] RECHARGE: heading to entrance {entrance}")
+                print(f"{self.tag} RECHARGE: heading to entrance {entrance}")
             else:
                 # No station found — abort recharge
                 self.state = AgentState.IDLE
@@ -721,7 +717,7 @@ class CoordinatorAgent(BaseAgent):
                 if self.energy >= self.max_energy * 0.80:
                     # Enough energy — skip recharge entirely, exit immediately
                     print(
-                        f"[COORD {self.unique_id}] RECHARGE: energy sufficient "
+                        f"{self.tag} RECHARGE: energy sufficient "
                         f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
                     )
                     exit_cell = station.get("exit") or station.get("entrance")
@@ -736,9 +732,7 @@ class CoordinatorAgent(BaseAgent):
                     # Store in dedicated attribute so target_position changes can't corrupt it
                     self._coord_wh_recharge_cell = queue_cell
                     self.target_position = queue_cell
-                    print(
-                        f"[COORD {self.unique_id}] RECHARGE: at entrance, joining queue at {queue_cell}"
-                    )
+                    print(f"{self.tag} RECHARGE: at entrance, joining queue at {queue_cell}")
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
@@ -749,7 +743,7 @@ class CoordinatorAgent(BaseAgent):
                     self.recharge_attempt_start = self.model.current_step
                 steps = self.model.current_step - self.recharge_attempt_start
                 if steps > 60:
-                    print(f"[COORD {self.unique_id}] RECHARGE TIMEOUT: cannot reach WH, aborting")
+                    print(f"{self.tag} RECHARGE TIMEOUT: cannot reach WH, aborting")
                     self._coord_wh_step = None
                     self._coord_wh_station = None
                     self._coord_wh_recharge_cell = None
@@ -787,7 +781,7 @@ class CoordinatorAgent(BaseAgent):
                 self._coord_wh_step = "exit"
                 self.target_position = exit_cell
                 print(
-                    f"[COORD {self.unique_id}] RECHARGE: full ({self.energy:.1f}), "
+                    f"{self.tag} RECHARGE: full ({self.energy:.1f}), "
                     f"heading to exit {exit_cell}"
                 )
                 # Move toward exit immediately
@@ -810,7 +804,7 @@ class CoordinatorAgent(BaseAgent):
                 )
             )
             if left_wh:
-                print(f"[COORD {self.unique_id}] RECHARGE: exited warehouse, resuming")
+                print(f"{self.tag} RECHARGE: exited warehouse, resuming")
                 self._coord_wh_step = None
                 self._coord_wh_station = None
                 self._coord_wh_recharge_cell = None
@@ -852,7 +846,7 @@ class CoordinatorAgent(BaseAgent):
 
     def _send_task_assignments(self) -> None:
         """Send task assignments to retrievers and update local tracking."""
-        print(f"[COORD {self.unique_id}] ASSIGN: sending {len(self.tasks_to_assign)} task(s)")
+        print(f"{self.tag} ASSIGN: sending {len(self.tasks_to_assign)} task(s)")
 
         for retriever_id, obj_pos, priority in self.tasks_to_assign:
             message = TaskAssignmentMessage(
@@ -893,7 +887,7 @@ class CoordinatorAgent(BaseAgent):
                 self.model.comm_manager.send_message(map_msg, [retriever_id])
 
             print(
-                f"[COORD {self.unique_id}] -> [RETRIEVER {retriever_id}]: "
+                f"{self.tag} -> {agent_tag('retriever', retriever_id)}: "
                 f"retrieve {obj_pos} (priority={priority:.2f})"
             )
             self.log_message(

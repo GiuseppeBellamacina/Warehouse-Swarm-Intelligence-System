@@ -108,29 +108,27 @@ export const useSimulation = () => {
   }, []);
 
   /**
-   * Poll /api/health until the backend responds (Render cold start ~30 s).
-   * Retries every 3 s for up to 60 s total.
+   * Single health-check ping. Sets status to "waking" on entry and "online" on
+   * success. Returns true if the backend responded OK.
+   * The retry loop (every 10 s, max 100 s) is managed in App.tsx.
    */
-  const wakeBackend = useCallback(async () => {
+  const wakeBackend = useCallback(async (): Promise<boolean> => {
     setBackendStatus("waking");
-    const MAX_ATTEMPTS = 20; // 20 × 3 s = 60 s
-    const INTERVAL_MS = 3000;
-
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      try {
-        const res = await fetch(`${BACKEND_URL}/api/health`);
-        if (res.ok) {
-          setBackendStatus("online");
-          // socket.io auto-reconnects; nudge it if it's still disconnected
-          socketRef.current?.connect();
-          return;
-        }
-      } catch {
-        // backend still sleeping — swallow and retry
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/health`);
+      if (res.ok) {
+        setBackendStatus("online");
+        socketRef.current?.connect();
+        return true;
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, INTERVAL_MS));
+    } catch {
+      // backend still sleeping — swallow
     }
+    return false;
+  }, []);
 
+  /** Reset backend status to offline (called by App when the retry loop gives up). */
+  const setBackendOffline = useCallback(() => {
     setBackendStatus("offline");
   }, []);
 
@@ -283,6 +281,7 @@ export const useSimulation = () => {
     isLoaded,
     backendStatus,
     wakeBackend,
+    setBackendOffline,
     loadConfig,
     startSimulation,
     uploadConfig,

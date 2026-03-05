@@ -62,6 +62,7 @@ function App() {
     isLoaded,
     backendStatus,
     wakeBackend,
+    setBackendOffline,
     loadConfig,
     startSimulation,
     pauseSimulation,
@@ -74,28 +75,75 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("simulation");
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
 
-  // Wake-up button cooldown (10 s)
-  const [wakeCooldown, setWakeCooldown] = useState(0);
-  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Wake-up retry loop: ping every 10 s, up to 10 attempts (100 s total)
+  const MAX_WAKE_ATTEMPTS = 10;
+  const WAKE_INTERVAL_SEC = 10;
+
+  const [wakeLoopActive, setWakeLoopActive] = useState(false);
+  const [wakeAttempt, setWakeAttempt] = useState(0);
+  const [wakeCountdown, setWakeCountdown] = useState(0);
+  const wakeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wakeStateRef = useRef({ active: false, attempt: 0, countdown: 0 });
+
+  const stopWakeLoop = useCallback(
+    (succeeded: boolean) => {
+      if (wakeTimerRef.current) clearInterval(wakeTimerRef.current);
+      wakeTimerRef.current = null;
+      wakeStateRef.current = { active: false, attempt: 0, countdown: 0 };
+      setWakeLoopActive(false);
+      setWakeAttempt(0);
+      setWakeCountdown(0);
+      if (!succeeded) setBackendOffline();
+    },
+    [setBackendOffline],
+  );
 
   const handleWake = useCallback(() => {
-    wakeBackend();
-    setWakeCooldown(10);
-    cooldownRef.current = setInterval(() => {
-      setWakeCooldown((prev) => {
-        if (prev <= 1) {
-          clearInterval(cooldownRef.current!);
-          cooldownRef.current = null;
-          return 0;
+    if (wakeStateRef.current.active) return;
+    wakeStateRef.current = {
+      active: true,
+      attempt: 1,
+      countdown: WAKE_INTERVAL_SEC,
+    };
+    setWakeLoopActive(true);
+    setWakeAttempt(1);
+    setWakeCountdown(WAKE_INTERVAL_SEC);
+
+    // First attempt fires immediately
+    wakeBackend().then((ok) => {
+      if (ok) stopWakeLoop(true);
+    });
+
+    wakeTimerRef.current = setInterval(() => {
+      if (!wakeStateRef.current.active) return;
+      wakeStateRef.current.countdown -= 1;
+      setWakeCountdown(wakeStateRef.current.countdown);
+
+      if (wakeStateRef.current.countdown <= 0) {
+        const next = wakeStateRef.current.attempt + 1;
+        if (next > MAX_WAKE_ATTEMPTS) {
+          stopWakeLoop(false);
+          return;
         }
-        return prev - 1;
-      });
+        wakeStateRef.current.attempt = next;
+        wakeStateRef.current.countdown = WAKE_INTERVAL_SEC;
+        setWakeAttempt(next);
+        setWakeCountdown(WAKE_INTERVAL_SEC);
+        wakeBackend().then((ok) => {
+          if (ok) stopWakeLoop(true);
+        });
+      }
     }, 1000);
-  }, [wakeBackend]);
+  }, [wakeBackend, stopWakeLoop]);
+
+  // Stop the retry loop as soon as the WebSocket reconnects
+  useEffect(() => {
+    if (connected && wakeStateRef.current.active) stopWakeLoop(true);
+  }, [connected, stopWakeLoop]);
 
   useEffect(
     () => () => {
-      if (cooldownRef.current) clearInterval(cooldownRef.current);
+      if (wakeTimerRef.current) clearInterval(wakeTimerRef.current);
     },
     [],
   );
@@ -168,54 +216,39 @@ function App() {
               className={`text-xs mt-0.5 ${backendStatus === "waking" ? "text-yellow-400/80" : "text-amber-400/80"}`}
             >
               {backendStatus === "waking"
-                ? "Il server Render si sta riavviando. L'operazione richiede circa 30–60 secondi — la pagina si aggiornerà automaticamente."
+                ? wakeLoopActive
+                  ? `Tentativo ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 prossima richiesta tra ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
+                  : "Il server Render si sta riavviando. L'operazione richiede circa 30\u201360 secondi \u2014 la pagina si aggiorner\u00e0 automaticamente."
                 : "Dopo un periodo di inattività il server va in sleep. Premi il pulsante per risvegliarlo, poi attendi il riavvio (30–60 s)."}
             </p>
           </div>
 
-          {/* Wake-up button — inline in the banner */}
-          {backendStatus !== "waking" && (
+          {/* Wake-up button / retry-loop progress — inline in the banner */}
+          {wakeLoopActive ? (
+            <div className="flex-shrink-0 flex flex-col items-end gap-1.5">
+              <p className="text-xs font-mono text-yellow-300/90">
+                {wakeCountdown > 0
+                  ? `ping tra ${wakeCountdown}s`
+                  : "ping\u2026"}
+              </p>
+              <button
+                onClick={() => stopWakeLoop(false)}
+                className="text-xs px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+              >
+                Annulla
+              </button>
+            </div>
+          ) : backendStatus === "offline" || backendStatus === "unknown" ? (
             <button
               onClick={handleWake}
-              disabled={wakeCooldown > 0}
               className="flex-shrink-0 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg font-semibold
                 bg-amber-500 hover:bg-amber-400 active:bg-amber-300
-                disabled:bg-gray-600 disabled:cursor-not-allowed
-                text-gray-900 disabled:text-gray-400
-                transition-colors shadow-md"
+                text-gray-900 transition-colors shadow-md"
             >
-              {wakeCooldown > 0 ? (
-                <>
-                  <svg
-                    className="animate-spin h-4 w-4"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
-                  </svg>
-                  <span>Riprova tra {wakeCooldown}s</span>
-                </>
-              ) : (
-                <>
-                  <span>⚡</span>
-                  <span>Wake up</span>
-                </>
-              )}
+              <span>⚡</span>
+              <span>Wake up</span>
             </button>
-          )}
+          ) : null}
         </div>
       )}
       {/* ── Header ── */}
