@@ -14,9 +14,13 @@ from pydantic import BaseModel
 
 from backend.api.session_registry import session_registry
 from backend.api.simulation_manager import SimulationManager
-from backend.api.telegram_notifier import notify_simulation_start, notify_simulation_stopped
+from backend.api.telegram_notifier import (
+    notify_simulation_start,
+    notify_simulation_stopped,
+)
 from backend.api.websocket_manager import ws_manager
-from backend.config.config_loader import ConfigLoader
+from backend.config.config_loader import GridConfigLoader
+from backend.config.schemas import SimulationAgentsConfig
 from backend.config.settings import settings
 
 # Get the project root directory for configs
@@ -62,9 +66,20 @@ def _get_manager(request: Request) -> SimulationManager:
 
 # Pydantic models for requests
 class StartSimulationRequest(BaseModel):
-    """Request body for starting simulation"""
+    """Request body for starting simulation (legacy, old verbose format)"""
 
     config: dict
+
+
+class LoadGridRequest(BaseModel):
+    """Request body for loading a grid-based scenario (new A/B compact format).
+
+    ``scenario`` contains the GridScenarioConfig dict (metadata/grid/warehouses/objects).
+    ``agents`` is optional — falls back to default 1S+1C+3R if omitted.
+    """
+
+    scenario: dict
+    agents: Optional[dict] = None
 
 
 # API Routes
@@ -151,32 +166,44 @@ async def get_config(config_name: str):
 
 
 @app.post("/api/simulation/load")
-async def load_simulation_endpoint(request: Request, body: StartSimulationRequest):
+async def load_simulation_endpoint(request: Request, body: LoadGridRequest):
     """
     Load a simulation configuration: initialize agents/grid and broadcast step 0.
     The simulation loop does NOT start — call /api/simulation/start to run it.
+
+    Accepts the compact grid-based format::
+
+        POST body:
+        {
+          "scenario": {"metadata": {...}, "grid": [...], "warehouses": [...], "objects": [...]},
+          "agents": {"scouts": {...}, "coordinators": {...}, "retrievers": {...}}  // optional
+        }
     """
     try:
         mgr = _get_manager(request)
         sid = _session_id(request)
-        print("[DEBUG] Received load simulation request")
-        config = ConfigLoader.load_from_dict(body.config)
+        print("[DEBUG] Received load simulation request (grid format)")
+        grid_config = GridConfigLoader.load_from_dict(body.scenario)
+        agents_config = (
+            SimulationAgentsConfig(**body.agents) if body.agents else SimulationAgentsConfig()
+        )
         print("[DEBUG] Configuration parsed — initializing and broadcasting step 0...")
-        await mgr.load_simulation(config, ws_manager, sid)
+        await mgr.load_from_grid(grid_config, agents_config, ws_manager, sid)
         print("[DEBUG] Step 0 broadcast complete")
+        meta = grid_config.metadata
         return {
             "status": "loaded",
             "message": "Simulation loaded. Press Start to begin.",
             "agents": {
-                "scouts": config.agents.scouts.count,
-                "coordinators": config.agents.coordinators.count,
-                "retrievers": config.agents.retrievers.count,
+                "scouts": agents_config.scouts.count,
+                "coordinators": agents_config.coordinators.count,
+                "retrievers": agents_config.retrievers.count,
             },
             "grid": {
-                "width": config.simulation.grid_width,
-                "height": config.simulation.grid_height,
+                "width": meta.grid_size,
+                "height": meta.grid_size,
             },
-            "objects": config.objects.count,
+            "objects": meta.num_objects,
         }
     except ValueError as e:
         print(f"[ERROR] Validation error: {str(e)}")
@@ -235,22 +262,31 @@ async def start_simulation(request: Request):
 @app.post("/api/simulation/upload")
 async def upload_configuration(request: Request, file: UploadFile = File(...)):
     """
-    Upload and start simulation from JSON configuration file
+    Upload and load simulation from a JSON configuration file (grid A/B format).
+
+    The JSON file should contain the compact grid scenario:
+    ``{"metadata": {...}, "grid": [...], "warehouses": [...], "objects": [...]}``.
+    An optional ``agents`` key at the top level is also accepted.
     """
     try:
         mgr = _get_manager(request)
         sid = _session_id(request)
         content = await file.read()
-        config_dict = json.loads(content)
-        config = ConfigLoader.load_from_dict(config_dict)
-        await mgr.load_simulation(config, ws_manager, sid)
+        raw = json.loads(content)
+        # Support optional agents key inside the uploaded file, or no agents key at all
+        agents_dict = raw.pop("agents", None)
+        grid_config = GridConfigLoader.load_from_dict(raw)
+        agents_config = (
+            SimulationAgentsConfig(**agents_dict) if agents_dict else SimulationAgentsConfig()
+        )
+        await mgr.load_from_grid(grid_config, agents_config, ws_manager, sid)
         return {
             "status": "loaded",
             "message": f"Configuration loaded from {file.filename}. Press Start to begin.",
             "agents": {
-                "scouts": config.agents.scouts.count,
-                "coordinators": config.agents.coordinators.count,
-                "retrievers": config.agents.retrievers.count,
+                "scouts": agents_config.scouts.count,
+                "coordinators": agents_config.coordinators.count,
+                "retrievers": agents_config.retrievers.count,
             },
         }
     except json.JSONDecodeError:
@@ -325,7 +361,7 @@ async def reset_simulation(request: Request):
     """Reset the simulation to initial state and broadcast step 0"""
     mgr = _get_manager(request)
     sid = _session_id(request)
-    if not mgr.config:
+    if not mgr.config and not mgr._grid_config:
         raise HTTPException(status_code=400, detail="No configuration loaded")
 
     await mgr.reset_simulation()
