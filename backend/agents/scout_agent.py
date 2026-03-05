@@ -142,9 +142,8 @@ class ScoutAgent(BaseAgent):
             # so the scout can hand off its discoveries without just waiting idly.
             if self.last_seen_coordinator_pos:
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                dist_to_saved = (
-                    abs(self.last_seen_coordinator_pos[0] - my_pos[0])
-                    + abs(self.last_seen_coordinator_pos[1] - my_pos[1])
+                dist_to_saved = abs(self.last_seen_coordinator_pos[0] - my_pos[0]) + abs(
+                    self.last_seen_coordinator_pos[1] - my_pos[1]
                 )
                 # Arrived at last known position but coordinator not here → it moved;
                 # do a wide scan first to find the coordinator's new position before

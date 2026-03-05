@@ -297,11 +297,13 @@ class BaseAgent(Agent):
         # Extract explored cells from local map
         explored_cells = MapSharingSystem.extract_explored_cells(self.local_map)
 
-        # Create message
+        # Create message — carry full knowledge so every agent is a relay
         message = MapDataMessage(
             sender_id=self.unique_id or 0,
             timestamp=self.model.current_step,
             explored_cells=explored_cells,
+            known_objects=dict(self.known_objects),
+            objects_being_collected=list(getattr(self, "objects_being_collected", [])),
         )
 
         # Send to all nearby agents
@@ -346,6 +348,22 @@ class BaseAgent(Agent):
                             # warehouses discovered through map sharing, not just vision
                             if (x, y) not in self.known_warehouses:
                                 self.known_warehouses.append((x, y))
+
+                # ---- relay: merge explicit object knowledge ----
+                # objects_being_collected from the sender (may be empty for non-coordinators)
+                my_obc = getattr(self, "objects_being_collected", None)
+                for raw_pos in message.objects_being_collected:
+                    pos = tuple(raw_pos)
+                    if my_obc is not None:
+                        my_obc.add(pos)
+                    # Remove from known_objects: it's already assigned/collected
+                    self.known_objects.pop(pos, None)
+
+                # known_objects relayed by sender — add anything we don't know yet
+                for raw_pos, val in message.known_objects.items():
+                    pos = tuple(raw_pos)
+                    if pos not in self.known_objects and (my_obc is None or pos not in my_obc):
+                        self.known_objects[pos] = val
 
             elif isinstance(message, ObjectLocationMessage):
                 # Add discovered object to known objects

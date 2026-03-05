@@ -2,7 +2,7 @@
 Agent communication and map sharing system
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Dict, List, Optional, Set, Tuple
 
 import numpy as np
@@ -18,9 +18,18 @@ class Message:
 
 @dataclass
 class MapDataMessage(Message):
-    """Message containing explored map data"""
+    """Message containing explored map data.
+
+    Carries three information layers so that every agent acts as a relay:
+    - explored_cells: grid topology (cell types discovered so far)
+    - known_objects:  object positions known to the sender
+    - objects_being_collected: positions already assigned/picked up
+      (Coordinators fill this; other agents leave it empty)
+    """
 
     explored_cells: List[Tuple[int, int, int]]  # (x, y, cell_type)
+    known_objects: Dict = field(default_factory=dict)  # {(x,y): value}
+    objects_being_collected: List = field(default_factory=list)  # [(x,y), ...]
 
 
 @dataclass
