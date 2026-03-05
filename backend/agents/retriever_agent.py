@@ -3,7 +3,7 @@ Retriever Agent - Heavy lifter for object collection and delivery
 """
 
 import random
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
 from backend.algorithms.pathfinding import AStarPathfinder
@@ -22,24 +22,42 @@ class RetrieverAgent(BaseAgent):
     """
     Retriever agent: collects objects and delivers to warehouse.
 
-    Rules:
-    - NEVER decides autonomously to retrieve an object; only follows task_queue
-      assigned by coordinator.
-    - Always declares task_queue to nearby coordinators so they don't over-assign.
+    Decision priority (highest to lowest):
+    P0 — Communicate status to nearby coordinators (non-blocking).
+    P1 — Deliver if fully loaded or task queue empty while carrying something.
+    P2 — Recharge if energy critically low (< 20 %).
+    P3 — Execute next task in queue (coordinator-assigned or self-assigned).
+    P4 — Self-assign from accumulated map knowledge when idle (hive-mind mode):
+         scans the entire ``known_objects`` dict — populated both from direct
+         vision AND from MapDataMessage exchanges — and claims the nearest
+         unclaimed object using the shared CommunicationManager (atomic,
+         race-safe).  Falls back to local exploration only if no known objects
+         remain unclaimed.
+
+    Hive-mind properties:
+    - Shares map data with ALL nearby agents (scouts, coordinators, other
+      retrievers) every communication step.
+    - Reacts to received MapDataMessages: stale task_queue entries (objects
+      that peers report as gone) are dropped and claims released immediately.
+    - After delivery, immediately checks known_objects for a new target before
+      falling back to random exploration.
+    - Coordinates with peer retrievers via TaskStatusMessage to avoid
+      duplicate pickup attempts; always uses try_claim_object() as the
+      atomic final arbiter.
+
+    Navigation rules:
     - Enters warehouse ONLY through entrance cell, exits ONLY through exit cell.
-    - Deposits at deposit_cell (nearest WH interior cell to entrance).
-    - Recharges at recharge_cell (farthest WH interior cell from entrance).
-    - When idle (no tasks), wanders locally via A* — does NOT return to warehouse.
-    - Reports newly spotted objects to coordinator (coordinator decides pickup).
+    - Deposits at deposit_cell; recharges at recharge_cell when energy < 80 %.
+    - Reports newly spotted objects to nearby coordinators.
     """
 
     def __init__(
         self,
         unique_id: int,
         model: "WarehouseModel",
-        vision_radius: int = 5,
-        communication_radius: int = 15,
-        max_energy: float = 100.0,
+        vision_radius: int = 2,
+        communication_radius: int = 2,
+        max_energy: float = 500.0,
         speed: float = 1.0,
         carrying_capacity: int = 2,
     ):
@@ -52,9 +70,9 @@ class RetrieverAgent(BaseAgent):
             max_energy=max_energy,
             speed=speed,
             energy_consumption={
-                "base": 0.1,
-                "move": 0.6,
-                "communicate": 0.2,
+                "base": 0.0,
+                "move": 1.0,
+                "communicate": 0.0,
             },
         )
 
@@ -100,8 +118,30 @@ class RetrieverAgent(BaseAgent):
     # ------------------------------------------------------------------
 
     def process_received_messages(self) -> None:
-        """Handle TaskAssignmentMessage from coordinator."""
+        """Handle TaskAssignmentMessage from coordinator and peer TaskStatusMessages."""
         super().process_received_messages()
+
+        # --- Stale-target cancellation -------------------------------------------
+        # super() has already merged incoming MapDataMessages and pruned known_objects
+        # for cells that peers report as no longer carrying an object.  Mirror that
+        # same pruning onto our task_queue: any queued position that is no longer
+        # present on the actual grid is invalid — release the claim immediately so
+        # another agent (or a re-assigned coordinator task) can take it.
+        stale_tasks = [t for t in list(self.task_queue) if t not in self.model.grid.objects]
+        for stale in stale_tasks:
+            self.task_queue.remove(stale)
+            self.model.comm_manager.release_claim(stale, self.unique_id)
+            if stale in self.known_objects:
+                del self.known_objects[stale]
+            # If we were physically heading to this object, abort the movement
+            if self.target_position == stale:
+                self.target_position = None
+                self.path = []
+            print(
+                f"[RETRIEVER {self.unique_id}] MAP-PRUNE: cancelled stale task {stale} "
+                f"(object no longer on grid — learned via map share)"
+            )
+        # -------------------------------------------------------------------------
 
         for message in self._step_messages:
             if isinstance(message, TaskAssignmentMessage):
@@ -131,6 +171,27 @@ class RetrieverAgent(BaseAgent):
                         print(
                             f"[RETRIEVER {self.unique_id}] <- [COORD "
                             f"{message.sender_id}]: queued unknown task {target}"
+                        )
+
+            elif isinstance(message, TaskStatusMessage):
+                # Peer retriever broadcast its queue after a self/peer-assign.
+                # Prune any of their tasks from our own task_queue if we haven't
+                # claimed them yet, and release the claim so the peer keeps it.
+                peer_id = message.sender_id
+                if peer_id == self.unique_id:
+                    continue  # own echo
+                # Check we're receiving from a retriever (not a coordinator)
+                sender_agent = next((a for a in self.model.agents if a.unique_id == peer_id), None)
+                if sender_agent is None or getattr(sender_agent, "role", None) != "retriever":
+                    continue
+                for peer_task in message.task_queue:
+                    if peer_task in self.task_queue:
+                        # Peer already claimed this — drop it from our queue
+                        self.task_queue.remove(peer_task)
+                        self.model.comm_manager.release_claim(peer_task, self.unique_id)
+                        print(
+                            f"[RETRIEVER {self.unique_id}] PEER-YIELD: "
+                            f"dropped {peer_task} (peer {peer_id} has it)"
                         )
 
     # ------------------------------------------------------------------
@@ -201,8 +262,14 @@ class RetrieverAgent(BaseAgent):
                 self._try_opportunistic_pickup()
             return
 
-        # ---- P4: No tasks — explore locally (don't go warehouse) ----
+        # ---- P4: No tasks — self-assign from full known_objects map before exploring ----
+        # Uses the entire accumulated knowledge base (vision + shared map from all
+        # nearby agents), not just currently visible cells.  This is the hive-mind
+        # behaviour: if any peer has spotted objects and shared the info, the retriever
+        # will proactively head there without waiting for a coordinator assignment.
         if self._wh_step is None:
+            if self._try_self_assign_visible():
+                return  # claimed something, P3 will handle it next step
             self._update_explore_target()
 
     def _try_opportunistic_pickup(self) -> None:
@@ -256,6 +323,130 @@ class RetrieverAgent(BaseAgent):
             # Force a status broadcast next act so coordinator sees the new queue ASAP
             self.should_communicate_this_step = True
 
+    def _try_self_assign_visible(self) -> bool:
+        """
+        Autonomous self-assignment: claim the best known unclaimed object.
+
+        Searches the entire ``known_objects`` map (populated both from direct vision
+        AND from MapDataMessage exchanges with scouts/coordinators/peers), so the
+        retriever can proactively pursue objects it has heard about from colleagues
+        even when they are far away.  This is the "hive-mind" behaviour: the shared
+        knowledge base is leveraged to avoid idle wandering.
+
+        Three-layer safety against double-assignment:
+          1. Grid truth check    — skip objects already gone from model.grid.objects.
+          2. Global claim check  — skip objects already locked in CommunicationManager.
+          3. Peer queue scan     — read task_queue of every nearby retriever directly;
+             skip if any peer has the object queued (handles coordinator-assigned but
+             not yet claimed items that haven't propagated through comm yet).
+          4. Atomic try_claim    — CommunicationManager.try_claim_object() is the
+             final arbiter for same-step ties (first caller wins).
+
+        Candidates are sorted by Manhattan distance so the nearest unclaimed object
+        is claimed first.  Multiple objects are claimed up to the spare carrying
+        capacity.
+
+        After a successful claim the retriever broadcasts a TaskStatusMessage to both
+        nearby coordinators AND nearby retrievers, so all peers see the updated queue
+        immediately and won't attempt to claim the same object.
+
+        Returns:
+            True if at least one object was claimed (caller skips exploration).
+        """
+        spare = self.carrying_capacity - self.carrying_objects - len(self.task_queue)
+        if spare <= 0:
+            return False
+
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+
+        # --- layer 3: collect all objects already queued by nearby retrievers ---
+        nearby_agents = self.get_nearby_agents(self.communication_radius)
+        peer_queued: Set[Tuple[int, int]] = set()
+        for agent in nearby_agents:
+            if getattr(agent, "role", None) == "retriever" and agent.unique_id != self.unique_id:
+                for t in getattr(agent, "task_queue", []):
+                    peer_queued.add(t)
+
+        candidates: List[Tuple[int, Tuple[int, int]]] = []
+        for obj_pos in list(self.known_objects.keys()):
+            if obj_pos in self.task_queue:
+                continue
+            # layer 1: grid truth check (object may have been picked up already)
+            if obj_pos not in self.model.grid.objects:
+                # Prune stale entry so we don't keep re-checking it
+                del self.known_objects[obj_pos]
+                continue
+            # layer 2: global claim check
+            if self.model.comm_manager.get_claimer(obj_pos) is not None:
+                continue
+            # layer 3: peer queue check
+            if obj_pos in peer_queued:
+                continue
+            dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
+            # Scan ALL known objects — not limited to vision_radius.
+            # The retriever uses its full accumulated knowledge so it never idles
+            # when objects it has heard about from peers are still waiting.
+            candidates.append((dist, obj_pos))
+
+        if not candidates:
+            return False
+
+        candidates.sort()  # closest first
+        claimed = 0
+        for dist, obj_pos in candidates:
+            if claimed >= spare:
+                break
+            # layer 4: atomic first-come-first-served claim
+            can_claim = self.model.comm_manager.try_claim_object(
+                obj_pos, self.unique_id, self.model.current_step, dist, self.energy
+            )
+            if can_claim:
+                self.task_queue.append(obj_pos)
+                print(
+                    f"[RETRIEVER {self.unique_id}] SELF-ASSIGN: claimed {obj_pos} "
+                    f"dist={dist} from known_objects "
+                    f"({'nearby' if dist <= self.vision_radius else 'remote via shared map'})"
+                )
+                claimed += 1
+
+        if claimed:
+            # Notify both coordinators and nearby retrievers so all peers see
+            # the updated queue immediately (prevents redundant claims next step)
+            self._broadcast_status_to_nearby(nearby_agents)
+            return True
+        return False
+
+    def _broadcast_status_to_nearby(self, nearby_agents: Optional[List] = None) -> None:
+        """
+        Send TaskStatusMessage to all nearby agents (coordinators + retrievers).
+        Used after a self/peer-assign so every neighbour immediately sees the
+        updated task_queue and won't attempt to claim the same object.
+        """
+        if nearby_agents is None:
+            nearby_agents = self.get_nearby_agents(self.communication_radius)
+
+        target_ids = [
+            a.unique_id
+            for a in nearby_agents
+            if getattr(a, "role", None) in ("coordinator", "retriever")
+            and a.unique_id != self.unique_id
+        ]
+        if not target_ids:
+            return
+
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        status_msg = TaskStatusMessage(
+            sender_id=self.unique_id,
+            timestamp=self.model.current_step,
+            retriever_id=self.unique_id,
+            task_queue=list(self.task_queue),
+            carrying_objects=self.carrying_objects,
+            energy_level=self.energy,
+            position=my_pos,
+        )
+        self.model.comm_manager.send_message(status_msg, target_ids)
+        self.consume_energy(self.energy_consumption["communicate"])
+
     def _start_warehouse_sequence(self, purpose: str) -> None:
         """
         Begin entering the best warehouse for this agent.
@@ -279,6 +470,7 @@ class RetrieverAgent(BaseAgent):
         station = self.model.get_best_warehouse_for(
             pos=pos_tuple,
             known_entrances=visible_entrances,
+            agent_energy=self.energy,
         )
 
         self._wh_station = station
@@ -501,6 +693,13 @@ class RetrieverAgent(BaseAgent):
                     self.state = AgentState.RETRIEVING
                     self.target_position = self.task_queue[0]
                     self.path = []  # invalidate cached path — new target
+                elif self._try_self_assign_visible():
+                    # Proactively self-assign from accumulated map knowledge
+                    # so the retriever never idles after delivery when objects
+                    # are known but no coordinator is nearby to give orders.
+                    self.state = AgentState.RETRIEVING
+                    self.target_position = self.task_queue[0]
+                    self.path = []
                 else:
                     self.state = AgentState.EXPLORING
                     self._update_explore_target()
