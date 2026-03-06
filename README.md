@@ -14,9 +14,9 @@ A real-time swarm intelligence simulation where autonomous agents cooperate to e
 
 | Role        | Colour | Responsibility                                           |
 | ----------- | ------ | -------------------------------------------------------- |
-| Scout       | Green  | Explore the map, report object locations to coordinators |
-| Coordinator | Purple | Assign retrieval tasks, manage agent recharging          |
-| Retriever   | Blue   | Navigate to objects, carry them to the deposit zone      |
+| Scout       | Green | Explore the map, report object locations to coordinators |
+| Coordinator | Blue | Assign retrieval tasks, manage agent recharging          |
+| Retriever   | Yellow | Navigate to objects, carry them to the deposit zone      |
 
 ### Algorithms
 
