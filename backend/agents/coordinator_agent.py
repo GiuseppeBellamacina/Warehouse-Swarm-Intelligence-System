@@ -584,16 +584,19 @@ class CoordinatorAgent(BaseAgent):
         )
 
         # Build centroid from communicated positions only.
-        # Only consider positions that are recent enough to be meaningful.
-        # Stale positions (retrievers that have moved far away and stopped reporting)
-        # would pin the coordinator to the delivery area — if no fresh data is available,
-        # fall back to the waypoint patrol so the coordinator keeps moving.
+        # Prefer recent positions, but fall back to last-known (stale) ones
+        # so the coordinator heads toward the last place retrievers were seen
+        # instead of aimlessly patrolling waypoints.
         cs_now = self.model.current_step
         agent_positions = [
             tuple(p)
             for rid, p in self.retriever_positions.items()
             if p and cs_now - self.retriever_positions_step.get(rid, -9999) <= self._POS_MAX_AGE
         ]
+        if not agent_positions:
+            # All positions are stale — use them anyway so the coordinator
+            # heads toward the last-known area rather than random waypoints.
+            agent_positions = [tuple(p) for p in self.retriever_positions.values() if p]
 
         # Boredom check: if the coordinator has been IDLE for too long AND there
         # is nothing useful to do nearby (no known unassigned objects), force a
@@ -605,7 +608,8 @@ class CoordinatorAgent(BaseAgent):
         )
         if self._BOREDOM_PATROL and self._idle_steps >= self._BOREDOM_THRESHOLD and no_work_pending:
             self._idle_steps = 0
-            agent_positions = []  # pretend we have no positions → waypoint branch
+            if not agent_positions:
+                agent_positions = []  # genuinely no data — waypoint branch
 
         if not agent_positions:
             # No communicated positions yet — enter search mode: cycle through
