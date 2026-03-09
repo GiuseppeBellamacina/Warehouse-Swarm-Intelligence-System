@@ -309,9 +309,9 @@ class ScoutAgent(BaseAgent):
             if current_step - step < self._RECENT_TARGET_TTL
         }
 
-        # Expire unreachable_targets entries that are older than their 30-step TTL
+        # Expire unreachable_targets entries that are older than their TTL
         # so the dict doesn't grow unbounded (base_agent never auto-purges it).
-        for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 30]:
+        for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 200]:
             del self.unreachable_targets[pos]
 
         frontiers = FrontierExplorer.find_frontiers(
@@ -328,10 +328,7 @@ class ScoutAgent(BaseAgent):
         valid_frontiers = []
         for frontier_pos, cluster_size in frontiers:
             if frontier_pos in self.unreachable_targets:
-                failed_step = self.unreachable_targets[frontier_pos]
-                if current_step - failed_step < 30:
-                    continue
-                del self.unreachable_targets[frontier_pos]
+                continue  # skip until TTL expires (purged at top of step_decide)
             if frontier_pos in self._recent_targets:
                 continue  # visited too recently
             valid_frontiers.append((frontier_pos, cluster_size))
