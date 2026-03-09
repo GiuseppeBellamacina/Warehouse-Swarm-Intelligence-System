@@ -26,6 +26,12 @@ export interface Agent {
   communication_radius: number;
   recent_messages: AgentMessage[];
   path: Position[];
+  /** Row-major flat array (0=unknown, 1=explored) — same size as grid width×height */
+  explored?: number[];
+  /** Objects this agent knows about */
+  known_objects?: Position[];
+  /** Warehouse cells this agent knows about */
+  known_warehouses?: Position[];
 }
 
 export interface SimObject {
@@ -81,6 +87,8 @@ export interface SimulationState {
   objects: SimObject[];
   grid?: Grid;
   metrics: Metrics;
+  /** Row-major flat array (0=unexplored, 1=explored by at least one agent) */
+  global_explored?: number[];
   status?: {
     running: boolean;
     paused: boolean;

@@ -48,9 +48,10 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     const cellHeight = height / gridHeight;
 
     // Find selected agent and agents in communication range
-    const selectedAgent = selectedAgentId
-      ? state.agents.find((a) => a.id === selectedAgentId)
-      : null;
+    const selectedAgent =
+      selectedAgentId != null
+        ? state.agents.find((a) => a.id === selectedAgentId)
+        : null;
 
     const agentsInCommRange = new Set<number>();
     if (selectedAgent) {
@@ -68,6 +69,19 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     // Clear canvas
     ctx.fillStyle = "#1a1a1a";
     ctx.fillRect(0, 0, width, height);
+
+    // ── Determine the fog-of-war mask to use ──
+    // When an agent is selected we show that agent's personal explored map,
+    // otherwise we show the global union of all agents' explored maps.
+    const fogMask: number[] | undefined = selectedAgent
+      ? selectedAgent.explored
+      : state.global_explored;
+
+    // Helper: is cell (x,y) explored according to the active fog mask?
+    const isExplored = (x: number, y: number): boolean => {
+      if (!fogMask) return true; // no data → treat everything as explored
+      return fogMask[y * gridWidth + x] === 1;
+    };
 
     // Draw grid lines (subtle)
     ctx.strokeStyle = "#333";
@@ -193,6 +207,94 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         );
       }
     });
+
+    // ── Fog-of-war overlay ──
+    // Heavy dark overlay on unexplored cells + subtle crosshatch pattern.
+    // Explored cells get a faint bright tint so the contrast is unmistakable.
+    if (fogMask) {
+      const fogAlpha = selectedAgent ? 0.82 : 0.65;
+
+      for (let gy = 0; gy < gridHeight; gy++) {
+        for (let gx = 0; gx < gridWidth; gx++) {
+          const px = gx * cellWidth;
+          const py = gy * cellHeight;
+
+          if (!isExplored(gx, gy)) {
+            // --- Unexplored: dark fill + diagonal hash lines ---
+            ctx.fillStyle = `rgba(0, 0, 0, ${fogAlpha})`;
+            ctx.fillRect(px, py, cellWidth, cellHeight);
+
+            // Diagonal hash pattern
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(px, py, cellWidth, cellHeight);
+            ctx.clip();
+            ctx.strokeStyle = `rgba(255, 255, 255, 0.06)`;
+            ctx.lineWidth = 0.5;
+            const step = Math.max(4, cellWidth / 3);
+            for (let d = -cellHeight; d < cellWidth + cellHeight; d += step) {
+              ctx.beginPath();
+              ctx.moveTo(px + d, py);
+              ctx.lineTo(px + d - cellHeight, py + cellHeight);
+              ctx.stroke();
+            }
+            ctx.restore();
+          } else {
+            // --- Explored: subtle bright tint to pop against the dark fog ---
+            ctx.fillStyle = "rgba(200, 220, 255, 0.07)";
+            ctx.fillRect(px, py, cellWidth, cellHeight);
+          }
+        }
+      }
+    }
+
+    // ── Per-agent known warehouses (when an agent is selected) ──
+    if (selectedAgent && selectedAgent.known_warehouses) {
+      ctx.strokeStyle = "rgba(59, 130, 246, 1)";
+      ctx.lineWidth = 2;
+      selectedAgent.known_warehouses.forEach((wc) => {
+        ctx.strokeRect(
+          wc.x * cellWidth + 1,
+          wc.y * cellHeight + 1,
+          cellWidth - 2,
+          cellHeight - 2,
+        );
+      });
+    }
+
+    // ── Per-agent known objects (when an agent is selected) ──
+    if (selectedAgent && selectedAgent.known_objects) {
+      selectedAgent.known_objects.forEach((obj) => {
+        const ox = (obj.x + 0.5) * cellWidth;
+        const oy = (obj.y + 0.5) * cellHeight;
+        const r = Math.min(cellWidth, cellHeight) * 0.38;
+
+        // Outer glow
+        ctx.shadowColor = "#facc15";
+        ctx.shadowBlur = 10;
+
+        // Bright filled circle
+        ctx.fillStyle = "rgba(250, 204, 21, 0.85)";
+        ctx.beginPath();
+        ctx.arc(ox, oy, r, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // Thick white border
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        // Reset shadow
+        ctx.shadowColor = "transparent";
+        ctx.shadowBlur = 0;
+
+        // Inner marker: black star/dot for contrast
+        ctx.fillStyle = "#000";
+        ctx.beginPath();
+        ctx.arc(ox, oy, r * 0.35, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+    }
 
     // Draw selected agent vision / comm radii
     if (selectedAgent) {

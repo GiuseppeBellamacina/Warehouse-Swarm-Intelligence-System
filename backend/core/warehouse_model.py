@@ -662,10 +662,6 @@ class WarehouseModel(Model):
                         if wh_pos not in agent.known_warehouses:
                             agent.known_warehouses.append(wh_pos)
 
-                # If no warehouses visible, add the main warehouse position
-                if not agent.known_warehouses:
-                    agent.known_warehouses.append(self.warehouse_position)
-
         # Track by role for easy access
         if isinstance(agent, BaseAgent):
             if agent.role == "scout":
@@ -731,6 +727,17 @@ class WarehouseModel(Model):
             Dictionary with agents, objects, and metrics
         """
         agents_data = []
+        # Build global explored mask (union of all agents' local maps).
+        # local_map uses 0 for UNKNOWN; any non-zero value means explored.
+        global_explored: Optional[np.ndarray] = None
+        for agent in self.agents:
+            lm = getattr(agent, "local_map", None)
+            if lm is not None:
+                if global_explored is None:
+                    global_explored = (lm != 0).astype(np.uint8)
+                else:
+                    global_explored |= (lm != 0).astype(np.uint8)
+
         for agent in self.agents:
             if agent.pos:
                 # Get state and convert Enum to string
@@ -738,6 +745,24 @@ class WarehouseModel(Model):
                     state = agent.state.value
                 else:
                     state = "unknown"
+
+                # Per-agent explored mask (row-major flat list of 0/1)
+                local_map_raw = getattr(agent, "local_map", None)
+                explored_flat: Optional[list] = None
+                if local_map_raw is not None:
+                    explored_flat = (local_map_raw != 0).astype(np.uint8).flatten().tolist()
+
+                # Known objects for this agent
+                agent_known_objects = [
+                    {"x": int(pos[0]), "y": int(pos[1])}
+                    for pos in getattr(agent, "known_objects", {}).keys()
+                ]
+
+                # Known warehouses for this agent
+                agent_known_warehouses = [
+                    {"x": int(pos[0]), "y": int(pos[1])}
+                    for pos in getattr(agent, "known_warehouses", [])
+                ]
 
                 agent_data = {
                     "id": agent.unique_id,
@@ -756,6 +781,9 @@ class WarehouseModel(Model):
                         if getattr(agent, "path", None)
                         else []
                     ),
+                    "explored": explored_flat,
+                    "known_objects": agent_known_objects,
+                    "known_warehouses": agent_known_warehouses,
                 }
                 agents_data.append(agent_data)
 
@@ -772,6 +800,9 @@ class WarehouseModel(Model):
             "step": self.current_step,
             "agents": agents_data,
             "objects": objects_data,
+            "global_explored": (
+                global_explored.flatten().tolist() if global_explored is not None else None
+            ),
             "metrics": {
                 "objects_retrieved": self.objects_retrieved,
                 "total_objects": self.total_objects,
