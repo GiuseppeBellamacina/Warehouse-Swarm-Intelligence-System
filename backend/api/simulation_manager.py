@@ -313,6 +313,11 @@ class SimulationManager:
         co = agents_config.coordinators
         re = agents_config.retrievers
 
+        # Behavior param dicts for each role
+        scout_beh = agents_config.scout_behavior.model_dump()
+        coord_beh = agents_config.coordinator_behavior.model_dump()
+        retr_beh = agents_config.retriever_behavior.model_dump()
+
         # Spawn order: coordinators → retrievers → scouts (top-left first)
 
         # — spawn coordinators —
@@ -324,6 +329,7 @@ class SimulationManager:
                 communication_radius=co.communication_radius,
                 max_energy=co.max_energy,
                 speed=co.speed,
+                behavior=coord_beh,
             )
             free_pos = self._find_tl_spawn_position()
             if free_pos:
@@ -344,6 +350,7 @@ class SimulationManager:
                 max_energy=re.max_energy,
                 speed=re.speed,
                 carrying_capacity=re.carrying_capacity,
+                behavior=retr_beh,
             )
             free_pos = self._find_tl_spawn_position()
             if free_pos:
@@ -363,6 +370,7 @@ class SimulationManager:
                 communication_radius=sc.communication_radius,
                 max_energy=sc.max_energy,
                 speed=sc.speed,
+                behavior=scout_beh,
             )
             free_pos = self._find_tl_spawn_position()
             if free_pos:

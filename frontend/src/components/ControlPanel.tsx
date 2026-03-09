@@ -5,7 +5,13 @@ import {
   GridScenarioConfig,
   SimulationAgentsConfig,
   AgentRoleParams,
+  ScoutBehaviorParams,
+  CoordinatorBehaviorParams,
+  RetrieverBehaviorParams,
   DEFAULT_AGENTS_CONFIG,
+  DEFAULT_SCOUT_BEHAVIOR,
+  DEFAULT_COORDINATOR_BEHAVIOR,
+  DEFAULT_RETRIEVER_BEHAVIOR,
 } from "../types/simulation";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
@@ -41,6 +47,9 @@ interface Overrides {
   scouts: AgentOverrideFields;
   coordinators: AgentOverrideFields;
   retrievers: AgentOverrideFields;
+  scoutBehavior: ScoutBehaviorParams;
+  coordinatorBehavior: CoordinatorBehaviorParams;
+  retrieverBehavior: RetrieverBehaviorParams;
 }
 
 function extractOverrides(config: GridScenarioConfig): Overrides {
@@ -71,6 +80,9 @@ function extractOverrides(config: GridScenarioConfig): Overrides {
       speed: def.retrievers.speed,
       carrying_capacity: def.retrievers.carrying_capacity,
     },
+    scoutBehavior: { ...DEFAULT_SCOUT_BEHAVIOR },
+    coordinatorBehavior: { ...DEFAULT_COORDINATOR_BEHAVIOR },
+    retrieverBehavior: { ...DEFAULT_RETRIEVER_BEHAVIOR },
   };
 }
 
@@ -99,6 +111,32 @@ const Field: React.FC<{
       onChange={(e) => onChange(Number(e.target.value))}
       className="w-16 bg-gray-700 border border-gray-600 rounded px-1.5 py-0.5 text-xs text-right disabled:opacity-50"
     />
+  </div>
+);
+
+const Toggle: React.FC<{
+  label: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}> = ({ label, value, onChange, disabled }) => (
+  <div className="flex items-center justify-between gap-1">
+    <span className="text-gray-400 text-[10px] leading-tight flex-1">
+      {label}
+    </span>
+    <button
+      onClick={() => onChange(!value)}
+      disabled={disabled}
+      className={`w-8 h-4 rounded-full transition-colors relative ${
+        value ? "bg-blue-600" : "bg-gray-600"
+      } disabled:opacity-50`}
+    >
+      <span
+        className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+          value ? "left-4" : "left-0.5"
+        }`}
+      />
+    </button>
   </div>
 );
 
@@ -135,6 +173,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [rawConfig, setRawConfig] = useState<GridScenarioConfig | null>(null);
   const [overrides, setOverrides] = useState<Overrides | null>(null);
   const [overridesOpen, setOverridesOpen] = useState(false);
+  const [behaviorOpen, setBehaviorOpen] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [speed, setSpeed] = useState(1.0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -204,6 +243,20 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     setOverrides((p) =>
       p ? { ...p, retrievers: { ...p.retrievers, ...patch } } : p,
     );
+  const setScoutBeh = (patch: Partial<ScoutBehaviorParams>) =>
+    setOverrides((p) =>
+      p ? { ...p, scoutBehavior: { ...p.scoutBehavior, ...patch } } : p,
+    );
+  const setCoordBeh = (patch: Partial<CoordinatorBehaviorParams>) =>
+    setOverrides((p) =>
+      p
+        ? { ...p, coordinatorBehavior: { ...p.coordinatorBehavior, ...patch } }
+        : p,
+    );
+  const setRetrBeh = (patch: Partial<RetrieverBehaviorParams>) =>
+    setOverrides((p) =>
+      p ? { ...p, retrieverBehavior: { ...p.retrieverBehavior, ...patch } } : p,
+    );
 
   const handleLoad = () => {
     if (!rawConfig || !overrides) return;
@@ -219,6 +272,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       scouts: ovToRole(overrides.scouts),
       coordinators: ovToRole(overrides.coordinators),
       retrievers: ovToRole(overrides.retrievers),
+      scout_behavior: overrides.scoutBehavior,
+      coordinator_behavior: overrides.coordinatorBehavior,
+      retriever_behavior: overrides.retrieverBehavior,
     };
     onLoad(scenario, agents);
   };
@@ -505,6 +561,251 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     </div>
                   );
                 })()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Behavior tuning accordion */}
+        {overrides && (
+          <div className="border border-gray-600 rounded mb-3">
+            <button
+              onClick={() => setBehaviorOpen((v) => !v)}
+              className="w-full flex justify-between items-center px-3 py-2 text-xs font-medium text-gray-300 hover:bg-gray-700 rounded transition"
+            >
+              <span>🧠 Behavior Tuning</span>
+              <span className="text-gray-500">{behaviorOpen ? "▲" : "▼"}</span>
+            </button>
+
+            {behaviorOpen && (
+              <div className="px-3 pb-3 space-y-2 text-xs border-t border-gray-600">
+                {/* Scout behavior */}
+                <div className="pt-2">
+                  <SectionLabel color="text-green-400" label="Scout Behavior" />
+                  <div className="space-y-1">
+                    <Field
+                      label="Recent target TTL"
+                      value={overrides.scoutBehavior.recent_target_ttl}
+                      onChange={(v) => setScoutBeh({ recent_target_ttl: v })}
+                      min={1}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Rescan age"
+                      value={overrides.scoutBehavior.rescan_age}
+                      onChange={(v) => setScoutBeh({ rescan_age: v })}
+                      min={10}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Discovery timeout"
+                      value={overrides.scoutBehavior.discovery_timeout}
+                      onChange={(v) => setScoutBeh({ discovery_timeout: v })}
+                      min={10}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Anti-cluster dist"
+                      value={overrides.scoutBehavior.anti_cluster_distance}
+                      onChange={(v) =>
+                        setScoutBeh({ anti_cluster_distance: v })
+                      }
+                      min={0}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Target hysteresis"
+                      value={overrides.scoutBehavior.target_hysteresis}
+                      onChange={(v) => setScoutBeh({ target_hysteresis: v })}
+                      min={0}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Stuck threshold"
+                      value={overrides.scoutBehavior.stuck_threshold}
+                      onChange={(v) => setScoutBeh({ stuck_threshold: v })}
+                      min={1}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Recharge threshold"
+                      value={overrides.scoutBehavior.recharge_threshold}
+                      onChange={(v) => setScoutBeh({ recharge_threshold: v })}
+                      min={0.05}
+                      max={0.5}
+                      step={0.05}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Far frontier"
+                      value={overrides.scoutBehavior.far_frontier_enabled}
+                      onChange={(v) => setScoutBeh({ far_frontier_enabled: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Stale patrol"
+                      value={overrides.scoutBehavior.stale_coverage_patrol}
+                      onChange={(v) =>
+                        setScoutBeh({ stale_coverage_patrol: v })
+                      }
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Anti-clustering"
+                      value={overrides.scoutBehavior.anti_clustering}
+                      onChange={(v) => setScoutBeh({ anti_clustering: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Seek coordinator"
+                      value={overrides.scoutBehavior.seek_coordinator}
+                      onChange={(v) => setScoutBeh({ seek_coordinator: v })}
+                      disabled={isRunning}
+                    />
+                  </div>
+                </div>
+
+                {/* Coordinator behavior */}
+                <div className="border-t border-gray-600 pt-2">
+                  <SectionLabel
+                    color="text-blue-400"
+                    label="Coordinator Behavior"
+                  />
+                  <div className="space-y-1">
+                    <Field
+                      label="Boredom threshold"
+                      value={overrides.coordinatorBehavior.boredom_threshold}
+                      onChange={(v) => setCoordBeh({ boredom_threshold: v })}
+                      min={5}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Position max age"
+                      value={overrides.coordinatorBehavior.pos_max_age}
+                      onChange={(v) => setCoordBeh({ pos_max_age: v })}
+                      min={5}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Recharge threshold"
+                      value={overrides.coordinatorBehavior.recharge_threshold}
+                      onChange={(v) => setCoordBeh({ recharge_threshold: v })}
+                      min={0.05}
+                      max={0.5}
+                      step={0.05}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Object centroid bias"
+                      value={overrides.coordinatorBehavior.centroid_object_bias}
+                      onChange={(v) => setCoordBeh({ centroid_object_bias: v })}
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Sync rate limit"
+                      value={overrides.coordinatorBehavior.sync_rate_limit}
+                      onChange={(v) => setCoordBeh({ sync_rate_limit: v })}
+                      min={1}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Seek retrievers"
+                      value={overrides.coordinatorBehavior.seek_retrievers}
+                      onChange={(v) => setCoordBeh({ seek_retrievers: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Boredom patrol"
+                      value={overrides.coordinatorBehavior.boredom_patrol}
+                      onChange={(v) => setCoordBeh({ boredom_patrol: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Object-biased centroid"
+                      value={
+                        overrides.coordinatorBehavior.object_biased_centroid
+                      }
+                      onChange={(v) =>
+                        setCoordBeh({ object_biased_centroid: v })
+                      }
+                      disabled={isRunning}
+                    />
+                  </div>
+                </div>
+
+                {/* Retriever behavior */}
+                <div className="border-t border-gray-600 pt-2">
+                  <SectionLabel
+                    color="text-orange-400"
+                    label="Retriever Behavior"
+                  />
+                  <div className="space-y-1">
+                    <Field
+                      label="Recharge threshold"
+                      value={overrides.retrieverBehavior.recharge_threshold}
+                      onChange={(v) => setRetrBeh({ recharge_threshold: v })}
+                      min={0.05}
+                      max={0.5}
+                      step={0.05}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Stale claim age"
+                      value={overrides.retrieverBehavior.stale_claim_age}
+                      onChange={(v) => setRetrBeh({ stale_claim_age: v })}
+                      min={10}
+                      disabled={isRunning}
+                    />
+                    <Field
+                      label="Explore retarget"
+                      value={
+                        overrides.retrieverBehavior.explore_retarget_interval
+                      }
+                      onChange={(v) =>
+                        setRetrBeh({ explore_retarget_interval: v })
+                      }
+                      min={1}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Opportunistic pickup"
+                      value={overrides.retrieverBehavior.opportunistic_pickup}
+                      onChange={(v) => setRetrBeh({ opportunistic_pickup: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Queue reorder"
+                      value={overrides.retrieverBehavior.task_queue_reorder}
+                      onChange={(v) => setRetrBeh({ task_queue_reorder: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Self-assign (shared map)"
+                      value={
+                        overrides.retrieverBehavior.self_assign_from_shared_map
+                      }
+                      onChange={(v) =>
+                        setRetrBeh({ self_assign_from_shared_map: v })
+                      }
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Peer broadcast"
+                      value={overrides.retrieverBehavior.peer_broadcast}
+                      onChange={(v) => setRetrBeh({ peer_broadcast: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Smart explore"
+                      value={overrides.retrieverBehavior.smart_explore}
+                      onChange={(v) => setRetrBeh({ smart_explore: v })}
+                      disabled={isRunning}
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>

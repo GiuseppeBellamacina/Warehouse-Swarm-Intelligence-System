@@ -5,6 +5,9 @@ import {
   GridScenarioConfig,
   GridWarehouse,
   SimulationAgentsConfig,
+  DEFAULT_SCOUT_BEHAVIOR,
+  DEFAULT_COORDINATOR_BEHAVIOR,
+  DEFAULT_RETRIEVER_BEHAVIOR,
 } from "../types/simulation";
 import { MAP_PRESETS } from "../presets";
 
@@ -455,6 +458,9 @@ export const MapEditor: React.FC<{
         speed: 1.0,
         carrying_capacity: 2,
       },
+      scout_behavior: { ...DEFAULT_SCOUT_BEHAVIOR },
+      coordinator_behavior: { ...DEFAULT_COORDINATOR_BEHAVIOR },
+      retriever_behavior: { ...DEFAULT_RETRIEVER_BEHAVIOR },
     };
 
     return { scenario, agents };
