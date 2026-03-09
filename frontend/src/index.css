@@ -49,3 +49,8 @@ code {
 ::selection {
   background: rgba(96, 165, 250, 0.3);
 }
+
+/* Safe area padding for iOS bottom bar */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

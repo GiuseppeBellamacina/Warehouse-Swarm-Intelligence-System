@@ -10,6 +10,19 @@ import { AgentList } from "./components/AgentList";
 import "./index.css";
 
 type ViewMode = "simulation" | "editor";
+type MobileTab = "map" | "agents" | "metrics" | "controls";
+
+/** Hook: returns true when viewport width < breakpoint (default 768) */
+function useIsMobile(breakpoint = 768) {
+  const [mobile, setMobile] = useState(() => window.innerWidth < breakpoint);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const handler = (e: MediaQueryListEvent) => setMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [breakpoint]);
+  return mobile;
+}
 
 /** Vertical drag handle between two resizable panels */
 const DragHandle: React.FC<{ onDrag: (dx: number) => void }> = ({ onDrag }) => {
@@ -76,6 +89,8 @@ function App() {
 
   const [viewMode, setViewMode] = useState<ViewMode>("simulation");
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
+  const isMobile = useIsMobile();
+  const [mobileTab, setMobileTab] = useState<MobileTab>("map");
 
   // Wake-up retry loop: ping every 10 s, up to 10 attempts (100 s total)
   const MAX_WAKE_ATTEMPTS = 10;
@@ -170,13 +185,13 @@ function App() {
     <div className="h-screen bg-[#0f1117] text-gray-100 flex flex-col overflow-hidden">
       {/* ── Free-hosting notice ── */}
       {!connected && (
-        <div className="flex-shrink-0 border-b border-gray-800/60 bg-gray-900/70 backdrop-blur-sm px-6 py-4 flex items-center gap-5">
+        <div className="flex-shrink-0 border-b border-gray-800/60 bg-gray-900/70 backdrop-blur-sm px-4 md:px-6 py-3 md:py-4 flex items-center gap-3 md:gap-5">
           {/* Icon / spinner */}
           <div className="flex-shrink-0">
             {backendStatus === "waking" ? (
-              <div className="relative w-9 h-9 flex items-center justify-center">
+              <div className="relative w-8 h-8 md:w-9 md:h-9 flex items-center justify-center">
                 <svg
-                  className="animate-spin absolute inset-0 h-9 w-9 text-blue-500/60"
+                  className="animate-spin absolute inset-0 h-8 w-8 md:h-9 md:w-9 text-blue-500/60"
                   xmlns="http://www.w3.org/2000/svg"
                   fill="none"
                   viewBox="0 0 24 24"
@@ -195,12 +210,12 @@ function App() {
                     d="M4 12a8 8 0 018-8v4l3-3-3-3v4a10 10 0 100 20v-4l-3 3 3 3v-4a8 8 0 01-8-8z"
                   />
                 </svg>
-                <div className="w-4 h-4 rounded-full bg-blue-500/40 animate-pulse" />
+                <div className="w-3.5 h-3.5 md:w-4 md:h-4 rounded-full bg-blue-500/40 animate-pulse" />
               </div>
             ) : (
-              <div className="w-9 h-9 rounded-lg bg-gray-800/80 border border-gray-700/50 flex items-center justify-center">
+              <div className="w-8 h-8 md:w-9 md:h-9 rounded-lg bg-gray-800/80 border border-gray-700/50 flex items-center justify-center">
                 <svg
-                  className="w-5 h-5 text-gray-500"
+                  className="w-4 h-4 md:w-5 md:h-5 text-gray-500"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -218,12 +233,12 @@ function App() {
 
           {/* Text */}
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-sm text-gray-200">
+            <p className="font-semibold text-xs md:text-sm text-gray-200">
               {backendStatus === "waking"
                 ? "Avvio del backend in corso\u2026"
                 : "Il backend \u00e8 in sleep"}
             </p>
-            <p className="text-xs mt-0.5 text-gray-500">
+            <p className="text-[10px] md:text-xs mt-0.5 text-gray-500 hidden sm:block">
               {backendStatus === "waking"
                 ? wakeLoopActive
                   ? `Tentativo ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 prossima richiesta tra ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
@@ -234,13 +249,13 @@ function App() {
 
           {/* Wake-up button / retry-loop progress */}
           {wakeLoopActive ? (
-            <div className="flex-shrink-0 flex items-center gap-3">
+            <div className="flex-shrink-0 flex items-center gap-2 md:gap-3">
               <p className="text-xs font-mono text-blue-400/80">
                 {wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}
               </p>
               <button
                 onClick={() => stopWakeLoop(false)}
-                className="text-xs px-3 py-1.5 rounded-md bg-gray-800/80 border border-gray-700/50 hover:bg-gray-700/80 text-gray-400 hover:text-gray-300 transition-colors"
+                className="text-xs px-2.5 md:px-3 py-1.5 rounded-md bg-gray-800/80 border border-gray-700/50 hover:bg-gray-700/80 text-gray-400 hover:text-gray-300 transition-colors"
               >
                 Annulla
               </button>
@@ -248,7 +263,7 @@ function App() {
           ) : backendStatus === "offline" || backendStatus === "unknown" ? (
             <button
               onClick={handleWake}
-              className="flex-shrink-0 flex items-center gap-2 text-xs px-4 py-2 rounded-lg font-semibold
+              className="flex-shrink-0 flex items-center gap-1.5 md:gap-2 text-xs px-3 md:px-4 py-1.5 md:py-2 rounded-lg font-semibold
                 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500
                 text-white transition-all shadow-md shadow-blue-900/30"
             >
@@ -271,25 +286,25 @@ function App() {
         </div>
       )}
       {/* ── Header ── */}
-      <header className="flex-shrink-0 px-5 py-2.5 border-b border-gray-800/80 bg-gray-900/60 backdrop-blur-md flex items-center gap-4">
-        <div className="flex items-center gap-3">
+      <header className="flex-shrink-0 px-3 md:px-5 py-2 md:py-2.5 border-b border-gray-800/80 bg-gray-900/60 backdrop-blur-md flex items-center gap-3 md:gap-4">
+        <div className="flex items-center gap-2 md:gap-3">
           <img
             src="/favicon.svg"
             alt="Logo"
-            className="w-8 h-8 rounded-lg shadow-lg shadow-blue-900/30"
+            className="w-7 h-7 md:w-8 md:h-8 rounded-lg shadow-lg shadow-blue-900/30"
           />
           <div>
-            <h1 className="text-sm font-bold leading-tight tracking-tight">
+            <h1 className="text-xs md:text-sm font-bold leading-tight tracking-tight">
               Warehouse Swarm Intelligence
             </h1>
-            <p className="text-gray-500 text-[10px] tracking-wide">
+            <p className="text-gray-500 text-[9px] md:text-[10px] tracking-wide hidden sm:block">
               Multi-Agent Object Retrieval
             </p>
           </div>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <span
-            className={`text-[10px] px-2.5 py-1 rounded-full font-medium border ${
+            className={`text-[10px] px-2 md:px-2.5 py-0.5 md:py-1 rounded-full font-medium border ${
               connected
                 ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/50"
                 : backendStatus === "waking"
@@ -307,128 +322,288 @@ function App() {
       </header>
 
       {/* ── Main area ── */}
-      <div className="flex-1 flex flex-row overflow-hidden min-h-0 gap-0 p-1.5">
-        {/* Panel 1: Agent list */}
-        <div
-          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
-          style={{ width: agentsW }}
-        >
-          <div className="flex-1 overflow-y-auto">
-            {state && state.agents && state.agents.length > 0 ? (
-              <AgentList
-                agents={state.agents}
-                selectedAgentId={selectedAgentId}
-                onSelectAgent={setSelectedAgentId}
-              />
-            ) : (
-              <div className="p-3">
-                <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300 mb-3">
-                  Agents
-                </h2>
-                <div className="text-center text-gray-600 py-8 text-xs">
-                  No active agents
+      {isMobile ? (
+        /* ═══ MOBILE LAYOUT: tabbed single-panel ═══ */
+        <>
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0 p-1.5 pb-0">
+            {mobileTab === "map" && (
+              <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+                {/* Sim / Editor toggle */}
+                <div className="flex-shrink-0 flex gap-0.5 mb-1 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
+                  {(["simulation", "editor"] as ViewMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => setViewMode(mode)}
+                      className={`flex-1 py-1.5 px-3 rounded-md font-medium text-xs transition-all duration-200 ${
+                        viewMode === mode
+                          ? "bg-gray-700/80 text-white shadow-sm"
+                          : "text-gray-500 hover:text-gray-300 hover:bg-gray-800/40"
+                      }`}
+                    >
+                      {mode === "simulation" ? "Simulation" : "Map Editor"}
+                    </button>
+                  ))}
                 </div>
+                {viewMode === "simulation" ? (
+                  <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-1.5 min-h-0 backdrop-blur-sm">
+                    {state && state.grid ? (
+                      <GridCanvas
+                        state={state}
+                        selectedAgentId={selectedAgentId}
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-center gap-2">
+                        <svg
+                          className="h-8 w-8 text-gray-700"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={1.5}
+                            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                          />
+                        </svg>
+                        <p className="text-gray-600 text-xs">
+                          Load a configuration to start
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex-1 overflow-auto">
+                    <MapEditor
+                      onExport={(scenario, agents) => {
+                        loadConfig(scenario, agents).then(() =>
+                          setViewMode("simulation"),
+                        );
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {mobileTab === "agents" && (
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm">
+                {state && state.agents && state.agents.length > 0 ? (
+                  <AgentList
+                    agents={state.agents}
+                    selectedAgentId={selectedAgentId}
+                    onSelectAgent={setSelectedAgentId}
+                  />
+                ) : (
+                  <div className="p-3">
+                    <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300 mb-3">
+                      Agents
+                    </h2>
+                    <div className="text-center text-gray-600 py-8 text-xs">
+                      No active agents
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {mobileTab === "metrics" && (
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm">
+                <MetricsDisplay state={state} />
+              </div>
+            )}
+
+            {mobileTab === "controls" && (
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm">
+                <ControlPanel
+                  connected={connected}
+                  isRunning={isRunning}
+                  isPaused={isPaused}
+                  isLoaded={isLoaded}
+                  onLoad={loadConfig}
+                  onStartRun={startSimulation}
+                  onPause={pauseSimulation}
+                  onResume={resumeSimulation}
+                  onStop={stopSimulation}
+                  onReset={resetSimulation}
+                  onSpeedChange={setSimulationSpeed}
+                />
               </div>
             )}
           </div>
-        </div>
 
-        <DragHandle onDrag={(dx) => setAgentsW((w) => clamp(w + dx))} />
-
-        {/* Panel 2: Map / Editor  (flex-1 → fills remaining space) */}
-        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {/* Tabs */}
-          <div className="flex-shrink-0 flex gap-0.5 mb-1 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
-            {(["simulation", "editor"] as ViewMode[]).map((mode) => (
+          {/* ── Mobile bottom tab bar ── */}
+          <nav className="flex-shrink-0 border-t border-gray-800/80 bg-gray-900/80 backdrop-blur-md flex safe-bottom">
+            {[
+              {
+                key: "map" as MobileTab,
+                label: "Map",
+                icon: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7",
+              },
+              {
+                key: "agents" as MobileTab,
+                label: "Agents",
+                icon: "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z",
+              },
+              {
+                key: "metrics" as MobileTab,
+                label: "Metrics",
+                icon: "M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
+              },
+              {
+                key: "controls" as MobileTab,
+                label: "Controls",
+                icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
+              },
+            ].map(({ key, label, icon }) => (
               <button
-                key={mode}
-                onClick={() => setViewMode(mode)}
-                className={`flex-1 py-1.5 px-3 rounded-md font-medium text-xs transition-all duration-200 ${
-                  viewMode === mode
-                    ? "bg-gray-700/80 text-white shadow-sm"
-                    : "text-gray-500 hover:text-gray-300 hover:bg-gray-800/40"
+                key={key}
+                onClick={() => setMobileTab(key)}
+                className={`flex-1 flex flex-col items-center gap-0.5 py-2 transition-colors ${
+                  mobileTab === key
+                    ? "text-blue-400"
+                    : "text-gray-500 active:text-gray-300"
                 }`}
               >
-                {mode === "simulation" ? "Simulation" : "Map Editor"}
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d={icon} />
+                </svg>
+                <span className="text-[10px] font-medium">{label}</span>
               </button>
             ))}
-          </div>
-
-          {/* Content */}
-          {viewMode === "simulation" ? (
-            <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-2 min-h-0 backdrop-blur-sm">
-              {state && state.grid ? (
-                <GridCanvas state={state} selectedAgentId={selectedAgentId} />
+          </nav>
+        </>
+      ) : (
+        /* ═══ DESKTOP LAYOUT: 4 resizable panels ═══ */
+        <div className="flex-1 flex flex-row overflow-hidden min-h-0 gap-0 p-1.5">
+          {/* Panel 1: Agent list */}
+          <div
+            className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
+            style={{ width: agentsW }}
+          >
+            <div className="flex-1 overflow-y-auto">
+              {state && state.agents && state.agents.length > 0 ? (
+                <AgentList
+                  agents={state.agents}
+                  selectedAgentId={selectedAgentId}
+                  onSelectAgent={setSelectedAgentId}
+                />
               ) : (
-                <div className="flex flex-col items-center justify-center text-center gap-2">
-                  <svg
-                    className="h-10 w-10 text-gray-700"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={1.5}
-                      d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
-                    />
-                  </svg>
-                  <p className="text-gray-600 text-xs">
-                    Load a configuration to start
-                  </p>
+                <div className="p-3">
+                  <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300 mb-3">
+                    Agents
+                  </h2>
+                  <div className="text-center text-gray-600 py-8 text-xs">
+                    No active agents
+                  </div>
                 </div>
               )}
             </div>
-          ) : (
-            <div className="flex-1 overflow-auto">
-              <MapEditor
-                onExport={(scenario, agents) => {
-                  loadConfig(scenario, agents).then(() =>
-                    setViewMode("simulation"),
-                  );
-                }}
+          </div>
+
+          <DragHandle onDrag={(dx) => setAgentsW((w) => clamp(w + dx))} />
+
+          {/* Panel 2: Map / Editor  (flex-1 → fills remaining space) */}
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+            {/* Tabs */}
+            <div className="flex-shrink-0 flex gap-0.5 mb-1 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
+              {(["simulation", "editor"] as ViewMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  className={`flex-1 py-1.5 px-3 rounded-md font-medium text-xs transition-all duration-200 ${
+                    viewMode === mode
+                      ? "bg-gray-700/80 text-white shadow-sm"
+                      : "text-gray-500 hover:text-gray-300 hover:bg-gray-800/40"
+                  }`}
+                >
+                  {mode === "simulation" ? "Simulation" : "Map Editor"}
+                </button>
+              ))}
+            </div>
+
+            {/* Content */}
+            {viewMode === "simulation" ? (
+              <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-2 min-h-0 backdrop-blur-sm">
+                {state && state.grid ? (
+                  <GridCanvas state={state} selectedAgentId={selectedAgentId} />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center gap-2">
+                    <svg
+                      className="h-10 w-10 text-gray-700"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={1.5}
+                        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                      />
+                    </svg>
+                    <p className="text-gray-600 text-xs">
+                      Load a configuration to start
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 overflow-auto">
+                <MapEditor
+                  onExport={(scenario, agents) => {
+                    loadConfig(scenario, agents).then(() =>
+                      setViewMode("simulation"),
+                    );
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          <DragHandle onDrag={(dx) => setMetricsW((w) => clamp(w - dx))} />
+
+          {/* Panel 3: Metrics */}
+          <div
+            className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
+            style={{ width: metricsW }}
+          >
+            <div className="flex-1 overflow-y-auto">
+              <MetricsDisplay state={state} />
+            </div>
+          </div>
+
+          <DragHandle onDrag={(dx) => setControlsW((w) => clamp(w - dx))} />
+
+          {/* Panel 4: Controls */}
+          <div
+            className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
+            style={{ width: controlsW }}
+          >
+            <div className="flex-1 overflow-y-auto">
+              <ControlPanel
+                connected={connected}
+                isRunning={isRunning}
+                isPaused={isPaused}
+                isLoaded={isLoaded}
+                onLoad={loadConfig}
+                onStartRun={startSimulation}
+                onPause={pauseSimulation}
+                onResume={resumeSimulation}
+                onStop={stopSimulation}
+                onReset={resetSimulation}
+                onSpeedChange={setSimulationSpeed}
               />
             </div>
-          )}
-        </div>
-
-        <DragHandle onDrag={(dx) => setMetricsW((w) => clamp(w - dx))} />
-
-        {/* Panel 3: Metrics */}
-        <div
-          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
-          style={{ width: metricsW }}
-        >
-          <div className="flex-1 overflow-y-auto">
-            <MetricsDisplay state={state} />
           </div>
         </div>
-
-        <DragHandle onDrag={(dx) => setControlsW((w) => clamp(w - dx))} />
-
-        {/* Panel 4: Controls */}
-        <div
-          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
-          style={{ width: controlsW }}
-        >
-          <div className="flex-1 overflow-y-auto">
-            <ControlPanel
-              connected={connected}
-              isRunning={isRunning}
-              isPaused={isPaused}
-              isLoaded={isLoaded}
-              onLoad={loadConfig}
-              onStartRun={startSimulation}
-              onPause={pauseSimulation}
-              onResume={resumeSimulation}
-              onStop={stopSimulation}
-              onReset={resetSimulation}
-              onSpeedChange={setSimulationSpeed}
-            />
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
