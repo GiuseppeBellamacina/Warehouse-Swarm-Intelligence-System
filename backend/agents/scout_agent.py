@@ -66,6 +66,7 @@ class ScoutAgent(BaseAgent):
         self._STALE_COVERAGE_PATROL: bool = _b.get("stale_coverage_patrol", True)
         self._ANTI_CLUSTERING: bool = _b.get("anti_clustering", True)
         self._SEEK_COORDINATOR: bool = _b.get("seek_coordinator", True)
+        self._TARGET_LOCK_DURATION: int = _b.get("target_lock_duration", 12)
 
         self.state = AgentState.EXPLORING
         self.pathfinder = AStarPathfinder(model.grid)
@@ -96,6 +97,11 @@ class ScoutAgent(BaseAgent):
         # Recently-reached targets: blacklisted for _RECENT_TARGET_TTL steps after arrival
         # so the scout does not immediately oscillate back to a just-explored cell.
         self._recent_targets: Dict[Tuple[int, int], int] = {}
+
+        # Target lock: step at which the current target was committed to.
+        # While locked, step_decide skips the full frontier re-evaluation to
+        # prevent erratic direction changes when entering a new zone.
+        self._target_lock_step: int = 0
 
         # Coverage map: tracks the model step at which each cell was last physically
         # within this scout's vision radius.  When all frontier exploration is
@@ -268,6 +274,21 @@ class ScoutAgent(BaseAgent):
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
         current_step = self.model.current_step
 
+        # Target lock: if we already have a valid target that was recently
+        # committed to, skip the full frontier re-evaluation.  This prevents
+        # the scout from flipping targets every step when entering a new zone
+        # with many frontiers popping up.  The lock is released when:
+        #   - the target is reached or cleared (target_position becomes None)
+        #   - the scout has been stuck for too long
+        #   - the lock duration expires (ensures the scout isn't stuck forever)
+        if (
+            self.target_position is not None
+            and current_step - self._target_lock_step < self._TARGET_LOCK_DURATION
+            and self.consecutive_failures_on_target < self._STUCK_THRESHOLD
+        ):
+            self.state = AgentState.MOVING_TO_TARGET
+            return
+
         # Prune expired recent-target entries to keep the dict small.
         self._recent_targets = {
             pos: step
@@ -354,6 +375,7 @@ class ScoutAgent(BaseAgent):
                     self.target_position = best
                     self.path = []
                     self.consecutive_failures_on_target = 0
+                    self._target_lock_step = current_step
                 self.state = AgentState.MOVING_TO_TARGET
                 return
 
@@ -426,6 +448,7 @@ class ScoutAgent(BaseAgent):
         self.target_position = best_pos
         self.path = []
         self.state = AgentState.MOVING_TO_TARGET
+        self._target_lock_step = current_step
         print(
             f"{self.tag} RESCAN: cycling to stale area at {best_pos} "
             f"(not seen for {age} steps, score={best_score:.1f})"
@@ -493,6 +516,7 @@ class ScoutAgent(BaseAgent):
             self.target_position = candidate
             self.path = []
             self.state = AgentState.MOVING_TO_TARGET
+            self._target_lock_step = self.model.current_step
             return
 
         # Absolute fallback

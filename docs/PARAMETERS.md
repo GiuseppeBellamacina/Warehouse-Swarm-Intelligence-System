@@ -32,6 +32,7 @@ Control how scouts explore, communicate, and avoid redundant work.
 | `target_hysteresis`     | 15      | ≥ 0      | Min Manhattan distance before switching to a new best frontier (prevents jitter) |
 | `stuck_threshold`       | 8       | ≥ 1      | Consecutive move failures before giving up on the current target                 |
 | `recharge_threshold`    | 0.25    | 0.05–0.5 | Energy fraction (of `max_energy`) that triggers warehouse recharge               |
+| `target_lock_duration`  | 12      | ≥ 1      | Steps a committed target is locked before frontier re-evaluation is allowed      |
 
 ### Scout Feature Toggles
 
