@@ -1,12 +1,13 @@
 """
 Scout Agent - Fast explorer with wide vision
 """
+ 
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
-import random
-from typing import TYPE_CHECKING, List, Optional, Tuple
+import numpy as np
 
 from backend.agents.base_agent import AgentState, BaseAgent, pos_to_tuple
-from backend.algorithms.exploration import FrontierExplorer, RandomWalkExplorer
+from backend.algorithms.exploration import FrontierExplorer
 from backend.algorithms.pathfinding import AStarPathfinder
 from backend.core.communication import ObjectLocationMessage
 from backend.core.decision_maker import ActionType, UtilityFunctions
@@ -53,7 +54,12 @@ class ScoutAgent(BaseAgent):
 
         self.state = AgentState.EXPLORING
         self.pathfinder = AStarPathfinder(model.grid)
-        self.previous_direction: Optional[Tuple[int, int]] = None
+
+        # The base-class loop detector fires when position_history[-10:] has <= 3
+        # unique entries.  Scouts move 2x per step so they write 2 entries/step,
+        # meaning 10 entries = 5 real steps — far too sensitive.  Double the
+        # history window so the same window covers ~10 real steps instead.
+        self.max_history_length = 30
 
         # Track discovered objects to communicate
         self.newly_discovered_objects: List[Tuple[Tuple[int, int], float]] = []
@@ -71,6 +77,24 @@ class ScoutAgent(BaseAgent):
         # Values: None | "approach" | "recharge" | "exit"
         self._scout_wh_step: Optional[str] = None
         self._scout_wh_station: Optional[dict] = None
+
+        # Recently-reached targets: blacklisted for _RECENT_TARGET_TTL steps after arrival
+        # so the scout does not immediately oscillate back to a just-explored cell.
+        # TTL is intentionally short: long blackouts cause stagnation by exhausting
+        # all nearby frontiers and forcing the scout into extended random-walk phases.
+        self._recent_targets: Dict[Tuple[int, int], int] = {}
+        self._RECENT_TARGET_TTL: int = 50
+
+        # Coverage map: tracks the model step at which each cell was last physically
+        # within this scout's vision radius.  When all frontier exploration is
+        # exhausted, cells absent from vision for _RESCAN_AGE steps become valid
+        # re-exploration targets, letting the scout cycle the full map continuously.
+        # NOTE: this map is intentionally NOT shared via MapDataMessage — it is a
+        # private urgency signal that does not affect shared topology knowledge.
+        H = model.grid.height
+        W = model.grid.width
+        self._coverage_step: np.ndarray = np.zeros((H, W), dtype=np.int32)
+        self._RESCAN_AGE: int = 120  # steps without vision before a cell is re-eligible
 
         # Setup decision making
         self._setup_decision_maker()
@@ -115,6 +139,19 @@ class ScoutAgent(BaseAgent):
                 if dist <= self.vision_radius:
                     self.last_seen_coordinator_pos = c_pos
                     break
+
+        # Mark all cells currently within vision as surveyed in the coverage map.
+        # The coverage map is local-only (never broadcast) and decays over time;
+        # cells not seen for _RESCAN_AGE steps become re-exploration targets so
+        # the scout continuously cycles through the full map.
+        cs = self.model.current_step
+        r = self.vision_radius
+        H, W = self._coverage_step.shape
+        y0 = max(0, my_pos[1] - r)
+        y1 = min(H, my_pos[1] + r + 1)
+        x0 = max(0, my_pos[0] - r)
+        x1 = min(W, my_pos[0] + r + 1)
+        self._coverage_step[y0:y1, x0:x1] = cs
 
     def step_decide(self) -> None:
         """Decide next action based on utility"""
@@ -220,9 +257,24 @@ class ScoutAgent(BaseAgent):
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
         current_step = self.model.current_step
 
+        # Prune expired recent-target entries to keep the dict small.
+        self._recent_targets = {
+            pos: step
+            for pos, step in self._recent_targets.items()
+            if current_step - step < self._RECENT_TARGET_TTL
+        }
+
+        # Expire unreachable_targets entries that are older than their 30-step TTL
+        # so the dict doesn't grow unbounded (base_agent never auto-purges it).
+        for pos in [p for p, s in self.unreachable_targets.items()
+                    if current_step - s >= 30]:
+            del self.unreachable_targets[pos]
+
         frontiers = FrontierExplorer.find_frontiers(self.local_map)
 
-        # Filter blacklisted / stale frontiers
+        # Filter blacklisted / stale frontiers and recently-reached targets.
+        # Skipping recently-reached targets prevents immediate oscillation back
+        # to a frontier the scout just finished exploring.
         valid_frontiers = []
         for frontier_pos, cluster_size in frontiers:
             if frontier_pos in self.unreachable_targets:
@@ -230,6 +282,8 @@ class ScoutAgent(BaseAgent):
                 if current_step - failed_step < 30:
                     continue
                 del self.unreachable_targets[frontier_pos]
+            if frontier_pos in self._recent_targets:
+                continue  # visited too recently
             valid_frontiers.append((frontier_pos, cluster_size))
 
         # Anti-clustering: prefer frontiers far from other scouts
@@ -247,13 +301,36 @@ class ScoutAgent(BaseAgent):
         frontiers_to_use = anti_clustered if anti_clustered else valid_frontiers
 
         if frontiers_to_use:
+            # Prefer frontiers that require actual travel (> 2× vision radius) so the
+            # scout pushes into genuinely new territory rather than hopping between
+            # tiny adjacent clusters it can already partially see.
+            min_dist = max(self.vision_radius * 2, 8)
+            far_frontiers = [
+                f for f in frontiers_to_use
+                if abs(f[0][0] - my_pos[0]) + abs(f[0][1] - my_pos[1]) >= min_dist
+            ]
+            # When ONLY nearby frontiers remain, skip them and jump directly to
+            # stale-coverage patrol.  This avoids the A→B→A oscillation between
+            # a handful of adjacent residual clusters: the scout will instead seek
+            # the oldest-unseen area of the map before returning to work any
+            # leftover nearby frontiers on its way back.
+            if not far_frontiers:
+                self._pick_stale_coverage_target(my_pos)
+                if self.target_position is not None:
+                    return  # heading to a stale area
+                # No stale area either — fall through and let nearby frontiers run
+                frontiers_to_use = frontiers_to_use  # keep as-is (already near-only)
+            else:
+                frontiers_to_use = far_frontiers
+
             nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
             best = FrontierExplorer.select_best_frontier(frontiers_to_use, my_pos, nearby_positions)
             if best:
+                # Only update target when the new best is genuinely far from the
+                # current one — prevents jittering between two nearby candidates.
                 if (
                     not self.target_position
-                    or abs(best[0] - self.target_position[0]) > 5
-                    or abs(best[1] - self.target_position[1]) > 5
+                    or abs(best[0] - self.target_position[0]) + abs(best[1] - self.target_position[1]) > 15
                 ):
                     self.target_position = best
                     self.path = []
@@ -261,8 +338,79 @@ class ScoutAgent(BaseAgent):
                 self.state = AgentState.MOVING_TO_TARGET
                 return
 
-        # ---- Fallback: navigate towards a random unknown boundary cell ----
+        # ---- Fallback 1: navigate towards a random unknown boundary cell ----
         self._pick_unexplored_target(my_pos)
+
+        # ---- Fallback 2: re-explore stale areas (cyclic full-map coverage) ----
+        # Triggered only when _pick_unexplored_target found nothing (map fully
+        # explored).  The scout seeks the oldest-unseen explored cell so it
+        # continuously re-sweeps the warehouse for newly-appeared objects.
+        if self.target_position is None:
+            self._pick_stale_coverage_target(my_pos)
+
+    def _pick_stale_coverage_target(self, my_pos: Tuple[int, int]) -> None:
+        """
+        Re-exploration fallback: target the best stale cell balancing age and distance.
+
+        When the whole map has been explored (no frontiers, no UNKNOWN boundary
+        cells), this method finds cells that have been absent from the scout's
+        vision for at least _RESCAN_AGE steps and picks the one with the best
+        score = age / (dist + 1).  This creates an organic patrol pattern that
+        covers the full warehouse cyclically and detects newly-appeared objects.
+        """
+        current_step = self.model.current_step
+        threshold_step = current_step - self._RESCAN_AGE
+
+        _WH_TYPES = (
+            CellType.WAREHOUSE,
+            CellType.WAREHOUSE_ENTRANCE,
+            CellType.WAREHOUSE_EXIT,
+            CellType.OBSTACLE,
+        )
+
+        # Find all explored cells (local_map != UNKNOWN) that are stale.
+        stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
+        stale_ys, stale_xs = np.where(stale_mask)
+
+        if len(stale_ys) == 0:
+            return  # everything covered recently
+
+        # Compute age and distance for all stale cells vectorised
+        ages = (current_step - self._coverage_step[stale_ys, stale_xs]).astype(np.float32)
+        dists = (np.abs(stale_xs - my_pos[0]) + np.abs(stale_ys - my_pos[1])).astype(np.float32)
+
+        # Score = age / (dist + 1): prefer old AND nearby cells over
+        # the old pure-farthest heuristic which caused pathologically long traversals.
+        scores = ages / (dists + 1.0)
+        sort_idx = np.argsort(-scores)[:50]
+
+        best_pos: Optional[Tuple[int, int]] = None
+        best_score = -1.0
+
+        for i in sort_idx.tolist():
+            cx, cy = int(stale_xs[i]), int(stale_ys[i])
+            pos = (cx, cy)
+            if not self.model.grid.is_walkable(*pos):
+                continue
+            if self.model.grid.get_cell_type(*pos) in _WH_TYPES:
+                continue
+            if pos in self.unreachable_targets:
+                continue
+            best_pos = pos
+            best_score = float(scores[i])
+            break  # take the top-scoring walkable cell
+
+        if best_pos is None:
+            return
+
+        age = current_step - self._coverage_step[best_pos[1], best_pos[0]]
+        self.target_position = best_pos
+        self.path = []
+        self.state = AgentState.MOVING_TO_TARGET
+        print(
+            f"{self.tag} RESCAN: cycling to stale area at {best_pos} "
+            f"(not seen for {age} steps, score={best_score:.1f})"
+        )
 
     def _wide_scan_for_coordinator(self) -> Optional[Tuple[int, int]]:
         """
@@ -287,24 +435,37 @@ class ScoutAgent(BaseAgent):
         return best_pos
 
     def _pick_unexplored_target(self, my_pos: Tuple[int, int]) -> None:
-        """Navigate towards a random UNKNOWN boundary cell via A* when no frontier found."""
-        height, width = self.local_map.shape
-        unknown_boundary: List[Tuple[int, int]] = []
+        """Navigate towards a random UNKNOWN boundary cell via A* when no frontier found.
+        Uses numpy vectorisation instead of Python loops.
+        """
+        # Boolean mask: UNKNOWN cells (value 0)
+        unknown_mask = self.local_map == 0
+        if not np.any(unknown_mask):
+            self.target_position = None
+            self.state = AgentState.EXPLORING
+            return
 
-        for y in range(height):
-            for x in range(width):
-                if self.local_map[y, x] != 0:
-                    continue  # already explored
-                # Must be adjacent to an explored cell
-                for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < width and 0 <= ny < height and self.local_map[ny, nx] != 0:
-                        unknown_boundary.append((x, y))
-                        break
+        # Pad and check 4-neighbours to find boundary UNKNOWN cells
+        # (UNKNOWN cells adjacent to at least one explored cell)
+        padded = np.pad(self.local_map, 1, mode="constant", constant_values=0)
+        has_explored_neighbour = np.zeros_like(unknown_mask)
+        for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            has_explored_neighbour |= padded[1 + dy: padded.shape[0] - 1 + dy,
+                                             1 + dx: padded.shape[1] - 1 + dx] != 0
 
-        random.shuffle(unknown_boundary)
+        boundary_mask = unknown_mask & has_explored_neighbour
+        b_ys, b_xs = np.where(boundary_mask)
 
-        for candidate in unknown_boundary[:20]:
+        if len(b_ys) == 0:
+            self.target_position = None
+            self.state = AgentState.EXPLORING
+            return
+
+        # Shuffle and try up to 20 candidates
+        indices = np.arange(len(b_ys))
+        np.random.shuffle(indices)
+        for idx in indices[:20]:
+            candidate = (int(b_xs[idx]), int(b_ys[idx]))
             if candidate in self.unreachable_targets:
                 continue
             if not self.model.grid.is_walkable(*candidate):
@@ -314,7 +475,7 @@ class ScoutAgent(BaseAgent):
             self.state = AgentState.MOVING_TO_TARGET
             return
 
-        # Absolute fallback: random walk handled in step_act
+        # Absolute fallback
         self.target_position = None
         self.state = AgentState.EXPLORING
 
@@ -351,6 +512,8 @@ class ScoutAgent(BaseAgent):
 
                 my_pos = pos_to_tuple(self.pos) if self.pos else None
                 if my_pos and my_pos == self.target_position:
+                    # Remember this target so we don't immediately loop back to it.
+                    self._recent_targets[self.target_position] = self.model.current_step
                     self.target_position = None
                     self.state = AgentState.EXPLORING
                     self.consecutive_failures_on_target = 0
@@ -370,20 +533,38 @@ class ScoutAgent(BaseAgent):
                     self.consecutive_failures_on_target = 0
 
             elif self.state == AgentState.EXPLORING:
-                # Random walk with momentum as absolute fallback
+                # No target set — compute one immediately instead of random-walking.
+                # BUT: if position_history is empty, base_agent just fired the loop
+                # detector this same sub-step and cleared the path.  Don't pick a
+                # new target immediately — the area is congested right now.  Let
+                # step_decide handle it cleanly next step.
+                if not self.position_history:
+                    break  # skip this sub-step entirely
+
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                new_pos = RandomWalkExplorer.get_random_walk_direction(
-                    my_pos, self.previous_direction, self.model.grid
-                )
-                if new_pos != my_pos:
-                    old_pos = my_pos
-                    self.move_towards(new_pos)
-                    my_pos_after = pos_to_tuple(self.pos) if self.pos else my_pos
-                    if my_pos_after != old_pos:
-                        self.previous_direction = (
-                            my_pos_after[0] - old_pos[0],
-                            my_pos_after[1] - old_pos[1],
-                        )
+
+                # Fallback 1: boundary of unexplored area
+                self._pick_unexplored_target(my_pos)
+
+                # Fallback 2: oldest unvisited explored cell (cyclic patrol)
+                if self.target_position is None:
+                    self._pick_stale_coverage_target(my_pos)
+
+                if self.target_position:
+                    self.move_towards(self.target_position)
+                else:
+                    # Last resort: move toward the centroid of all UNKNOWN cells
+                    # in the local map — purely directional, no randomness.
+                    unknown_ys, unknown_xs = np.where(self.local_map == 0)
+                    if len(unknown_xs) > 0:
+                        cx = int(np.mean(unknown_xs))
+                        cy = int(np.mean(unknown_ys))
+                        # Set as temporary target so move_towards can path-find;
+                        # it will be overwritten by step_decide next step.
+                        self.target_position = (cx, cy)
+                        self.path = []
+                        self.move_towards(self.target_position)
+                        self.target_position = None  # don't persist stale centroid
 
             elif self.state == AgentState.RECHARGING:
                 if self.target_position:

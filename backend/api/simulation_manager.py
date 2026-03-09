@@ -8,8 +8,6 @@ import time
 import traceback
 from typing import Optional, Set, Tuple
 
-import numpy as np
-
 from backend.agents.coordinator_agent import CoordinatorAgent
 from backend.agents.retriever_agent import RetrieverAgent
 from backend.agents.scout_agent import ScoutAgent
@@ -137,6 +135,32 @@ class SimulationManager:
 
         return None
 
+    def _find_tl_spawn_position(self) -> Optional[Tuple[int, int]]:
+        """
+        Find the next free spawn position by scanning from (0, 0) in
+        row-major order (x increases first, then y), i.e. top-left corner
+        of the grid first.
+        """
+        if not self.model:
+            return None
+        _WAREHOUSE_TYPES = (
+            CellType.WAREHOUSE,
+            CellType.WAREHOUSE_ENTRANCE,
+            CellType.WAREHOUSE_EXIT,
+        )
+        for y in range(self.model.grid.height):
+            for x in range(self.model.grid.width):
+                pos = (x, y)
+                if (
+                    pos not in self.occupied_spawn_positions
+                    and self.model.grid.is_walkable(x, y)
+                    and self.model.grid.is_cell_empty(pos)
+                    and self.model.grid.get_cell_type(x, y) not in _WAREHOUSE_TYPES
+                ):
+                    self.occupied_spawn_positions.add(pos)
+                    return pos
+        return None
+
     def initialize_simulation(self, config: ScenarioConfig) -> None:
         """
         Initialize a new simulation with given configuration
@@ -152,47 +176,16 @@ class SimulationManager:
         # Reset occupied spawn positions
         self.occupied_spawn_positions = set()
 
-        # Spawn scout agents
         scout_config = config.agents.scouts
-        for i in range(scout_config.count):
-            agent = ScoutAgent(
-                unique_id=i,
-                model=self.model,
-                vision_radius=scout_config.parameters.vision_radius,
-                communication_radius=scout_config.parameters.communication_radius,
-                max_energy=scout_config.parameters.max_energy,
-                speed=scout_config.parameters.speed,
-            )
+        coord_config = config.agents.coordinators
+        retr_config = config.agents.retrievers
 
-            # Use random spawn if no spawn_location specified
-            if scout_config.spawn_location is None:
-                free_pos = self._find_random_spawn_position()
-            else:
-                spawn_pos = (scout_config.spawn_location.x, scout_config.spawn_location.y)
-                free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
-
-            if free_pos:
-                self.model.grid.place_agent(agent, free_pos)
-                self.model.add_agent(agent)
-
-                # Give each scout a different initial exploration direction
-                angle = (2 * 3.14159 * i) / scout_config.count  # Distribute in circle
-                agent.previous_direction = (
-                    int(round(10 * np.cos(angle))),
-                    int(round(10 * np.sin(angle))),
-                )
-
-                # Initial perception to populate local map
-                agent.step_sense()
-            else:
-                print(f"Warning: Could not find free cell for scout {i}")
+        # Spawn order: coordinators → retrievers → scouts (top-left first)
 
         # Spawn coordinator agents
-        coord_config = config.agents.coordinators
-        base_id = scout_config.count
         for i in range(coord_config.count):
             agent = CoordinatorAgent(
-                unique_id=base_id + i,
+                unique_id=i,
                 model=self.model,
                 vision_radius=coord_config.parameters.vision_radius,
                 communication_radius=coord_config.parameters.communication_radius,
@@ -200,9 +193,8 @@ class SimulationManager:
                 speed=coord_config.parameters.speed,
             )
 
-            # Use random spawn if no spawn_location specified
             if coord_config.spawn_location is None:
-                free_pos = self._find_random_spawn_position()
+                free_pos = self._find_tl_spawn_position()
             else:
                 spawn_pos = (coord_config.spawn_location.x, coord_config.spawn_location.y)
                 free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
@@ -210,15 +202,12 @@ class SimulationManager:
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
-
-                # Initial perception to populate local map
                 agent.step_sense()
             else:
                 print(f"Warning: Could not find free cell for coordinator {i}")
 
         # Spawn retriever agents
-        retr_config = config.agents.retrievers
-        base_id = scout_config.count + coord_config.count
+        base_id = coord_config.count
         for i in range(retr_config.count):
             agent = RetrieverAgent(
                 unique_id=base_id + i,
@@ -230,9 +219,8 @@ class SimulationManager:
                 carrying_capacity=retr_config.parameters.carrying_capacity,
             )
 
-            # Use random spawn if no spawn_location specified
             if retr_config.spawn_location is None:
-                free_pos = self._find_random_spawn_position()
+                free_pos = self._find_tl_spawn_position()
             else:
                 spawn_pos = (retr_config.spawn_location.x, retr_config.spawn_location.y)
                 free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
@@ -240,11 +228,34 @@ class SimulationManager:
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
-
-                # Initial perception to populate local map
                 agent.step_sense()
             else:
                 print(f"Warning: Could not find free cell for retriever {i}")
+
+        # Spawn scout agents
+        base_id = coord_config.count + retr_config.count
+        for i in range(scout_config.count):
+            agent = ScoutAgent(
+                unique_id=base_id + i,
+                model=self.model,
+                vision_radius=scout_config.parameters.vision_radius,
+                communication_radius=scout_config.parameters.communication_radius,
+                max_energy=scout_config.parameters.max_energy,
+                speed=scout_config.parameters.speed,
+            )
+
+            if scout_config.spawn_location is None:
+                free_pos = self._find_tl_spawn_position()
+            else:
+                spawn_pos = (scout_config.spawn_location.x, scout_config.spawn_location.y)
+                free_pos = self._find_free_cell_near(spawn_pos, max_radius=15, spread=True)
+
+            if free_pos:
+                self.model.grid.place_agent(agent, free_pos)
+                self.model.add_agent(agent)
+                agent.step_sense()
+            else:
+                print(f"Warning: Could not find free cell for scout {i}")
 
         print(f"Simulation initialized with {len(self.model.agents)} agents")
         print(f"  - {len(self.model.scouts)} scouts")
@@ -302,43 +313,19 @@ class SimulationManager:
         co = agents_config.coordinators
         re = agents_config.retrievers
 
-        # — spawn scouts —
-        for i in range(sc.count):
-            agent = ScoutAgent(
-                unique_id=i,
-                model=self.model,
-                vision_radius=sc.vision_radius,
-                communication_radius=sc.communication_radius,
-                max_energy=sc.max_energy,
-                speed=sc.speed,
-            )
-            free_pos = self._find_random_spawn_position()
-            if free_pos:
-                self.model.grid.place_agent(agent, free_pos)
-                self.model.add_agent(agent)
-                import numpy as _np
-
-                angle = (2 * 3.14159 * i) / max(sc.count, 1)
-                agent.previous_direction = (
-                    int(round(10 * _np.cos(angle))),
-                    int(round(10 * _np.sin(angle))),
-                )
-                agent.step_sense()
-            else:
-                print(f"Warning: Could not find free cell for scout {i}")
+        # Spawn order: coordinators → retrievers → scouts (top-left first)
 
         # — spawn coordinators —
-        base_id = sc.count
         for i in range(co.count):
             agent = CoordinatorAgent(
-                unique_id=base_id + i,
+                unique_id=i,
                 model=self.model,
                 vision_radius=co.vision_radius,
                 communication_radius=co.communication_radius,
                 max_energy=co.max_energy,
                 speed=co.speed,
             )
-            free_pos = self._find_random_spawn_position()
+            free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
@@ -347,7 +334,7 @@ class SimulationManager:
                 print(f"Warning: Could not find free cell for coordinator {i}")
 
         # — spawn retrievers —
-        base_id = sc.count + co.count
+        base_id = co.count
         for i in range(re.count):
             agent = RetrieverAgent(
                 unique_id=base_id + i,
@@ -358,13 +345,32 @@ class SimulationManager:
                 speed=re.speed,
                 carrying_capacity=re.carrying_capacity,
             )
-            free_pos = self._find_random_spawn_position()
+            free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
                 self.model.add_agent(agent)
                 agent.step_sense()
             else:
                 print(f"Warning: Could not find free cell for retriever {i}")
+
+        # — spawn scouts —
+        base_id = co.count + re.count
+        for i in range(sc.count):
+            agent = ScoutAgent(
+                unique_id=base_id + i,
+                model=self.model,
+                vision_radius=sc.vision_radius,
+                communication_radius=sc.communication_radius,
+                max_energy=sc.max_energy,
+                speed=sc.speed,
+            )
+            free_pos = self._find_tl_spawn_position()
+            if free_pos:
+                self.model.grid.place_agent(agent, free_pos)
+                self.model.add_agent(agent)
+                agent.step_sense()
+            else:
+                print(f"Warning: Could not find free cell for scout {i}")
 
         print(f"Grid simulation initialized with {len(self.model.agents)} agents")
         print(f"  Scenario: {meta.grid_size}x{meta.grid_size}, {meta.num_warehouses} warehouses")

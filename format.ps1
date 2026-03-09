@@ -43,30 +43,30 @@ if ($ruffExit -eq 0) {
     Write-Host "⚠️  Ruff found issues (exit code $ruffExit)" -ForegroundColor Yellow
 }
 
-# npm linting
-Write-Host "📦 Running npm linting in frontend/..." -ForegroundColor Yellow
+# bun linting
+Write-Host "📦 Running bun linting in frontend/..." -ForegroundColor Yellow
 Push-Location "frontend"
-npm run lint
-$npmExit = $LASTEXITCODE
+bun run lint
+$bunExit = $LASTEXITCODE
 Pop-Location
 
-if ($npmExit -eq 0) {
-    Write-Host "✅ npm linting completed successfully" -ForegroundColor Green
+if ($bunExit -eq 0) {
+    Write-Host "✅ bun linting completed successfully" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  npm linting found issues (exit code $npmExit)" -ForegroundColor Yellow
+    Write-Host "⚠️  bun linting found issues (exit code $bunExit)" -ForegroundColor Yellow
 }
 
-# npm tsc
-Write-Host "📦 Running npm TypeScript compilation in frontend/..." -ForegroundColor Yellow
+# bun tsc
+Write-Host "📦 Running bun TypeScript compilation in frontend/..." -ForegroundColor Yellow
 Push-Location "frontend"
-npx tsc --noEmit
+bunx tsc --noEmit
 $tscExit = $LASTEXITCODE
 Pop-Location
 
 if ($tscExit -eq 0) {
-    Write-Host "✅ npm TypeScript compilation completed successfully" -ForegroundColor Green
+    Write-Host "✅ bun TypeScript compilation completed successfully" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  npm TypeScript compilation found issues (exit code $tscExit)" -ForegroundColor Yellow
+    Write-Host "⚠️  bun TypeScript compilation found issues (exit code $tscExit)" -ForegroundColor Yellow
 }
 
 Write-Host ""

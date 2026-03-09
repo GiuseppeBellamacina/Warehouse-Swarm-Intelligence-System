@@ -213,8 +213,7 @@ class RetrieverAgent(BaseAgent):
                 # Only insert if not already known and not tombstoned as gone
                 if (
                     obj_pos not in self.known_objects
-                    and message.timestamp
-                    > self.known_objects_cleared.get(obj_pos, -1)
+                    and message.timestamp > self.known_objects_cleared.get(obj_pos, -1)
                 ):
                     obc = getattr(self, "objects_being_collected", None)
                     if obc is None or obj_pos not in obc:
@@ -275,6 +274,14 @@ class RetrieverAgent(BaseAgent):
             and self.carrying_objects < self.carrying_capacity
             and self._wh_step is None
         ):
+            # Re-sort queue by Manhattan distance so the nearest task is always first.
+            # This avoids FIFO suboptimality: a closer task added later should be
+            # picked up before a farther task added earlier.
+            pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
+            self.task_queue.sort(
+                key=lambda t: abs(t[0] - pos_tuple[0]) + abs(t[1] - pos_tuple[1])
+            )
+
             next_target = self.task_queue[0]
             # Skip if object is gone from the world
             if next_target not in self.model.grid.objects and next_target not in self.known_objects:
@@ -338,7 +345,9 @@ class RetrieverAgent(BaseAgent):
             if obj_pos not in self.model.grid.objects:
                 continue  # already picked up by someone else
             dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
-            if dist <= self.communication_radius:
+            # Use vision_radius instead of communication_radius so the retriever
+            # opportunistically claims objects it can see, not just touch.
+            if dist <= self.vision_radius:
                 candidates.append((dist, obj_pos))
 
         candidates.sort()  # closest first
@@ -540,7 +549,16 @@ class RetrieverAgent(BaseAgent):
         )
 
     def _update_explore_target(self) -> None:
-        """Pick a new local exploration A* target if current one is reached/stale."""
+        """Pick a new exploration target when idle (no tasks).
+
+        Priority:
+          1. Head toward the centroid of peers' last-known object sightings
+             (via retriever_positions of peers that had objects) — best guess
+             for where new objects might appear.
+          2. Head toward the nearest UNKNOWN boundary in local_map — help
+             expand explored territory instead of wandering randomly.
+          3. Random walkable cell within 8 cells (original fallback).
+        """
         pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
         # Check if we've reached the current explore target
@@ -551,7 +569,33 @@ class RetrieverAgent(BaseAgent):
         self._explore_steps += 1
         if self._explore_target is None or self._explore_steps > 15:
             self._explore_steps = 0
-            # Candidate cells: walkable, not warehouse, within 8 cells
+
+            # --- Strategy 1: head toward UNKNOWN boundary cells ---
+            # If the retriever's local map still has unexplored areas, head there
+            # to expand coverage and potentially spot new objects.
+            import numpy as _np
+            unknown_mask = self.local_map == 0
+            if _np.any(unknown_mask):
+                padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
+                has_explored = _np.zeros_like(unknown_mask)
+                for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    has_explored |= padded[1 + dy: padded.shape[0] - 1 + dy,
+                                           1 + dx: padded.shape[1] - 1 + dx] != 0
+                boundary = unknown_mask & has_explored
+                b_ys, b_xs = _np.where(boundary)
+                if len(b_ys) > 0:
+                    # Pick the nearest boundary cell
+                    dists = _np.abs(b_xs - pos_tuple[0]) + _np.abs(b_ys - pos_tuple[1])
+                    nearest_idx = int(_np.argmin(dists))
+                    target = (int(b_xs[nearest_idx]), int(b_ys[nearest_idx]))
+                    if self.model.grid.is_walkable(*target):
+                        self._explore_target = target
+                        self.target_position = target
+                        self.path = []
+                        self.state = AgentState.EXPLORING
+                        return
+
+            # --- Strategy 2: random walkable cell (fallback) ---
             candidates = []
             for dx in range(-8, 9):
                 for dy in range(-8, 9):
@@ -568,7 +612,7 @@ class RetrieverAgent(BaseAgent):
             if candidates:
                 self._explore_target = random.choice(candidates)
                 self.target_position = self._explore_target
-                self.path = []  # invalidate cached path — new explore target
+                self.path = []
                 self.state = AgentState.EXPLORING
             else:
                 self.state = AgentState.IDLE
@@ -814,9 +858,7 @@ class RetrieverAgent(BaseAgent):
                     # Release remaining claims so peers can grab those objects
                     # immediately without waiting for the stale-claim timeout.
                     for remaining_task in list(self.task_queue):
-                        self.model.comm_manager.release_claim(
-                            remaining_task, self.unique_id
-                        )
+                        self.model.comm_manager.release_claim(remaining_task, self.unique_id)
                         print(
                             f"{self.tag} FULL-RELEASE: releasing claim {remaining_task} "
                             f"(full after pickup, offering to peers)"

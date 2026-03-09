@@ -93,6 +93,12 @@ class CoordinatorAgent(BaseAgent):
         # Track recharge attempts to avoid getting stuck
         self.recharge_attempt_start: Optional[int] = None
 
+        # Consecutive steps spent IDLE in _decide_exploration.
+        # When this exceeds _BOREDOM_THRESHOLD the coordinator forces a waypoint
+        # patrol pass rather than continuing to sit near the agent centroid.
+        self._idle_steps: int = 0
+        self._BOREDOM_THRESHOLD: int = 20
+
         # Warehouse recharge sub-state machine (analogous to retriever _wh_step)
         self._coord_wh_step: Optional[str] = None  # None | "approach" | "recharge" | "exit"
         self._coord_wh_station: Optional[Dict] = None
@@ -566,6 +572,19 @@ class CoordinatorAgent(BaseAgent):
             if p and cs_now - self.retriever_positions_step.get(rid, -9999) <= _POS_MAX_AGE
         ]
 
+        # Boredom check: if the coordinator has been IDLE for too long AND there
+        # is nothing useful to do nearby (no known unassigned objects), force a
+        # waypoint patrol so it circulates and discovers new areas.
+        # IMPORTANT: skip the patrol when known_objects exist — the coordinator
+        # must stay near retrievers to deliver those assignments, not wander off.
+        no_work_pending = not any(
+            pos not in self.objects_being_collected
+            for pos in self.known_objects
+        )
+        if self._idle_steps >= self._BOREDOM_THRESHOLD and no_work_pending:
+            self._idle_steps = 0
+            agent_positions = []  # pretend we have no positions → waypoint branch
+
         if not agent_positions:
             # No communicated positions yet — enter search mode: cycle through
             # strategic waypoints until we come within comm range of any agent.
@@ -581,8 +600,10 @@ class CoordinatorAgent(BaseAgent):
             # never try to path-find to an obstacle or warehouse interior.
             search_waypoints = []
             for raw in raw_waypoints:
-                if self.model.grid.is_walkable(*raw) and \
-                        self.model.grid.get_cell_type(*raw) not in _WH_TYPES:
+                if (
+                    self.model.grid.is_walkable(*raw)
+                    and self.model.grid.get_cell_type(*raw) not in _WH_TYPES
+                ):
                     search_waypoints.append(raw)
                     continue
                 found = None
@@ -616,8 +637,12 @@ class CoordinatorAgent(BaseAgent):
                     continue
                 failed_step = self.unreachable_targets.get(wp, -1)
                 still_blacklisted = failed_step != -1 and cs - failed_step < 30
+                # Cap the "already_reached" threshold at 8 cells regardless of
+                # communication_radius: large radii would mark every waypoint as
+                # already-reached and collapse the patrol entirely.
                 already_reached = (
-                    abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= max_distance_from_agents
+                    abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1])
+                    <= min(8, max_distance_from_agents)
                 )
                 if still_blacklisted or already_reached:
                     self._search_waypoint_idx += 1
@@ -639,14 +664,35 @@ class CoordinatorAgent(BaseAgent):
 
         centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
         centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
+
+        # Bias the centroid toward unassigned objects so the coordinator
+        # positions itself where it can quickly relay new assignments
+        # rather than trailing behind retrievers that are already busy.
+        pending_obj_positions = [
+            pos for pos in self.known_objects
+            if pos not in self.objects_being_collected
+            and pos not in self.assigned_tasks.values()
+        ]
+        if pending_obj_positions:
+            # Weighted average: 60% retriever centroid, 40% object centroid
+            obj_cx = sum(p[0] for p in pending_obj_positions) / len(pending_obj_positions)
+            obj_cy = sum(p[1] for p in pending_obj_positions) / len(pending_obj_positions)
+            centroid_x = centroid_x * 0.6 + obj_cx * 0.4
+            centroid_y = centroid_y * 0.6 + obj_cy * 0.4
+
         centroid = (int(centroid_x), int(centroid_y))
 
         dist_from_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
 
         if dist_from_centroid <= max_distance_from_agents:
-            # Already well-positioned — nothing to do this step
+            # Already well-positioned — nothing to do this step.
+            # Increment boredom counter so persistent idling eventually triggers patrol.
+            self._idle_steps += 1
             self.state = AgentState.IDLE
             return
+
+        # Moving — reset boredom counter.
+        self._idle_steps = 0
 
         # Need to reposition — snap centroid to nearest usable cell if necessary
         reposition_target = centroid
@@ -726,7 +772,16 @@ class CoordinatorAgent(BaseAgent):
 
         # --- initialise sub-machine ---
         if self._coord_wh_step is None:
-            station = self.model.get_nearest_warehouse_to(my_pos)
+            # Use congestion-aware warehouse selection (same as retrievers)
+            visible_entrances = [
+                wh for wh in self.known_warehouses
+                if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
+            ]
+            station = self.model.get_best_warehouse_for(
+                pos=my_pos,
+                known_entrances=visible_entrances,
+                agent_energy=self.energy,
+            )
             self._coord_wh_station = station
             entrance = station.get("entrance")
             if entrance:
