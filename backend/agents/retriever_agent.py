@@ -572,6 +572,10 @@ class RetrieverAgent(BaseAgent):
           2. Head toward the nearest UNKNOWN boundary in local_map — help
              expand explored territory instead of wandering randomly.
           3. Random walkable cell within 8 cells (original fallback).
+
+        Anti-clustering: when a coordinator is nearby, targets are biased
+        away from the coordinator so idle retrievers spread out instead of
+        shadowing the coordinator.
         """
         pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
@@ -583,6 +587,14 @@ class RetrieverAgent(BaseAgent):
         self._explore_steps += 1
         if self._explore_target is None or self._explore_steps > self._EXPLORE_RETARGET:
             self._explore_steps = 0
+
+            # Gather nearby coordinator positions for anti-clustering
+            nearby_agents = self.get_nearby_agents(self.communication_radius)
+            coord_positions = [
+                pos_to_tuple(a.pos)
+                for a in nearby_agents
+                if getattr(a, "role", None) == "coordinator" and a.pos
+            ]
 
             # --- Strategy 1: head toward UNKNOWN boundary cells ---
             # If the retriever's local map still has unexplored areas, head there
@@ -604,10 +616,19 @@ class RetrieverAgent(BaseAgent):
                     boundary = unknown_mask & has_explored
                     b_ys, b_xs = _np.where(boundary)
                     if len(b_ys) > 0:
-                        # Pick the nearest boundary cell
                         dists = _np.abs(b_xs - pos_tuple[0]) + _np.abs(b_ys - pos_tuple[1])
-                        nearest_idx = int(_np.argmin(dists))
-                        target = (int(b_xs[nearest_idx]), int(b_ys[nearest_idx]))
+                        if coord_positions:
+                            # Anti-clustering: prefer boundary cells far from
+                            # coordinators.  score = dist_from_me - 0.5 * dist_from_coord
+                            # Lower score → better (close to me AND far from coord).
+                            coord_bonus = _np.zeros(len(b_ys), dtype=_np.float64)
+                            for cp in coord_positions:
+                                coord_bonus += _np.abs(b_xs - cp[0]) + _np.abs(b_ys - cp[1])
+                            scores = dists.astype(_np.float64) - 0.5 * coord_bonus
+                            best_idx = int(_np.argmin(scores))
+                        else:
+                            best_idx = int(_np.argmin(dists))
+                        target = (int(b_xs[best_idx]), int(b_ys[best_idx]))
                         if self.model.grid.is_walkable(*target):
                             self._explore_target = target
                             self.target_position = target
@@ -617,8 +638,8 @@ class RetrieverAgent(BaseAgent):
 
             # --- Strategy 2: random walkable cell (fallback) ---
             candidates = []
-            for dx in range(-8, 9):
-                for dy in range(-8, 9):
+            for dx in range(-12, 13):
+                for dy in range(-12, 13):
                     cx, cy = pos_tuple[0] + dx, pos_tuple[1] + dy
                     if 0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height:
                         ct = self.model.grid.get_cell_type(cx, cy)
@@ -630,7 +651,17 @@ class RetrieverAgent(BaseAgent):
                         ) and self.model.grid.is_walkable(cx, cy):
                             candidates.append((cx, cy))
             if candidates:
-                self._explore_target = random.choice(candidates)
+                if coord_positions:
+                    # Pick the cell farthest from coordinators
+                    def _min_coord_dist(cell: tuple) -> int:
+                        return min(
+                            abs(cell[0] - cp[0]) + abs(cell[1] - cp[1]) for cp in coord_positions
+                        )
+
+                    candidates.sort(key=_min_coord_dist, reverse=True)
+                    self._explore_target = candidates[0]
+                else:
+                    self._explore_target = random.choice(candidates)
                 self.target_position = self._explore_target
                 self.path = []
                 self.state = AgentState.EXPLORING
