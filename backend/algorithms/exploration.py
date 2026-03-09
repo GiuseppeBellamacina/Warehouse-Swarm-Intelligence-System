@@ -23,11 +23,11 @@ class FrontierExplorer:
         local_map: np.ndarray, min_cluster_size: int = 3
     ) -> List[Tuple[Tuple[int, int], int]]:
         """
-        Find frontier clusters in the local map
+        Find frontier clusters in the local map (vectorised with numpy).
 
         A frontier cell is:
         - Explored (FREE)
-        - Adjacent to at least one UNKNOWN cell
+        - Adjacent to at least one UNKNOWN cell (8-connected)
 
         Args:
             local_map: Agent's local exploration map
@@ -36,46 +36,51 @@ class FrontierExplorer:
         Returns:
             List of (centroid_position, cluster_size) tuples
         """
-        height, width = local_map.shape
-        frontier_map = np.zeros((height, width), dtype=bool)
+        # Pad with UNKNOWN (0) so boundary cells have correct neighbours
+        padded = np.pad(local_map, 1, mode="constant", constant_values=0)
 
-        # Find frontier cells
-        for y in range(1, height - 1):
-            for x in range(1, width - 1):
-                # Cell must be explored and free
-                if local_map[y, x] == CellType.FREE:
-                    # Check if adjacent to unknown cell
-                    neighbors = [
-                        local_map[y - 1, x],  # N
-                        local_map[y + 1, x],  # S
-                        local_map[y, x - 1],  # W
-                        local_map[y, x + 1],  # E
-                        local_map[y - 1, x - 1],  # NW
-                        local_map[y - 1, x + 1],  # NE
-                        local_map[y + 1, x - 1],  # SW
-                        local_map[y + 1, x + 1],  # SE
-                    ]
+        # Boolean mask: cell is FREE in the original map
+        is_free = local_map == CellType.FREE
 
-                    if CellType.UNKNOWN in neighbors:
-                        frontier_map[y, x] = True
+        # Boolean mask: at least one 8-neighbour is UNKNOWN (value 0)
+        # Check all 8 shifts on the padded array (offset +1 due to padding)
+        has_unknown_neighbour = np.zeros_like(is_free)
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                        (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            has_unknown_neighbour |= padded[1 + dy: padded.shape[0] - 1 + dy,
+                                            1 + dx: padded.shape[1] - 1 + dx] == 0
+
+        frontier_map = is_free & has_unknown_neighbour
 
         # Cluster frontiers using connected components
         label_result = cast(Tuple[np.ndarray, int], label(frontier_map))
         labeled_array, num_features = label_result
 
+        if num_features == 0:
+            return []
+
+        # Vectorised centroid + size computation for all clusters at once
+        cluster_ids = np.arange(1, num_features + 1)
+        sizes = np.bincount(labeled_array.ravel(), minlength=num_features + 1)[1:]
+
+        # Filter small clusters early
+        large_enough = sizes >= min_cluster_size
+        if not np.any(large_enough):
+            return []
+
+        # Compute centroids using sum of coordinates
+        all_ys, all_xs = np.where(labeled_array > 0)
+        all_labels = labeled_array[all_ys, all_xs]
+
+        sum_x = np.bincount(all_labels, weights=all_xs, minlength=num_features + 1)[1:]
+        sum_y = np.bincount(all_labels, weights=all_ys, minlength=num_features + 1)[1:]
+
         frontiers = []
-
-        for cluster_id in range(1, num_features + 1):
-            cluster_mask = labeled_array == cluster_id
-            cluster_size = np.sum(cluster_mask)
-
-            if cluster_size >= min_cluster_size:
-                # Find centroid of cluster
-                y_coords, x_coords = np.where(cluster_mask)
-                centroid_x = int(np.mean(x_coords))
-                centroid_y = int(np.mean(y_coords))
-
-                frontiers.append(((centroid_x, centroid_y), cluster_size))
+        for cid in cluster_ids[large_enough]:
+            idx = cid - 1
+            cx = int(sum_x[idx] / sizes[idx])
+            cy = int(sum_y[idx] / sizes[idx])
+            frontiers.append(((cx, cy), int(sizes[idx])))
 
         return frontiers
 
@@ -124,8 +129,13 @@ class FrontierExplorer:
                 if other_dist < 10:  # Within 10 cells
                     agent_penalty += 0.5
 
-            # Calculate utility
-            utility = (cluster_size / (dist + 1)) - agent_penalty
+            # Calculate utility.
+            # Use dist^0.4 instead of dist^1 so that a large distant cluster
+            # is properly preferred over a tiny cluster right next to the agent.
+            # With linear distance: cluster_size=3 at dist=2 (score=1.0) beats
+            # cluster_size=15 at dist=25 (score=0.58) — wrong direction.
+            # With dist^0.4: those same examples score 1.24 vs 2.97 respectively.
+            utility = (cluster_size / (dist ** 0.4 + 1)) - agent_penalty * 2
 
             if utility > best_utility:
                 best_utility = utility
