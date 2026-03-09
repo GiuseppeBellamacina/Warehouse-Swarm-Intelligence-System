@@ -196,6 +196,9 @@ export interface RetrieverBehaviorParams {
   self_assign_from_shared_map: boolean;
   peer_broadcast: boolean;
   smart_explore: boolean;
+  warehouse_congestion_reroute: boolean;
+  warehouse_congestion_threshold: number;
+  jam_priority: boolean;
 }
 
 export interface SimulationAgentsConfig {
@@ -207,72 +210,14 @@ export interface SimulationAgentsConfig {
   retriever_behavior: RetrieverBehaviorParams;
 }
 
-export const DEFAULT_SCOUT_BEHAVIOR: ScoutBehaviorParams = {
-  recent_target_ttl: 50,
-  rescan_age: 120,
-  discovery_timeout: 80,
-  anti_cluster_distance: 8,
-  target_hysteresis: 15,
-  stuck_threshold: 8,
-  recharge_threshold: 0.25,
-  target_lock_duration: 12,
-  min_frontier_cluster_size: 5,
-  seek_coordinator_delay: 25,
-  far_frontier_enabled: true,
-  stale_coverage_patrol: true,
-  anti_clustering: true,
-  seek_coordinator: true,
-};
-
-export const DEFAULT_COORDINATOR_BEHAVIOR: CoordinatorBehaviorParams = {
-  boredom_threshold: 20,
-  pos_max_age: 25,
-  recharge_threshold: 0.2,
-  centroid_object_bias: 0.4,
-  sync_rate_limit: 10,
-  seek_retrievers: true,
-  boredom_patrol: true,
-  object_biased_centroid: true,
-};
-
-export const DEFAULT_RETRIEVER_BEHAVIOR: RetrieverBehaviorParams = {
-  recharge_threshold: 0.2,
-  stale_claim_age: 45,
-  explore_retarget_interval: 15,
-  opportunistic_pickup: true,
-  task_queue_reorder: true,
-  self_assign_from_shared_map: true,
-  peer_broadcast: true,
-  smart_explore: true,
-};
-
-/** Default agent configuration matching the backend SimulationAgentsConfig defaults */
-export const DEFAULT_AGENTS_CONFIG: SimulationAgentsConfig = {
-  scouts: {
-    count: 1,
-    vision_radius: 3,
-    communication_radius: 2,
-    max_energy: 500,
-    speed: 2,
-    carrying_capacity: 0,
-  },
-  coordinators: {
-    count: 1,
-    vision_radius: 2,
-    communication_radius: 3,
-    max_energy: 500,
-    speed: 1.0,
-    carrying_capacity: 0,
-  },
-  retrievers: {
-    count: 3,
-    vision_radius: 2,
-    communication_radius: 2,
-    max_energy: 500,
-    speed: 1.0,
-    carrying_capacity: 2,
-  },
-  scout_behavior: { ...DEFAULT_SCOUT_BEHAVIOR },
-  coordinator_behavior: { ...DEFAULT_COORDINATOR_BEHAVIOR },
-  retriever_behavior: { ...DEFAULT_RETRIEVER_BEHAVIOR },
-};
+/**
+ * Fetch the canonical default agent configuration from the backend.
+ * The backend Pydantic schemas are the single source of truth.
+ */
+export async function fetchAgentDefaults(
+  backendUrl: string,
+): Promise<SimulationAgentsConfig> {
+  const res = await fetch(`${backendUrl}/api/defaults`);
+  if (!res.ok) throw new Error(`Failed to fetch defaults: ${res.status}`);
+  return (await res.json()) as SimulationAgentsConfig;
+}

@@ -5,9 +5,7 @@ import {
   GridScenarioConfig,
   GridWarehouse,
   SimulationAgentsConfig,
-  DEFAULT_SCOUT_BEHAVIOR,
-  DEFAULT_COORDINATOR_BEHAVIOR,
-  DEFAULT_RETRIEVER_BEHAVIOR,
+  fetchAgentDefaults,
 } from "../types/simulation";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
@@ -57,17 +55,22 @@ export const MapEditor: React.FC<{
 
   const [isDrawing, setIsDrawing] = useState(false);
   const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
+  const [defaults, setDefaults] = useState<SimulationAgentsConfig | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
 
-  // Fetch available configs from backend
+  // Fetch available configs and defaults from backend
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/api/configs`);
-        if (!res.ok) return;
-        const data = await res.json();
-        setAvailableConfigs(data.configs ?? []);
+        const [cfgRes, defs] = await Promise.all([
+          fetch(`${BACKEND_URL}/api/configs`)
+            .then((r) => (r.ok ? r.json() : { configs: [] }))
+            .catch(() => ({ configs: [] })),
+          fetchAgentDefaults(BACKEND_URL).catch(() => null),
+        ]);
+        setAvailableConfigs(cfgRes.configs ?? []);
+        if (defs) setDefaults(defs);
       } catch {
         /* ignore */
       }
@@ -371,35 +374,55 @@ export const MapEditor: React.FC<{
       objects,
     };
 
-    const agents: SimulationAgentsConfig = {
-      scouts: {
-        count: state.scouts,
-        vision_radius: 3,
-        communication_radius: 2,
-        max_energy: 500,
-        speed: 1.5,
-        carrying_capacity: 0,
-      },
-      coordinators: {
-        count: state.coordinators,
-        vision_radius: 2,
-        communication_radius: 3,
-        max_energy: 500,
-        speed: 1.0,
-        carrying_capacity: 0,
-      },
-      retrievers: {
-        count: state.retrievers,
-        vision_radius: 2,
-        communication_radius: 2,
-        max_energy: 500,
-        speed: 1.0,
-        carrying_capacity: 2,
-      },
-      scout_behavior: { ...DEFAULT_SCOUT_BEHAVIOR },
-      coordinator_behavior: { ...DEFAULT_COORDINATOR_BEHAVIOR },
-      retriever_behavior: { ...DEFAULT_RETRIEVER_BEHAVIOR },
-    };
+    const agents: SimulationAgentsConfig = defaults
+      ? {
+          scouts: {
+            ...defaults.scouts,
+            count: state.scouts,
+          },
+          coordinators: {
+            ...defaults.coordinators,
+            count: state.coordinators,
+          },
+          retrievers: {
+            ...defaults.retrievers,
+            count: state.retrievers,
+          },
+          scout_behavior: { ...defaults.scout_behavior },
+          coordinator_behavior: { ...defaults.coordinator_behavior },
+          retriever_behavior: { ...defaults.retriever_behavior },
+        }
+      : {
+          scouts: {
+            count: state.scouts,
+            vision_radius: 3,
+            communication_radius: 2,
+            max_energy: 500,
+            speed: 2,
+            carrying_capacity: 0,
+          },
+          coordinators: {
+            count: state.coordinators,
+            vision_radius: 2,
+            communication_radius: 3,
+            max_energy: 500,
+            speed: 1.0,
+            carrying_capacity: 0,
+          },
+          retrievers: {
+            count: state.retrievers,
+            vision_radius: 2,
+            communication_radius: 2,
+            max_energy: 500,
+            speed: 1.0,
+            carrying_capacity: 2,
+          },
+          scout_behavior: {} as SimulationAgentsConfig["scout_behavior"],
+          coordinator_behavior:
+            {} as SimulationAgentsConfig["coordinator_behavior"],
+          retriever_behavior:
+            {} as SimulationAgentsConfig["retriever_behavior"],
+        };
 
     return { scenario, agents };
   };
