@@ -1,6 +1,13 @@
 // Benchmark Panel — recording controls, run history, comparison charts, PNG export
 
-import React, { useState, useRef, useCallback, useMemo } from "react";
+import React, {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  useEffect,
+} from "react";
+import { createPortal } from "react-dom";
 import { BenchmarkRun, BenchmarkSnapshot } from "../hooks/useBenchmark";
 import { SimulationAgentsConfig } from "../types/simulation";
 
@@ -293,61 +300,129 @@ function exportSVGAsPNG(svgEl: SVGSVGElement, filename: string) {
   img.src = url;
 }
 
-function exportElementAsPNG(el: HTMLElement, filename: string) {
-  // Use SVG foreignObject to render HTML → canvas → PNG
-  const w = el.scrollWidth;
-  const h = el.scrollHeight;
+function exportTableAsPNG(
+  runs: BenchmarkRun[],
+  colorFn: (i: number) => string,
+  filename: string,
+) {
   const scale = 2;
-  const clone = el.cloneNode(true) as HTMLElement;
-  // Reset positioning for foreignObject rendering
-  clone.style.width = `${w}px`;
-  clone.style.margin = "0";
-  const svgNS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(svgNS, "svg");
-  svg.setAttribute("width", String(w));
-  svg.setAttribute("height", String(h));
-  svg.setAttribute("xmlns", svgNS);
-  const fo = document.createElementNS(svgNS, "foreignObject");
-  fo.setAttribute("width", "100%");
-  fo.setAttribute("height", "100%");
-  const body = document.createElement("div");
-  body.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-  body.appendChild(clone);
-  fo.appendChild(body);
-  svg.appendChild(fo);
-  // Inline computed styles
-  const allEls = [
-    clone,
-    ...Array.from(clone.querySelectorAll("*")),
-  ] as HTMLElement[];
-  const srcEls = [el, ...Array.from(el.querySelectorAll("*"))] as HTMLElement[];
-  for (let i = 0; i < allEls.length; i++) {
-    const cs = window.getComputedStyle(srcEls[i]);
-    (allEls[i] as HTMLElement).style.cssText = cs.cssText;
+  const rowH = 28;
+  const padX = 12;
+  const padY = 8;
+  const headers = [
+    "Run",
+    "Steps",
+    "Retrieved",
+    "Completion",
+    "Efficiency",
+    "Avg Energy",
+    "Agents",
+  ];
+  const rows = runs.map((run) => {
+    const s = run.summary;
+    const total =
+      run.agents.scouts + run.agents.coordinators + run.agents.retrievers;
+    return [
+      run.label,
+      s?.totalSteps?.toString() ?? "—",
+      s ? `${s.objectsRetrieved}/${s.totalObjects}` : "—",
+      s ? `${s.completionPct.toFixed(1)}%` : "—",
+      s ? s.efficiency.toFixed(2) : "—",
+      s ? s.avgEnergyOverall.toFixed(0) : "—",
+      `${total} (${run.agents.scouts}S/${run.agents.coordinators}C/${run.agents.retrievers}R)`,
+    ];
+  });
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  ctx.font = "12px monospace";
+
+  // Measure column widths
+  const colWidths = headers.map((h, ci) => {
+    let max = ctx.measureText(h).width;
+    for (const row of rows) {
+      const w = ctx.measureText(row[ci]).width;
+      if (w > max) max = w;
+    }
+    return Math.ceil(max) + padX * 2;
+  });
+
+  const totalW = colWidths.reduce((a, b) => a + b, 0);
+  const totalH = (rows.length + 1) * rowH + padY * 2;
+
+  canvas.width = totalW * scale;
+  canvas.height = totalH * scale;
+  ctx.scale(scale, scale);
+
+  // Background
+  ctx.fillStyle = "#1f2937";
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  // Header row
+  ctx.fillStyle = "#111827";
+  ctx.fillRect(0, padY, totalW, rowH);
+
+  ctx.font = "bold 11px sans-serif";
+  ctx.fillStyle = "#9ca3af";
+  let x = 0;
+  for (let ci = 0; ci < headers.length; ci++) {
+    ctx.fillText(headers[ci], x + padX, padY + rowH * 0.65);
+    x += colWidths[ci];
   }
-  const svgData = new XMLSerializer().serializeToString(svg);
-  const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
-  const url = URL.createObjectURL(svgBlob);
-  const img = new Image();
-  img.onload = () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = w * scale;
-    canvas.height = h * scale;
-    const ctx = canvas.getContext("2d")!;
-    ctx.scale(scale, scale);
-    ctx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(url);
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }, "image/png");
-  };
-  img.onerror = () => URL.revokeObjectURL(url);
-  img.src = url;
+
+  // Header divider
+  ctx.strokeStyle = "#374151";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, padY + rowH);
+  ctx.lineTo(totalW, padY + rowH);
+  ctx.stroke();
+
+  // Data rows
+  ctx.font = "12px monospace";
+  for (let ri = 0; ri < rows.length; ri++) {
+    const y = padY + (ri + 1) * rowH;
+
+    // Zebra stripe
+    if (ri % 2 === 1) {
+      ctx.fillStyle = "#111827";
+      ctx.fillRect(0, y, totalW, rowH);
+    }
+
+    // Row divider
+    ctx.strokeStyle = "#1f2937";
+    ctx.beginPath();
+    ctx.moveTo(0, y + rowH);
+    ctx.lineTo(totalW, y + rowH);
+    ctx.stroke();
+
+    x = 0;
+    for (let ci = 0; ci < rows[ri].length; ci++) {
+      if (ci === 0) {
+        // Color dot
+        ctx.fillStyle = colorFn(ri);
+        ctx.beginPath();
+        ctx.arc(x + padX + 4, y + rowH * 0.5, 4, 0, Math.PI * 2);
+        ctx.fill();
+        // Label
+        ctx.fillStyle = "#d1d5db";
+        ctx.fillText(rows[ri][ci], x + padX + 14, y + rowH * 0.65);
+      } else {
+        ctx.fillStyle = ci >= 6 ? "#6b7280" : "#d1d5db";
+        ctx.fillText(rows[ri][ci], x + padX, y + rowH * 0.65);
+      }
+      x += colWidths[ci];
+    }
+  }
+
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, "image/png");
 }
 
 // ── Helper: downsample to max N points for chart performance ─────────────
@@ -800,10 +875,23 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
   const [impactParam, setImpactParam] = useState<ParamKey>("totalAgents");
   const [impactMetric, setImpactMetric] = useState<MetricKey>("totalSteps");
   const [chartTheme, setChartTheme] = useState<ChartTheme>("dark");
+  const [enlargedChart, setEnlargedChart] = useState<"line" | "scatter" | null>(
+    null,
+  );
   const chartRef = useRef<HTMLDivElement>(null);
   const impactChartRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Close modal on Escape key
+  useEffect(() => {
+    if (!enlargedChart) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEnlargedChart(null);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [enlargedChart]);
 
   const toggleRun = useCallback((id: string) => {
     setSelectedIds((prev) => {
@@ -836,13 +924,13 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
   }, [impactParam, impactMetric]);
 
   const handleExportTable = useCallback(() => {
-    const el = tableRef.current;
-    if (!el) return;
-    exportElementAsPNG(
-      el,
+    if (selectedRuns.length === 0) return;
+    exportTableAsPNG(
+      selectedRuns,
+      pickColor,
       `benchmark-table-${new Date().toISOString().slice(0, 10)}.png`,
     );
-  }, []);
+  }, [selectedRuns]);
 
   const handleRename = useCallback(
     (id: string) => {
@@ -1131,7 +1219,12 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
           </div>
 
           {/* Chart */}
-          <div ref={chartRef}>
+          <div
+            ref={chartRef}
+            onClick={() => setEnlargedChart("line")}
+            className="cursor-pointer"
+            title="Click to enlarge"
+          >
             <SVGChart
               title={chartDef.title}
               series={chartSeries}
@@ -1264,7 +1357,12 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
           </div>
 
           {/* Scatter chart */}
-          <div ref={impactChartRef}>
+          <div
+            ref={impactChartRef}
+            onClick={() => setEnlargedChart("scatter")}
+            className="cursor-pointer"
+            title="Click to enlarge"
+          >
             <SVGScatterChart
               title={`${PARAM_DEFS.find((p) => p.key === impactParam)!.label} vs ${METRIC_DEFS.find((m) => m.key === impactMetric)!.label}`}
               points={selectedRuns.reduce<ScatterPoint[]>((acc, run, i) => {
@@ -1329,7 +1427,6 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                   <th className="text-right py-1 px-1 font-medium">
                     Avg Energy
                   </th>
-                  <th className="text-right py-1 px-1 font-medium">Config</th>
                   <th className="text-right py-1 pl-1 font-medium">Agents</th>
                 </tr>
               </thead>
@@ -1371,9 +1468,6 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                       <td className="text-right py-1 px-1 font-mono">
                         {s ? s.avgEnergyOverall.toFixed(0) : "—"}
                       </td>
-                      <td className="text-right py-1 px-1 text-gray-500">
-                        {run.configName}
-                      </td>
                       <td className="text-right py-1 pl-1 text-gray-500">
                         {totalAgents} ({run.agents.scouts}S/
                         {run.agents.coordinators}C/{run.agents.retrievers}R)
@@ -1412,6 +1506,73 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
           Select runs above to compare charts &amp; data
         </p>
       )}
+
+      {/* ── Fullscreen chart modal ── */}
+      {enlargedChart &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6"
+            onClick={() => setEnlargedChart(null)}
+          >
+            <div
+              className="relative bg-gray-900 rounded-xl shadow-2xl max-w-[95vw] max-h-[95vh] overflow-auto p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                onClick={() => setEnlargedChart(null)}
+                className="absolute top-2 right-2 w-8 h-8 rounded-full bg-gray-800 hover:bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white transition-colors z-10"
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+              {enlargedChart === "line" && (
+                <SVGChart
+                  title={chartDef.title}
+                  series={chartSeries}
+                  yLabel={chartDef.yLabel}
+                  width={1100}
+                  height={560}
+                  theme={chartTheme}
+                />
+              )}
+              {enlargedChart === "scatter" && (
+                <SVGScatterChart
+                  title={`${PARAM_DEFS.find((p) => p.key === impactParam)!.label} vs ${METRIC_DEFS.find((m) => m.key === impactMetric)!.label}`}
+                  points={selectedRuns.reduce<ScatterPoint[]>((acc, run, i) => {
+                    const pDef = PARAM_DEFS.find((p) => p.key === impactParam)!;
+                    const mDef = METRIC_DEFS.find(
+                      (m) => m.key === impactMetric,
+                    )!;
+                    const x = pDef.extract(run);
+                    const y = mDef.extract(run);
+                    if (x != null && y != null)
+                      acc.push({ x, y, label: run.label, color: pickColor(i) });
+                    return acc;
+                  }, [])}
+                  xLabel={PARAM_DEFS.find((p) => p.key === impactParam)!.label}
+                  yLabel={
+                    METRIC_DEFS.find((m) => m.key === impactMetric)!.label
+                  }
+                  width={1100}
+                  height={560}
+                  theme={chartTheme}
+                />
+              )}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 };
