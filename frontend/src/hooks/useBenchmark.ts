@@ -14,6 +14,13 @@ export interface BenchmarkSnapshot {
   activeAgents: number;
 }
 
+export interface BenchmarkAgentParams {
+  visionRadius: number;
+  communicationRadius: number;
+  speed: number;
+  maxEnergy: number;
+}
+
 export interface BenchmarkRun {
   id: string;
   label: string;
@@ -27,6 +34,12 @@ export interface BenchmarkRun {
   gridSize: [number, number];
   /** Agent counts */
   agents: { scouts: number; coordinators: number; retrievers: number };
+  /** Per-role agent parameters captured at recording start */
+  agentParams?: {
+    scouts: BenchmarkAgentParams;
+    coordinators: BenchmarkAgentParams;
+    retrievers: BenchmarkAgentParams;
+  };
   /** Total objects in the scenario */
   totalObjects: number;
   /** Seed used */
@@ -128,6 +141,11 @@ export const useBenchmark = () => {
       configName: string;
       gridSize: [number, number];
       agents: { scouts: number; coordinators: number; retrievers: number };
+      agentParams?: {
+        scouts: BenchmarkAgentParams;
+        coordinators: BenchmarkAgentParams;
+        retrievers: BenchmarkAgentParams;
+      };
       totalObjects: number;
       seed: number | null;
       maxSteps: number;
@@ -144,6 +162,7 @@ export const useBenchmark = () => {
         configName: opts.configName,
         gridSize: opts.gridSize,
         agents: opts.agents,
+        agentParams: opts.agentParams,
         totalObjects: opts.totalObjects,
         seed: opts.seed,
         maxSteps: opts.maxSteps,
