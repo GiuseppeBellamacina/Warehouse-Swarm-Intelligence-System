@@ -277,6 +277,12 @@ class CoordinatorBehaviorParams(BaseModel):
     object_biased_centroid: bool = Field(
         default=True, description="Bias positioning toward pending objects"
     )
+    smart_explore: bool = Field(
+        default=True, description="Head toward UNKNOWN boundary when idle (vs random walk)"
+    )
+    explore_retarget_interval: int = Field(
+        default=15, ge=1, description="Steps between picking new explore targets"
+    )
 
 
 class RetrieverBehaviorParams(BaseModel):

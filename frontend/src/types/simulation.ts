@@ -185,6 +185,8 @@ export interface CoordinatorBehaviorParams {
   seek_retrievers: boolean;
   boredom_patrol: boolean;
   object_biased_centroid: boolean;
+  smart_explore: boolean;
+  explore_retarget_interval: number;
 }
 
 export interface RetrieverBehaviorParams {
