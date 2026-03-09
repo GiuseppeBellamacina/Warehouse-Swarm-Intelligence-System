@@ -687,7 +687,7 @@ class BaseAgent(Agent):
             cached_destination = self.path[-1] if self.path else None
             if cached_destination != target:
                 self.path = []  # stale — destination changed
-            if not self.path or self.stuck_counter > 5:
+            if not self.path or self.stuck_counter > 3:
                 new_path = self.pathfinder.find_path(
                     pos_tuple,
                     target,
@@ -725,7 +725,6 @@ class BaseAgent(Agent):
                         moved = True
                     else:
                         # Position temporarily occupied by another agent
-                        # Priority-based collision resolution: lower ID has priority
                         blocking_agent = None
                         for agent in self.model.agents:
                             if agent.pos and pos_to_tuple(agent.pos) == next_pos:
@@ -734,34 +733,40 @@ class BaseAgent(Agent):
 
                         self.stuck_counter += 1
 
-                        # Ask the blocker to step aside (works for any cell type)
-                        if blocking_agent is not None and self.stuck_counter >= 3:
+                        # Ask the blocker to step aside early
+                        if blocking_agent is not None and self.stuck_counter >= 2:
                             self._send_clear_way_request(next_pos, blocking_agent.unique_id)
 
-                        # If blocking agent has higher ID (lower priority), wait less
-                        # If blocking agent has lower ID (higher priority), wait more
-                        has_priority = (
-                            blocking_agent is None or self.unique_id < blocking_agent.unique_id
-                        )
-
-                        # Check if we should wait or replan
-                        if self.stuck_counter <= 3 and has_priority:
-                            # Short wait with priority - just wait a bit
-                            self.wait_counter = 2
-                        elif self.stuck_counter <= 7:
-                            # Medium wait - other agent should move or we'll find alternative
-                            self.wait_counter = 4 if not has_priority else 2
-                        elif self.stuck_counter <= 15:
-                            # Long wait - try alternative path
-                            self.path = []
-                        else:
-                            # Too long stuck - give up on this target
-                            print(
-                                f"{self.tag} STUCK: Too long stuck at {pos_tuple}, abandoning target {target}"
+                        # After the first collision, try stepping to an adjacent
+                        # free cell to route around the blocker instead of
+                        # waiting passively.
+                        if self.stuck_counter >= 2:
+                            side = self._try_sidestep(
+                                pos_tuple, next_pos, target, other_agent_positions
                             )
-                            self.target_position = None
-                            self.path = []
-                            self.stuck_counter = 0
+                            if side is not None:
+                                self.model.grid.move_agent(self, side)
+                                self.consume_energy(self.energy_consumption["move"])
+                                self.path = []  # replan from new position
+                                moved = True
+
+                        if not moved:
+                            if self.stuck_counter <= 2:
+                                # Brief wait — give the blocker 1 step to move
+                                self.wait_counter = 1
+                            elif self.stuck_counter <= 6:
+                                # Force replan around current obstacles
+                                self.path = []
+                                self.wait_counter = 1
+                            else:
+                                # Too long stuck - give up on this target
+                                print(
+                                    f"{self.tag} STUCK: Too long stuck at {pos_tuple}, "
+                                    f"abandoning target {target}"
+                                )
+                                self.target_position = None
+                                self.path = []
+                                self.stuck_counter = 0
                 else:
                     # Path is permanently blocked (obstacle), replan
                     self.path = []
@@ -845,6 +850,47 @@ class BaseAgent(Agent):
                 self.position_history = []
 
         return moved
+
+    def _try_sidestep(
+        self,
+        current: Tuple[int, int],
+        blocked: Tuple[int, int],
+        target: Tuple[int, int],
+        occupied: set,
+    ) -> Optional[Tuple[int, int]]:
+        """Try to step to an adjacent cell to route around a blocker.
+
+        Picks the neighbour that is walkable, unoccupied, not the blocked cell,
+        and closest (Manhattan) to the target.  Avoids warehouse doors when
+        the agent is outside and not heading into a warehouse.
+        """
+        _DOOR_TYPES = {CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+        _WH_TYPES = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+        my_type = self.model.grid.get_cell_type(*current)
+        target_type = self.model.grid.get_cell_type(*target)
+        avoid_doors = my_type not in _WH_TYPES and target_type not in _WH_TYPES
+
+        candidates: List[Tuple[Tuple[int, int], int]] = []
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            np_ = (current[0] + dx, current[1] + dy)
+            if np_ == blocked:
+                continue
+            if not (0 <= np_[0] < self.model.grid.width and 0 <= np_[1] < self.model.grid.height):
+                continue
+            if not self.model.grid.is_walkable(*np_):
+                continue
+            if np_ in occupied:
+                continue
+            ct = self.model.grid.get_cell_type(*np_)
+            if avoid_doors and ct in _DOOR_TYPES:
+                continue
+            dist = abs(target[0] - np_[0]) + abs(target[1] - np_[1])
+            candidates.append((np_, dist))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: c[1])
+        return candidates[0][0]
 
     def _check_collision(self, new_pos: Tuple[int, int]) -> bool:
         """

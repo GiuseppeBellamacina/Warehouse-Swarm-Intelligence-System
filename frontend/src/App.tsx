@@ -47,9 +47,11 @@ const DragHandle: React.FC<{ onDrag: (dx: number) => void }> = ({ onDrag }) => {
   return (
     <div
       onMouseDown={onMouseDown}
-      className="w-1.5 flex-shrink-0 bg-gray-700 hover:bg-blue-500 active:bg-blue-400 cursor-col-resize transition-colors duration-150 rounded"
-      title="Trascina per ridimensionare"
-    />
+      className="w-1 flex-shrink-0 group cursor-col-resize flex items-center justify-center"
+      title="Drag to resize"
+    >
+      <div className="w-0.5 h-8 rounded-full bg-gray-600/60 group-hover:bg-blue-400/80 group-hover:h-12 group-active:bg-blue-400 transition-all duration-200" />
+    </div>
   );
 };
 
@@ -165,75 +167,80 @@ function App() {
   const clamp = (v: number) => Math.max(MIN, Math.min(MAX, v));
 
   return (
-    <div className="h-screen bg-gray-900 text-white flex flex-col overflow-hidden">
+    <div className="h-screen bg-[#0f1117] text-gray-100 flex flex-col overflow-hidden">
       {/* ── Free-hosting notice ── */}
       {!connected && (
-        <div
-          className={`flex-shrink-0 border-b px-6 py-4 flex items-center gap-5 ${
-            backendStatus === "waking"
-              ? "bg-yellow-950 border-yellow-700"
-              : "bg-amber-950 border-amber-800"
-          }`}
-        >
+        <div className="flex-shrink-0 border-b border-gray-800/60 bg-gray-900/70 backdrop-blur-sm px-6 py-4 flex items-center gap-5">
           {/* Icon / spinner */}
           <div className="flex-shrink-0">
             {backendStatus === "waking" ? (
-              <svg
-                className="animate-spin h-7 w-7 text-yellow-400"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8v4l3-3-3-3v4a10 10 0 100 20v-4l-3 3 3 3v-4a8 8 0 01-8-8z"
-                />
-              </svg>
+              <div className="relative w-9 h-9 flex items-center justify-center">
+                <svg
+                  className="animate-spin absolute inset-0 h-9 w-9 text-blue-500/60"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="3"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4l3-3-3-3v4a10 10 0 100 20v-4l-3 3 3 3v-4a8 8 0 01-8-8z"
+                  />
+                </svg>
+                <div className="w-4 h-4 rounded-full bg-blue-500/40 animate-pulse" />
+              </div>
             ) : (
-              <span className="text-3xl leading-none select-none">🌙</span>
+              <div className="w-9 h-9 rounded-lg bg-gray-800/80 border border-gray-700/50 flex items-center justify-center">
+                <svg
+                  className="w-5 h-5 text-gray-500"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z"
+                  />
+                </svg>
+              </div>
             )}
           </div>
 
           {/* Text */}
           <div className="flex-1 min-w-0">
-            <p
-              className={`font-bold text-sm ${backendStatus === "waking" ? "text-yellow-300" : "text-amber-300"}`}
-            >
+            <p className="font-semibold text-sm text-gray-200">
               {backendStatus === "waking"
-                ? "Avvio del backend in corso…"
-                : "Il backend è in sleep (hosting gratuito)"}
+                ? "Avvio del backend in corso\u2026"
+                : "Il backend \u00e8 in sleep"}
             </p>
-            <p
-              className={`text-xs mt-0.5 ${backendStatus === "waking" ? "text-yellow-400/80" : "text-amber-400/80"}`}
-            >
+            <p className="text-xs mt-0.5 text-gray-500">
               {backendStatus === "waking"
                 ? wakeLoopActive
                   ? `Tentativo ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 prossima richiesta tra ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
-                  : "Il server Render si sta riavviando. L'operazione richiede circa 30\u201360 secondi \u2014 la pagina si aggiorner\u00e0 automaticamente."
-                : "Dopo un periodo di inattività il server va in sleep. Premi il pulsante per risvegliarlo, poi attendi il riavvio (30–60 s)."}
+                  : "Il server si sta riavviando, attendi 30\u201360 secondi\u2026"
+                : "Dopo un periodo di inattivit\u00e0 il server va in sleep. Risveglialo per continuare."}
             </p>
           </div>
 
-          {/* Wake-up button / retry-loop progress — inline in the banner */}
+          {/* Wake-up button / retry-loop progress */}
           {wakeLoopActive ? (
-            <div className="flex-shrink-0 flex flex-col items-end gap-1.5">
-              <p className="text-xs font-mono text-yellow-300/90">
-                {wakeCountdown > 0
-                  ? `ping tra ${wakeCountdown}s`
-                  : "ping\u2026"}
+            <div className="flex-shrink-0 flex items-center gap-3">
+              <p className="text-xs font-mono text-blue-400/80">
+                {wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}
               </p>
               <button
                 onClick={() => stopWakeLoop(false)}
-                className="text-xs px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                className="text-xs px-3 py-1.5 rounded-md bg-gray-800/80 border border-gray-700/50 hover:bg-gray-700/80 text-gray-400 hover:text-gray-300 transition-colors"
               >
                 Annulla
               </button>
@@ -241,35 +248,53 @@ function App() {
           ) : backendStatus === "offline" || backendStatus === "unknown" ? (
             <button
               onClick={handleWake}
-              className="flex-shrink-0 flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg font-semibold
-                bg-amber-500 hover:bg-amber-400 active:bg-amber-300
-                text-gray-900 transition-colors shadow-md"
+              className="flex-shrink-0 flex items-center gap-2 text-xs px-4 py-2 rounded-lg font-semibold
+                bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500
+                text-white transition-all shadow-md shadow-blue-900/30"
             >
-              <span>⚡</span>
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
+                />
+              </svg>
               <span>Wake up</span>
             </button>
           ) : null}
         </div>
       )}
       {/* ── Header ── */}
-      <header className="flex-shrink-0 px-6 py-3 border-b border-gray-700 flex items-center gap-4">
-        <div>
-          <h1 className="text-xl font-bold leading-tight">
-            Warehouse Swarm Intelligence System
-          </h1>
-          <p className="text-gray-400 text-xs">
-            Multi-Agent Object Retrieval Simulation
-          </p>
+      <header className="flex-shrink-0 px-5 py-2.5 border-b border-gray-800/80 bg-gray-900/60 backdrop-blur-md flex items-center gap-4">
+        <div className="flex items-center gap-3">
+          <img
+            src="/favicon.svg"
+            alt="Logo"
+            className="w-8 h-8 rounded-lg shadow-lg shadow-blue-900/30"
+          />
+          <div>
+            <h1 className="text-sm font-bold leading-tight tracking-tight">
+              Warehouse Swarm Intelligence
+            </h1>
+            <p className="text-gray-500 text-[10px] tracking-wide">
+              Multi-Agent Object Retrieval
+            </p>
+          </div>
         </div>
-        {/* Backend status + wake-up */}
         <div className="ml-auto flex items-center gap-2">
           <span
-            className={`text-xs px-2 py-1 rounded-full font-medium ${
+            className={`text-[10px] px-2.5 py-1 rounded-full font-medium border ${
               connected
-                ? "bg-green-900 text-green-300"
+                ? "bg-emerald-950/60 text-emerald-400 border-emerald-800/50"
                 : backendStatus === "waking"
-                  ? "bg-yellow-900 text-yellow-300"
-                  : "bg-red-900 text-red-300"
+                  ? "bg-yellow-950/60 text-yellow-400 border-yellow-800/50"
+                  : "bg-red-950/60 text-red-400 border-red-800/50"
             }`}
           >
             {connected
@@ -282,10 +307,10 @@ function App() {
       </header>
 
       {/* ── Main area ── */}
-      <div className="flex-1 flex flex-row overflow-hidden min-h-0 gap-0 p-2">
+      <div className="flex-1 flex flex-row overflow-hidden min-h-0 gap-0 p-1.5">
         {/* Panel 1: Agent list */}
         <div
-          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-800 rounded-lg"
+          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
           style={{ width: agentsW }}
         >
           <div className="flex-1 overflow-y-auto">
@@ -296,9 +321,11 @@ function App() {
                 onSelectAgent={setSelectedAgentId}
               />
             ) : (
-              <div className="p-4">
-                <h2 className="text-base font-bold mb-3">Agents</h2>
-                <div className="text-center text-gray-500 py-8 text-sm">
+              <div className="p-3">
+                <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300 mb-3">
+                  Agents
+                </h2>
+                <div className="text-center text-gray-600 py-8 text-xs">
                   No active agents
                 </div>
               </div>
@@ -311,15 +338,15 @@ function App() {
         {/* Panel 2: Map / Editor  (flex-1 → fills remaining space) */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* Tabs */}
-          <div className="flex-shrink-0 flex gap-1 mb-1">
+          <div className="flex-shrink-0 flex gap-0.5 mb-1 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
             {(["simulation", "editor"] as ViewMode[]).map((mode) => (
               <button
                 key={mode}
                 onClick={() => setViewMode(mode)}
-                className={`flex-1 py-1.5 px-3 rounded font-medium text-sm transition ${
+                className={`flex-1 py-1.5 px-3 rounded-md font-medium text-xs transition-all duration-200 ${
                   viewMode === mode
-                    ? "bg-gray-700 text-white"
-                    : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                    ? "bg-gray-700/80 text-white shadow-sm"
+                    : "text-gray-500 hover:text-gray-300 hover:bg-gray-800/40"
                 }`}
               >
                 {mode === "simulation" ? "Simulation" : "Map Editor"}
@@ -329,13 +356,13 @@ function App() {
 
           {/* Content */}
           {viewMode === "simulation" ? (
-            <div className="flex-1 bg-gray-800 rounded-lg overflow-hidden flex items-center justify-center p-2 min-h-0">
+            <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-2 min-h-0 backdrop-blur-sm">
               {state && state.grid ? (
                 <GridCanvas state={state} selectedAgentId={selectedAgentId} />
               ) : (
-                <div className="flex flex-col items-center justify-center text-center gap-3">
+                <div className="flex flex-col items-center justify-center text-center gap-2">
                   <svg
-                    className="h-12 w-12 text-gray-600"
+                    className="h-10 w-10 text-gray-700"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -343,11 +370,11 @@ function App() {
                     <path
                       strokeLinecap="round"
                       strokeLinejoin="round"
-                      strokeWidth={2}
+                      strokeWidth={1.5}
                       d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
                     />
                   </svg>
-                  <p className="text-gray-400 text-sm">
+                  <p className="text-gray-600 text-xs">
                     Load a configuration to start
                   </p>
                 </div>
@@ -355,7 +382,13 @@ function App() {
             </div>
           ) : (
             <div className="flex-1 overflow-auto">
-              <MapEditor onExport={loadConfig} />
+              <MapEditor
+                onExport={(scenario, agents) => {
+                  loadConfig(scenario, agents).then(() =>
+                    setViewMode("simulation"),
+                  );
+                }}
+              />
             </div>
           )}
         </div>
@@ -364,7 +397,7 @@ function App() {
 
         {/* Panel 3: Metrics */}
         <div
-          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-800 rounded-lg"
+          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
           style={{ width: metricsW }}
         >
           <div className="flex-1 overflow-y-auto">
@@ -376,7 +409,7 @@ function App() {
 
         {/* Panel 4: Controls */}
         <div
-          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-800 rounded-lg"
+          className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
           style={{ width: controlsW }}
         >
           <div className="flex-1 overflow-y-auto">

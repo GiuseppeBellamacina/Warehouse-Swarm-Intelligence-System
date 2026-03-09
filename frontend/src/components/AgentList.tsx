@@ -139,8 +139,10 @@ export function AgentList({
     if (groupAgents.length === 0) return null;
 
     return (
-      <div className="mb-4">
-        <h3 className="text-sm font-semibold text-gray-400 mb-2">{title}</h3>
+      <div className="mb-3">
+        <h3 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5 px-1">
+          {title}
+        </h3>
         <div className="space-y-1">
           {groupAgents.map((agent) => {
             const isSelected = selectedAgentId === agent.id;
@@ -150,55 +152,55 @@ export function AgentList({
             const isLowEnergy = energyPct < 20;
             const energyBarColor =
               energyPct > 50
-                ? "bg-green-500"
+                ? "bg-emerald-400"
                 : energyPct > 25
-                  ? "bg-yellow-500"
-                  : "bg-red-500";
+                  ? "bg-yellow-400"
+                  : "bg-red-400";
             const stateBadge = getStateBadge(agent.state);
 
             return (
               <button
                 key={agent.id}
                 onClick={() => onSelectAgent(isSelected ? null : agent.id)}
-                className={`w-full p-2 rounded border text-left transition-all ${roleColor} ${
+                className={`w-full p-2 rounded-lg border text-left transition-all duration-200 ${roleColor} ${
                   isSelected
-                    ? "ring-2 ring-offset-2 ring-offset-gray-900 scale-105"
-                    : "hover:brightness-110"
+                    ? "ring-1 ring-offset-1 ring-offset-gray-950 ring-blue-500/50 border-opacity-80"
+                    : "hover:brightness-110 border-opacity-40"
                 }`}
               >
                 {/* Header row */}
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base">{getRoleIcon(agent.role)}</span>
-                    <span className="font-mono text-sm font-bold">
-                      ID {agent.id}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm">{getRoleIcon(agent.role)}</span>
+                    <span className="font-mono text-xs font-bold">
+                      #{agent.id}
                     </span>
                     <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${stateBadge.cls}`}
+                      className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${stateBadge.cls}`}
                     >
                       {stateBadge.label}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1">
                     {agent.carrying > 0 && (
-                      <span className="text-[10px] bg-purple-600/80 text-purple-100 px-1.5 py-0.5 rounded font-medium">
-                        📦 {agent.carrying}
+                      <span className="text-[9px] bg-purple-600/60 text-purple-200 px-1.5 py-0.5 rounded-full font-medium">
+                        📦{agent.carrying}
                       </span>
                     )}
                     <span
-                      className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                      className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono tabular-nums ${
                         isLowEnergy
-                          ? "bg-red-600 text-white"
-                          : "bg-gray-700 text-gray-300"
+                          ? "bg-red-500/30 text-red-300 border border-red-500/30"
+                          : "text-gray-400"
                       }`}
                     >
-                      ⚡ {energyPct}%
+                      {energyPct}%
                     </span>
                   </div>
                 </div>
 
                 {/* Mini energy bar */}
-                <div className="mt-1.5 h-1 rounded-full bg-gray-700 overflow-hidden">
+                <div className="mt-1.5 h-0.5 rounded-full bg-gray-700/60 overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all duration-500 ${energyBarColor}`}
                     style={{ width: `${energyPct}%` }}
@@ -207,22 +209,24 @@ export function AgentList({
 
                 {/* Expanded detail */}
                 {isSelected && (
-                  <div className="mt-2 pt-2 border-t border-current/20 text-xs space-y-1.5">
-                    <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                      <span className="text-gray-400">Position</span>
-                      <span className="font-mono text-right">
+                  <div className="mt-2 pt-2 border-t border-current/10 text-xs space-y-1.5">
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+                      <span className="text-gray-500 text-[10px]">
+                        Position
+                      </span>
+                      <span className="font-mono text-right text-[10px]">
                         ({agent.x}, {agent.y})
                       </span>
-                      <span className="text-gray-400">Energy</span>
-                      <span className="text-right">
-                        {Math.round(agent.energy)} / {agentMaxEnergy}
+                      <span className="text-gray-500 text-[10px]">Energy</span>
+                      <span className="text-right text-[10px]">
+                        {Math.round(agent.energy)}/{agentMaxEnergy}
                       </span>
-                      <span className="text-gray-400">Vision</span>
-                      <span className="text-right">
+                      <span className="text-gray-500 text-[10px]">Vision</span>
+                      <span className="text-right text-[10px]">
                         {agent.vision_radius} cells
                       </span>
-                      <span className="text-gray-400">Comm radius</span>
-                      <span className="text-right">
+                      <span className="text-gray-500 text-[10px]">Comm.</span>
+                      <span className="text-right text-[10px]">
                         {agent.communication_radius} cells
                       </span>
                     </div>
@@ -230,11 +234,11 @@ export function AgentList({
                     {/* Message log */}
                     {agent.recent_messages &&
                       agent.recent_messages.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-current/20">
-                          <div className="text-gray-300 mb-1.5 font-semibold text-[11px] uppercase tracking-wide">
-                            Message Log
+                        <div className="mt-2 pt-2 border-t border-current/10">
+                          <div className="text-gray-500 mb-1 font-semibold text-[9px] uppercase tracking-widest">
+                            Messages
                           </div>
-                          <div className="space-y-1 max-h-44 overflow-y-auto pr-0.5">
+                          <div className="space-y-0.5 max-h-40 overflow-y-auto pr-0.5">
                             {agent.recent_messages
                               .slice()
                               .reverse()
@@ -246,34 +250,31 @@ export function AgentList({
                                 return (
                                   <div
                                     key={idx}
-                                    className={`p-1.5 rounded text-[10px] border-l-2 ${style.bg} ${style.border}`}
+                                    className={`p-1.5 rounded-md text-[10px] border-l-2 ${style.bg} ${style.border}`}
                                   >
-                                    {/* Top line: icon + type badge + step + direction */}
                                     <div className="flex items-center gap-1 flex-wrap">
-                                      <span>{style.icon}</span>
+                                      <span className="text-[9px]">
+                                        {style.icon}
+                                      </span>
                                       <span
-                                        className={`px-1 py-0.5 rounded text-[9px] font-bold ${style.badge}`}
+                                        className={`px-1 py-0.5 rounded text-[8px] font-bold ${style.badge}`}
                                       >
                                         {msg.type.replace(/_/g, " ")}
                                       </span>
-                                      <span className="text-gray-500 ml-auto">
-                                        {msg.direction === "sent"
-                                          ? "↑ sent"
-                                          : "↓ recv"}{" "}
-                                        · step {msg.step}
+                                      <span className="text-gray-500 ml-auto text-[9px]">
+                                        {msg.direction === "sent" ? "↑" : "↓"} s
+                                        {msg.step}
                                       </span>
                                     </div>
-                                    {/* Details */}
                                     {msg.details && (
-                                      <div className="mt-0.5 text-gray-200 leading-tight">
+                                      <div className="mt-0.5 text-gray-300 leading-tight">
                                         {msg.details}
                                       </div>
                                     )}
-                                    {/* Targets */}
                                     {msg.targets.length > 0 && (
-                                      <div className="mt-0.5 text-gray-500">
-                                        {msg.direction === "sent" ? "→" : "←"}{" "}
-                                        Agent {msg.targets.join(", ")}
+                                      <div className="mt-0.5 text-gray-600 text-[9px]">
+                                        {msg.direction === "sent" ? "→" : "←"} #
+                                        {msg.targets.join(", #")}
                                       </div>
                                     )}
                                   </div>
@@ -293,31 +294,31 @@ export function AgentList({
   };
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 h-full overflow-y-auto">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold">Agents</h2>
+    <div className="p-3 h-full overflow-y-auto">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300">
+          Agents
+        </h2>
         {selectedAgentId !== null && (
           <button
             onClick={() => onSelectAgent(null)}
-            className="text-xs text-gray-400 hover:text-white transition"
+            className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
           >
-            Clear Selection
+            Clear
           </button>
         )}
       </div>
 
-      <div className="text-sm text-gray-400 mb-4">
-        Click an agent to view its communication and vision radii
-      </div>
+      <p className="text-[10px] text-gray-600 mb-3 leading-relaxed">
+        Click an agent to highlight radii on the map
+      </p>
 
-      {renderAgentGroup(scouts, `Scouts (${scouts.length})`)}
-      {renderAgentGroup(coordinators, `Coordinators (${coordinators.length})`)}
-      {renderAgentGroup(retrievers, `Retrievers (${retrievers.length})`)}
+      {renderAgentGroup(scouts, `Scouts · ${scouts.length}`)}
+      {renderAgentGroup(coordinators, `Coordinators · ${coordinators.length}`)}
+      {renderAgentGroup(retrievers, `Retrievers · ${retrievers.length}`)}
 
       {agents.length === 0 && (
-        <div className="text-center text-gray-500 py-8">
-          No agents in simulation
-        </div>
+        <div className="text-center text-gray-600 py-8 text-xs">No agents</div>
       )}
     </div>
   );

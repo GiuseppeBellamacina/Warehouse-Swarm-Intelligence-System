@@ -66,6 +66,7 @@ class ScoutAgent(BaseAgent):
         self._STALE_COVERAGE_PATROL: bool = _b.get("stale_coverage_patrol", True)
         self._ANTI_CLUSTERING: bool = _b.get("anti_clustering", True)
         self._SEEK_COORDINATOR: bool = _b.get("seek_coordinator", True)
+        self._SEEK_COORDINATOR_DELAY: int = _b.get("seek_coordinator_delay", 25)
         self._TARGET_LOCK_DURATION: int = _b.get("target_lock_duration", 12)
         self._MIN_FRONTIER_CLUSTER_SIZE: int = _b.get("min_frontier_cluster_size", 5)
 
@@ -89,6 +90,11 @@ class ScoutAgent(BaseAgent):
         # Last known coordinator position — used to seek the coordinator when
         # discoveries are pending but no coordinator is currently in comms range.
         self.last_seen_coordinator_pos: Optional[Tuple[int, int]] = None
+
+        # Step at which this scout last had ANY agent within communication range.
+        # Used to decide whether passive relay (MapDataMessage) is likely propagating
+        # discoveries, avoiding the need to actively seek a coordinator.
+        self._last_agent_contact_step: int = 0
 
         # Warehouse recharge sub-state machine (avoids getting stuck on entrance/exit)
         # Values: None | "approach" | "recharge" | "exit"
@@ -209,31 +215,37 @@ class ScoutAgent(BaseAgent):
             return
 
         # ---- Priority 2: Communicate discoveries to any nearby coordinator ----
+        #
+        # MapDataMessage (broadcast every step to all agents in comm range)
+        # already carries known_objects, so discoveries propagate passively
+        # through ANY agent chain: scout → retriever → coordinator.  The scout
+        # only needs to actively seek a coordinator when it has been truly
+        # isolated (no agent contact) for _SEEK_COORDINATOR_DELAY steps.
         if self.newly_discovered_objects:
-            # _discovery_age counts steps WITHOUT a known coordinator destination.
-            # While we are actively heading somewhere don't count — reset instead.
-            if self.last_seen_coordinator_pos:
-                self._discovery_age = 0  # we have a destination; no timeout
-            else:
-                self._discovery_age += 1
             nearby = self.get_nearby_agents(self.communication_radius)
+
+            # Track contact with ANY agent — passive relay is working if recent.
+            if nearby:
+                self._last_agent_contact_step = self.model.current_step
+
             coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
             if coordinators:
+                # Coordinator right here — hand-deliver via ObjectLocationMessage
                 self.should_communicate_this_step = True
                 return
-            # No coordinator in range — head toward the last known coordinator position
-            # so the scout can hand off its discoveries without just waiting idly.
-            if self._SEEK_COORDINATOR and self.last_seen_coordinator_pos:
+
+            # Passive relay likely active: met some agent recently → keep exploring.
+            steps_since_contact = self.model.current_step - self._last_agent_contact_step
+            if steps_since_contact < self._SEEK_COORDINATOR_DELAY:
+                pass  # fall through to exploration (Priority 3)
+            elif self._SEEK_COORDINATOR and self.last_seen_coordinator_pos:
+                # Truly isolated — actively seek coordinator
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
                 dist_to_saved = abs(self.last_seen_coordinator_pos[0] - my_pos[0]) + abs(
                     self.last_seen_coordinator_pos[1] - my_pos[1]
                 )
-                # Arrived at last known position but coordinator not here → it moved;
-                # do a wide scan first to find the coordinator's new position before
-                # giving up and falling through to exploration.
                 if dist_to_saved <= max(1, self.communication_radius):
                     self.last_seen_coordinator_pos = None
-                    # Wide scan: check all coordinators within 3× comm radius
                     new_coord_pos = self._wide_scan_for_coordinator()
                     if new_coord_pos:
                         self.last_seen_coordinator_pos = new_coord_pos
@@ -246,20 +258,20 @@ class ScoutAgent(BaseAgent):
                             f"{self.tag} SEEK-COORD: reached stale pos, "
                             f"coordinator not found nearby — resuming exploration"
                         )
-                    # Fall through (if new_coord_pos set, next step will use it)
                 else:
                     if self.target_position != self.last_seen_coordinator_pos:
                         self.target_position = self.last_seen_coordinator_pos
                         self.path = []
                     self.state = AgentState.MOVING_TO_TARGET
                     print(
-                        f"{self.tag} SEEK-COORD: heading to last known "
-                        f"coordinator pos {self.last_seen_coordinator_pos} "
+                        f"{self.tag} SEEK-COORD: isolated for {steps_since_contact} steps, "
+                        f"heading to coordinator "
                         f"({len(self.newly_discovered_objects)} discoveries pending)"
                     )
                     return
-            # No known coordinator position — keep discoveries, but discard after timeout
-            # of being truly unable to locate any coordinator.
+
+            # Discard discoveries after prolonged total isolation
+            self._discovery_age = self._discovery_age + 1 if not nearby else 0
             if self._discovery_age > self._DISCOVERY_TIMEOUT:
                 print(
                     f"{self.tag} TIMEOUT: discarding "

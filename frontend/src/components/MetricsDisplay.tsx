@@ -20,12 +20,12 @@ const StatCard: React.FC<StatCardProps> = ({
   sub,
   accent = "text-white",
 }) => (
-  <div className="bg-gray-700/60 border border-gray-600/40 rounded-lg p-3">
-    <div className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">
+  <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5">
+    <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest mb-0.5">
       {label}
     </div>
-    <div className={`text-2xl font-bold leading-none ${accent}`}>{value}</div>
-    {sub && <div className="mt-1.5">{sub}</div>}
+    <div className={`text-xl font-bold leading-none ${accent}`}>{value}</div>
+    {sub && <div className="mt-1">{sub}</div>}
   </div>
 );
 
@@ -37,9 +37,9 @@ interface ProgressBarProps {
 const ProgressBar: React.FC<ProgressBarProps> = ({ pct, colorClass }) => {
   const color =
     colorClass ??
-    (pct > 50 ? "bg-green-500" : pct > 25 ? "bg-yellow-500" : "bg-red-500");
+    (pct > 50 ? "bg-emerald-400" : pct > 25 ? "bg-yellow-400" : "bg-red-400");
   return (
-    <div className="mt-1.5 h-2 rounded-full bg-gray-600 overflow-hidden">
+    <div className="mt-1 h-1 rounded-full bg-gray-700/60 overflow-hidden">
       <div
         className={`h-full rounded-full transition-all duration-500 ${color}`}
         style={{ width: `${Math.min(pct, 100)}%` }}
@@ -51,9 +51,9 @@ const ProgressBar: React.FC<ProgressBarProps> = ({ pct, colorClass }) => {
 export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
   if (!state) {
     return (
-      <div className="bg-gray-800 rounded-lg p-6 flex flex-col items-center justify-center gap-3 text-center h-full">
-        <span className="text-4xl">📭</span>
-        <p className="text-gray-400 text-sm">No simulation loaded</p>
+      <div className="p-6 flex flex-col items-center justify-center gap-3 text-center h-full">
+        <span className="text-3xl opacity-30">📭</span>
+        <p className="text-gray-600 text-xs">No simulation loaded</p>
       </div>
     );
   }
@@ -76,20 +76,21 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
     step > 0 ? ((metrics.objects_retrieved / step) * 100).toFixed(2) : "—";
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 space-y-3 overflow-y-auto h-full">
-      <h2 className="text-lg font-bold tracking-wide text-white flex items-center gap-2">
-        📊 <span>Live Metrics</span>
+    <div className="p-3 space-y-2.5 overflow-y-auto h-full">
+      <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300 flex items-center gap-1.5">
+        <span className="text-gray-500">📊</span>
+        <span>Metrics</span>
       </h2>
 
       {/* Step + Efficiency row */}
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-1.5">
         <StatCard label="Step" value={step} accent="text-blue-400" />
         <StatCard
           label="Efficiency"
           value={
-            <span className="text-base">
+            <span className="text-sm">
               {efficiency}
-              <span className="text-sm font-normal text-gray-400">
+              <span className="text-[10px] font-normal text-gray-500">
                 {" "}
                 obj/100
               </span>
@@ -102,11 +103,11 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
       {/* Retrieval progress */}
       <StatCard
         label="Objects Retrieved"
-        accent="text-green-400"
+        accent="text-emerald-400"
         value={
           <span>
             {metrics.objects_retrieved}
-            <span className="text-gray-500 font-normal text-lg">
+            <span className="text-gray-600 font-normal text-base">
               {" "}
               / {metrics.total_objects}
             </span>
@@ -114,8 +115,8 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
         }
         sub={
           <>
-            <ProgressBar pct={progressPct} colorClass="bg-green-500" />
-            <div className="text-right text-xs text-gray-400 mt-0.5">
+            <ProgressBar pct={progressPct} colorClass="bg-emerald-400" />
+            <div className="text-right text-[9px] text-gray-500 mt-0.5">
               {progressPct.toFixed(1)}%
             </div>
           </>
@@ -127,7 +128,7 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
         label="Avg Agent Energy"
         accent={
           avgEnergyPct > 50
-            ? "text-green-400"
+            ? "text-emerald-400"
             : avgEnergyPct > 25
               ? "text-yellow-400"
               : "text-red-400"
@@ -135,7 +136,7 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
         value={
           <span>
             {Math.round(metrics.average_energy)}
-            <span className="text-gray-500 font-normal text-lg">
+            <span className="text-gray-600 font-normal text-base">
               {" "}
               / {maxEnergy}
             </span>
@@ -144,7 +145,7 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
         sub={
           <>
             <ProgressBar pct={avgEnergyPct} />
-            <div className="text-right text-xs text-gray-400 mt-0.5">
+            <div className="text-right text-[9px] text-gray-500 mt-0.5">
               {avgEnergyPct.toFixed(1)}%
             </div>
           </>
@@ -153,11 +154,11 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
 
       {/* Per-agent energy mini bars */}
       {agents.length > 0 && (
-        <div className="bg-gray-700/60 border border-gray-600/40 rounded-lg p-3">
-          <div className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5">
+          <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest mb-1.5">
             Agent Energy
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             {agents.map((a) => {
               const pct = Math.min(
                 Math.round((a.energy / (a.max_energy || 500)) * 100),
@@ -165,10 +166,10 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
               );
               const color =
                 pct > 50
-                  ? "bg-green-500"
+                  ? "bg-emerald-400"
                   : pct > 25
-                    ? "bg-yellow-500"
-                    : "bg-red-500";
+                    ? "bg-yellow-400"
+                    : "bg-red-400";
               const roleIcon =
                 a.role === "scout"
                   ? "🔍"
@@ -176,18 +177,20 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
                     ? "📋"
                     : "📦";
               return (
-                <div key={a.id} className="flex items-center gap-2">
-                  <span className="text-xs w-4 text-center">{roleIcon}</span>
-                  <span className="text-[10px] font-mono text-gray-400 w-5">
+                <div key={a.id} className="flex items-center gap-1.5">
+                  <span className="text-[9px] w-3.5 text-center">
+                    {roleIcon}
+                  </span>
+                  <span className="text-[9px] font-mono text-gray-500 w-4">
                     {a.id}
                   </span>
-                  <div className="flex-1 h-2 bg-gray-600 rounded-full overflow-hidden">
+                  <div className="flex-1 h-1 bg-gray-700/60 rounded-full overflow-hidden">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${color}`}
                       style={{ width: `${pct}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-gray-400 w-8 text-right">
+                  <span className="text-[9px] text-gray-500 font-mono tabular-nums w-7 text-right">
                     {pct}%
                   </span>
                 </div>
@@ -198,34 +201,34 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
       )}
 
       {/* Active agents */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="bg-green-900/30 border border-green-700/40 rounded-lg p-2 text-center">
-          <div className="text-lg">🔍</div>
-          <div className="text-xl font-bold text-green-400">{scoutCount}</div>
-          <div className="text-[10px] text-gray-400">Scout</div>
+      <div className="grid grid-cols-3 gap-1.5">
+        <div className="bg-green-950/40 border border-green-800/30 rounded-lg p-2 text-center">
+          <div className="text-sm">🔍</div>
+          <div className="text-lg font-bold text-green-400">{scoutCount}</div>
+          <div className="text-[9px] text-gray-500">Scout</div>
         </div>
-        <div className="bg-blue-900/30 border border-blue-700/40 rounded-lg p-2 text-center">
-          <div className="text-lg">📋</div>
-          <div className="text-xl font-bold text-blue-400">
+        <div className="bg-blue-950/40 border border-blue-800/30 rounded-lg p-2 text-center">
+          <div className="text-sm">📋</div>
+          <div className="text-lg font-bold text-blue-400">
             {coordinatorCount}
           </div>
-          <div className="text-[10px] text-gray-400">Coord</div>
+          <div className="text-[9px] text-gray-500">Coord</div>
         </div>
-        <div className="bg-orange-900/30 border border-orange-700/40 rounded-lg p-2 text-center">
-          <div className="text-lg">📦</div>
-          <div className="text-xl font-bold text-orange-400">
+        <div className="bg-orange-950/40 border border-orange-800/30 rounded-lg p-2 text-center">
+          <div className="text-sm">📦</div>
+          <div className="text-lg font-bold text-orange-400">
             {retrieverCount}
           </div>
-          <div className="text-[10px] text-gray-400">Retriever</div>
+          <div className="text-[9px] text-gray-500">Retriever</div>
         </div>
       </div>
 
       {/* Legend */}
-      <div className="border-t border-gray-700/60 pt-3">
-        <div className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">
+      <div className="border-t border-gray-800/60 pt-2.5">
+        <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest mb-1.5">
           Legend
         </div>
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+        <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px]">
           {[
             { shape: "circle", color: "bg-green-500", label: "Scout" },
             {
@@ -246,7 +249,7 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
           ].map(({ shape, color, label }) => (
             <div key={label} className="flex items-center gap-1.5">
               <div
-                className={`w-3 h-3 flex-shrink-0 ${color} ${
+                className={`w-2.5 h-2.5 flex-shrink-0 ${color} ${
                   shape === "circle"
                     ? "rounded-full"
                     : shape === "hex"
@@ -262,7 +265,7 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
                     : {}
                 }
               />
-              <span className="text-gray-300">{label}</span>
+              <span className="text-gray-400">{label}</span>
             </div>
           ))}
         </div>
