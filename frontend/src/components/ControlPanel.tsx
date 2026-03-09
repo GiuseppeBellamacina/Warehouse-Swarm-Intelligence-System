@@ -8,10 +8,7 @@ import {
   ScoutBehaviorParams,
   CoordinatorBehaviorParams,
   RetrieverBehaviorParams,
-  DEFAULT_AGENTS_CONFIG,
-  DEFAULT_SCOUT_BEHAVIOR,
-  DEFAULT_COORDINATOR_BEHAVIOR,
-  DEFAULT_RETRIEVER_BEHAVIOR,
+  fetchAgentDefaults,
 } from "../types/simulation";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
@@ -53,8 +50,10 @@ interface Overrides {
   retrieverBehavior: RetrieverBehaviorParams;
 }
 
-function extractOverrides(config: GridScenarioConfig): Overrides {
-  const def = DEFAULT_AGENTS_CONFIG;
+function extractOverrides(
+  config: GridScenarioConfig,
+  def: SimulationAgentsConfig,
+): Overrides {
   return {
     simulationSeed: config.metadata?.seed ?? 42,
     simulationMaxSteps: config.metadata?.max_steps ?? 500,
@@ -82,9 +81,9 @@ function extractOverrides(config: GridScenarioConfig): Overrides {
       speed: def.retrievers.speed,
       carrying_capacity: def.retrievers.carrying_capacity,
     },
-    scoutBehavior: { ...DEFAULT_SCOUT_BEHAVIOR },
-    coordinatorBehavior: { ...DEFAULT_COORDINATOR_BEHAVIOR },
-    retrieverBehavior: { ...DEFAULT_RETRIEVER_BEHAVIOR },
+    scoutBehavior: { ...def.scout_behavior },
+    coordinatorBehavior: { ...def.coordinator_behavior },
+    retrieverBehavior: { ...def.retriever_behavior },
   };
 }
 
@@ -292,6 +291,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 }) => {
   const [configName, setConfigName] = useState<string>("");
   const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
+  const [defaults, setDefaults] = useState<SimulationAgentsConfig | null>(null);
+  const defaultsRef = useRef<SimulationAgentsConfig | null>(null);
   const [rawConfig, setRawConfig] = useState<GridScenarioConfig | null>(null);
   const [overrides, setOverrides] = useState<Overrides | null>(null);
   const [overridesOpen, setOverridesOpen] = useState(false);
@@ -309,26 +310,31 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [coordOvOpen, setCoordOvOpen] = useState(false);
   const [retrOvOpen, setRetrOvOpen] = useState(false);
 
-  // Load list of available configs on mount
+  // Load defaults and available configs from backend on mount
   useEffect(() => {
-    const fetchList = async () => {
+    const init = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/api/configs`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const cfgs: string[] = data.configs ?? [];
+        const [defRes, cfgRes] = await Promise.all([
+          fetchAgentDefaults(BACKEND_URL),
+          fetch(`${BACKEND_URL}/api/configs`)
+            .then((r) => (r.ok ? r.json() : { configs: [] }))
+            .catch(() => ({ configs: [] })),
+        ]);
+        setDefaults(defRes);
+        defaultsRef.current = defRes;
+        const cfgs: string[] = cfgRes.configs ?? [];
         setAvailableConfigs(cfgs);
         if (cfgs.length > 0) setConfigName(cfgs[0]);
       } catch {
-        /* ignore network errors */
+        /* backend not ready yet — retry handled by config fetch below */
       }
     };
-    fetchList();
+    init();
   }, []);
 
   // Auto-fetch config JSON whenever the dropdown selection changes
   useEffect(() => {
-    if (!configName) return;
+    if (!configName || !defaultsRef.current) return;
     const load = async () => {
       setIsFetching(true);
       try {
@@ -336,7 +342,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         if (!res.ok) return;
         const cfg: GridScenarioConfig = await res.json();
         setRawConfig(cfg);
-        setOverrides(extractOverrides(cfg));
+        setOverrides(extractOverrides(cfg, defaultsRef.current!));
       } catch {
         /* ignore */
       } finally {
@@ -344,17 +350,17 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       }
     };
     load();
-  }, [configName]);
+  }, [configName, defaults]);
 
   // Read an uploaded JSON file locally (no server round-trip)
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !defaultsRef.current) return;
     try {
       const text = await file.text();
       const cfg: GridScenarioConfig = JSON.parse(text);
       setRawConfig(cfg);
-      setOverrides(extractOverrides(cfg));
+      setOverrides(extractOverrides(cfg, defaultsRef.current));
       setConfigName(""); // deselect dropdown
     } catch {
       alert("Invalid JSON file");
@@ -427,7 +433,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
     onSpeedChange(v);
   };
 
-  const canLoad = !!rawConfig && !isRunning && connected && !isFetching;
+  const canLoad =
+    !!rawConfig && !!defaults && !isRunning && connected && !isFetching;
   const canStart = isLoaded && !isRunning && connected;
 
   return (
@@ -1100,6 +1107,38 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       tip="Use frontier-based exploration when idle instead of random walk"
                       value={overrides.retrieverBehavior.smart_explore}
                       onChange={(v) => setRetrBeh({ smart_explore: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="WH congestion reroute"
+                      tip="Reroute to a less crowded warehouse when the target entrance is congested"
+                      value={
+                        overrides.retrieverBehavior.warehouse_congestion_reroute
+                      }
+                      onChange={(v) =>
+                        setRetrBeh({ warehouse_congestion_reroute: v })
+                      }
+                      disabled={isRunning}
+                    />
+                    <Slider
+                      label="WH congestion threshold"
+                      tip="How many agents heading to a warehouse before it is considered congested"
+                      value={
+                        overrides.retrieverBehavior
+                          .warehouse_congestion_threshold
+                      }
+                      onChange={(v) =>
+                        setRetrBeh({ warehouse_congestion_threshold: v })
+                      }
+                      min={1}
+                      max={10}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Jam priority"
+                      tip="In traffic jams, retrievers carrying more objects get movement priority"
+                      value={overrides.retrieverBehavior.jam_priority}
+                      onChange={(v) => setRetrBeh({ jam_priority: v })}
                       disabled={isRunning}
                     />
                   </div>
