@@ -511,9 +511,9 @@ class BaseAgent(Agent):
         recipient_id: int,
         chain_depth: int = 0,
     ) -> None:
-        """Send a ClearWayMessage to a specific agent, throttled to once per 5 steps."""
+        """Send a ClearWayMessage to a specific agent, throttled to once per 3 steps."""
         current_step = self.model.current_step
-        if current_step - self._last_clearway_sent < 5:
+        if current_step - self._last_clearway_sent < 3:
             return
         self._last_clearway_sent = current_step
         msg = ClearWayMessage(
@@ -541,7 +541,7 @@ class BaseAgent(Agent):
             return False
         my_pos = pos_to_tuple(self.pos)
         _wh = (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
             np_ = (my_pos[0] + dx, my_pos[1] + dy)
             if not (0 <= np_[0] < self.model.grid.width and 0 <= np_[1] < self.model.grid.height):
                 continue
@@ -731,16 +731,18 @@ class BaseAgent(Agent):
                                 blocking_agent = agent
                                 break
 
-                        self.stuck_counter += 1
+                        # NOTE: stuck_counter is incremented at the bottom of
+                        # move_towards() when moved==False, so we must NOT
+                        # increment it here again (that would double-count).
 
                         # Ask the blocker to step aside early
-                        if blocking_agent is not None and self.stuck_counter >= 2:
+                        if blocking_agent is not None and self.stuck_counter >= 1:
                             self._send_clear_way_request(next_pos, blocking_agent.unique_id)
 
                         # After the first collision, try stepping to an adjacent
                         # free cell to route around the blocker instead of
                         # waiting passively.
-                        if self.stuck_counter >= 2:
+                        if self.stuck_counter >= 1:
                             side = self._try_sidestep(
                                 pos_tuple, next_pos, target, other_agent_positions
                             )
@@ -770,7 +772,7 @@ class BaseAgent(Agent):
                 else:
                     # Path is permanently blocked (obstacle), replan
                     self.path = []
-                    self.stuck_counter += 1
+                    # stuck_counter incremented at the bottom when moved==False
         else:
             # Fallback: Simple greedy movement if no pathfinder
             current_x, current_y = pos_tuple
@@ -871,7 +873,7 @@ class BaseAgent(Agent):
         avoid_doors = my_type not in _WH_TYPES and target_type not in _WH_TYPES
 
         candidates: List[Tuple[Tuple[int, int], int]] = []
-        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
             np_ = (current[0] + dx, current[1] + dy)
             if np_ == blocked:
                 continue
