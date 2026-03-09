@@ -721,8 +721,21 @@ class WarehouseModel(Model):
         # Advance round counter — one step = all agents act once
         self.current_step += 1
 
+        # Build stepping order.  When jam_priority is enabled, retrievers
+        # carrying more objects step first so they get cell-claiming
+        # priority in congested areas.  Ties broken by lower unique_id.
+        agents_to_step = list(self.agents)
+        if any(getattr(a, "_JAM_PRIORITY", False) for a in agents_to_step):
+
+            def _sort_key(a):  # type: ignore[override]
+                if getattr(a, "role", None) == "retriever":
+                    return (0, -getattr(a, "carrying_objects", 0), a.unique_id)
+                return (1, 0, a.unique_id)
+
+            agents_to_step.sort(key=_sort_key)
+
         # Step all agents
-        for agent in list(self.agents):
+        for agent in agents_to_step:
             agent.step()
 
         # Collect data
