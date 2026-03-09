@@ -617,18 +617,24 @@ class CoordinatorAgent(BaseAgent):
             # Stale fallback so the coordinator drifts toward the last-known area
             agent_positions = [tuple(p) for p in self.retriever_positions.values() if p]
 
+        # ── Decide whether to orbit the centroid or explore freely ──
+        # The coordinator should stay near retrievers ONLY when it has pending
+        # tasks to assign.  Otherwise it explores the map like a scout would,
+        # discovering objects and expanding coverage.
+        pending = [
+            pos
+            for pos in self.known_objects
+            if pos not in self.objects_being_collected
+            and pos not in self.assigned_tasks.values()
+        ]
+        has_work = bool(pending)
+
         centroid: Optional[Tuple[int, int]] = None
         if agent_positions:
             cx = sum(p[0] for p in agent_positions) / len(agent_positions)
             cy = sum(p[1] for p in agent_positions) / len(agent_positions)
 
             # Bias toward pending objects
-            pending = [
-                pos
-                for pos in self.known_objects
-                if pos not in self.objects_being_collected
-                and pos not in self.assigned_tasks.values()
-            ]
             if self._OBJECT_BIASED_CENTROID and pending:
                 obj_cx = sum(p[0] for p in pending) / len(pending)
                 obj_cy = sum(p[1] for p in pending) / len(pending)
@@ -637,11 +643,11 @@ class CoordinatorAgent(BaseAgent):
 
             centroid = (int(cx), int(cy))
 
-        # ── Strategy 1: head toward centroid (if we know retriever positions) ──
-        if centroid is not None:
+        # ── Strategy 1: head toward centroid — ONLY when tasks pending ──
+        if has_work and centroid is not None:
             dist_to_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
             if dist_to_centroid > self.communication_radius:
-                # Far from centroid → head toward it (snap to nearest walkable)
+                # Far from centroid and have work → head toward retrievers
                 target = self._snap_to_walkable(centroid, _WH_TYPES)
                 if target:
                     self._explore_target = target
@@ -650,10 +656,10 @@ class CoordinatorAgent(BaseAgent):
                     self.state = AgentState.EXPLORING
                     self._idle_steps = 0
                     return
-            # Near centroid — fall through to smart explore / random walk
-            # but bias targets to stay within comm range.
 
         # ── Strategy 2: smart frontier exploration (UNKNOWN boundary) ──
+        # When no work pending → genuine exploration, NO centroid bias.
+        # When work pending but near centroid → biased toward centroid.
         if self._SMART_EXPLORE:
             unknown_mask = self.local_map == 0
             if _np.any(unknown_mask):
@@ -671,15 +677,15 @@ class CoordinatorAgent(BaseAgent):
                 b_ys, b_xs = _np.where(boundary)
                 if len(b_ys) > 0:
                     dists = _np.abs(b_xs - my_pos[0]) + _np.abs(b_ys - my_pos[1])  # type: ignore[operator]
-                    if centroid is not None:
-                        # Prefer frontier cells near the centroid so the coordinator
-                        # explores new territory while staying close to the swarm.
+                    if has_work and centroid is not None:
+                        # Has work: bias toward centroid so coordinator stays reachable
                         centroid_dists = _np.abs(b_xs - centroid[0]) + _np.abs(b_ys - centroid[1])  # type: ignore[operator]
                         scores = dists.astype(_np.float64) + 0.5 * centroid_dists.astype(
                             _np.float64
                         )
                         best_idx = int(_np.argmin(scores))
                     else:
+                        # No work: pure exploration — pick nearest frontier
                         best_idx = int(_np.argmin(dists))
                     target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
                     if self.model.grid.is_walkable(*target):
@@ -702,16 +708,7 @@ class CoordinatorAgent(BaseAgent):
                     ):
                         candidates.append((nx, ny))
         if candidates:
-            if centroid is not None:
-                # Prefer cells near the centroid
-                candidates.sort(
-                    key=lambda c: abs(c[0] - centroid[0]) + abs(c[1] - centroid[1])
-                )
-                # Pick from the closest quarter
-                pool = candidates[: max(1, len(candidates) // 4)]
-                self._explore_target = _rng.choice(pool)
-            else:
-                self._explore_target = _rng.choice(candidates)
+            self._explore_target = _rng.choice(candidates)
             self.target_position = self._explore_target
             self.path = []
             self.state = AgentState.EXPLORING
