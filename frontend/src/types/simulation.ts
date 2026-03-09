@@ -217,7 +217,7 @@ export const DEFAULT_SCOUT_BEHAVIOR: ScoutBehaviorParams = {
   recharge_threshold: 0.25,
   target_lock_duration: 12,
   min_frontier_cluster_size: 5,
-  seek_coordinator_delay: 60,
+  seek_coordinator_delay: 25,
   far_frontier_enabled: true,
   stale_coverage_patrol: true,
   anti_clustering: true,

@@ -236,6 +236,15 @@ class ScoutBehaviorParams(BaseModel):
     seek_coordinator: bool = Field(
         default=True, description="Move toward last-known coordinator to deliver discoveries"
     )
+    seek_coordinator_delay: int = Field(
+        default=25, ge=1, description="Steps of isolation before scout heads toward coordinator"
+    )
+    target_lock_duration: int = Field(
+        default=12, ge=1, description="Min steps to commit to a frontier target before switching"
+    )
+    min_frontier_cluster_size: int = Field(
+        default=5, ge=1, description="Min contiguous unknown cells to qualify as a frontier cluster"
+    )
 
 
 class CoordinatorBehaviorParams(BaseModel):
@@ -315,7 +324,7 @@ class SimulationAgentsConfig(BaseModel):
 
     scouts: AgentRoleParams = Field(
         default_factory=lambda: AgentRoleParams(
-            count=1, vision_radius=3, communication_radius=2, speed=1.5, carrying_capacity=0
+            count=1, vision_radius=3, communication_radius=2, speed=2, carrying_capacity=0
         )
     )
     coordinators: AgentRoleParams = Field(

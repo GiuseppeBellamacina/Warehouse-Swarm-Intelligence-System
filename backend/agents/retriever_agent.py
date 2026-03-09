@@ -628,7 +628,7 @@ class RetrieverAgent(BaseAgent):
                             best_idx = int(_np.argmin(scores))
                         else:
                             best_idx = int(_np.argmin(dists))
-                        target = (int(b_xs[best_idx]), int(b_ys[best_idx]))
+                        target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
                         if self.model.grid.is_walkable(*target):
                             self._explore_target = target
                             self.target_position = target
