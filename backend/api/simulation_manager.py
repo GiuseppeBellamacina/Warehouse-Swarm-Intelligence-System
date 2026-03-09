@@ -263,6 +263,10 @@ class SimulationManager:
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve")
 
+        # Snapshot RNG state so that step() can isolate itself from external
+        # async consumers (WebSocket, Telegram notifier, etc.)
+        self.model.snapshot_rng()
+
     async def load_simulation(
         self, config: ScenarioConfig, ws_manager, session_id: str = "default"
     ) -> None:
@@ -386,6 +390,10 @@ class SimulationManager:
         print(f"  - {len(self.model.coordinators)} coordinators")
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve (max_steps={meta.max_steps})")
+
+        # Snapshot RNG state so that step() can isolate itself from external
+        # async consumers (WebSocket, Telegram notifier, etc.)
+        self.model.snapshot_rng()
 
     async def load_from_grid(
         self,

@@ -490,6 +490,10 @@ class CoordinatorAgent(BaseAgent):
         range, move toward the nearest last-known retriever position so that task
         assignments can be delivered as soon as comm range is re-established.
 
+        Only considers FRESH retriever positions (within ``_POS_MAX_AGE`` steps).
+        Stale positions (beyond the age threshold) are ignored entirely because
+        the retriever has likely moved far from there.
+
         Skips positions already in unreachable_targets (blacklisted by pathfinder)
         and falls back to normal exploration when all known positions are stale.
 
@@ -510,8 +514,8 @@ class CoordinatorAgent(BaseAgent):
         if not pending:
             return False
 
-        # Find nearest last-known retriever from declared positions,
-        # skipping any that are already blacklisted as unreachable.
+        # Find nearest FRESH last-known retriever position,
+        # skipping any that are stale or already blacklisted as unreachable.
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
         current_step = self.model.current_step
         best_pos: Optional[Tuple[int, int]] = None
@@ -519,11 +523,15 @@ class CoordinatorAgent(BaseAgent):
         for rid, r_pos in self.retriever_positions.items():
             if not r_pos:
                 continue
+            # Skip stale positions — same threshold as _decide_exploration
+            pos_age = current_step - self.retriever_positions_step.get(rid, -9999)
+            if pos_age > self._POS_MAX_AGE:
+                continue
             r_pos_t: Tuple[int, int] = (int(r_pos[0]), int(r_pos[1]))
             # Skip position if pathfinder recently marked it unreachable
             if r_pos_t in self.unreachable_targets:
                 failed_step = self.unreachable_targets[r_pos_t]
-                if current_step - failed_step < 30:
+                if current_step - failed_step < 100:
                     continue  # still blacklisted
                 del self.unreachable_targets[r_pos_t]  # blacklist expired
             dist = abs(r_pos[0] - my_pos[0]) + abs(r_pos[1] - my_pos[1])
@@ -532,7 +540,7 @@ class CoordinatorAgent(BaseAgent):
                 best_pos = r_pos_t  # type: ignore[assignment]
 
         if best_pos is None:
-            # All known retriever positions are blacklisted — fall through to exploration
+            # All known retriever positions are stale or blacklisted — fall through
             return False
         if best_dist <= self.communication_radius:
             # Already close enough; retriever must have moved — stale position
@@ -645,12 +653,12 @@ class CoordinatorAgent(BaseAgent):
                     self._search_waypoint_idx += 1
                     continue
                 failed_step = self.unreachable_targets.get(wp, -1)
-                still_blacklisted = failed_step != -1 and cs - failed_step < 30
-                # Cap the "already_reached" threshold at 8 cells regardless of
-                # communication_radius: large radii would mark every waypoint as
-                # already-reached and collapse the patrol entirely.
-                already_reached = abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= min(
-                    8, max_distance_from_agents
+                still_blacklisted = failed_step != -1 and cs - failed_step < 200
+                # Consider the waypoint reached when within a few cells.
+                # Use at least 4 so the coordinator doesn't stall trying to
+                # reach the exact cell in a congested area.
+                already_reached = abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= max(
+                    4, max_distance_from_agents
                 )
                 if still_blacklisted or already_reached:
                     self._search_waypoint_idx += 1

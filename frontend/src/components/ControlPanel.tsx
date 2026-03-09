@@ -43,6 +43,7 @@ interface AgentOverrideFields {
 }
 
 interface Overrides {
+  simulationSeed: number | null;
   simulationMaxSteps: number;
   scouts: AgentOverrideFields;
   coordinators: AgentOverrideFields;
@@ -55,6 +56,7 @@ interface Overrides {
 function extractOverrides(config: GridScenarioConfig): Overrides {
   const def = DEFAULT_AGENTS_CONFIG;
   return {
+    simulationSeed: config.metadata?.seed ?? 42,
     simulationMaxSteps: config.metadata?.max_steps ?? 500,
     scouts: {
       count: def.scouts.count,
@@ -394,6 +396,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       metadata: {
         ...rawConfig.metadata,
         max_steps: overrides.simulationMaxSteps,
+        seed: overrides.simulationSeed ?? undefined,
       },
     };
     const agents: SimulationAgentsConfig = {
@@ -527,8 +530,17 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
           {overridesOpen && (
             <div className="px-3 pb-3 space-y-1 border-t border-gray-700/40">
-              {/* Max steps */}
-              <div className="pt-2">
+              {/* Seed & Max steps */}
+              <div className="pt-2 space-y-0.5">
+                <Field
+                  label="Seed"
+                  tip="Random seed for reproducibility — same seed = identical simulation"
+                  value={overrides.simulationSeed ?? 0}
+                  onChange={(v) => setOvr({ simulationSeed: v })}
+                  min={0}
+                  max={999999999}
+                  disabled={isRunning}
+                />
                 <Field
                   label="Max steps"
                   tip="Maximum number of simulation steps before auto-stop"
@@ -587,12 +599,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     />
                     <Slider
                       label="Speed"
-                      tip="Movement multiplier: >1 means multiple cells per step (e.g. 1.5 → 2 moves/step)"
+                      tip="Movement multiplier: >1 means multiple cells per step"
                       value={overrides.scouts.speed}
                       onChange={(v) => setScouts({ speed: v })}
                       min={1}
                       max={3}
-                      step={0.5}
                       disabled={isRunning}
                     />
                   </div>
@@ -648,7 +659,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       onChange={(v) => setCoords({ speed: v })}
                       min={1}
                       max={3}
-                      step={0.5}
                       disabled={isRunning}
                     />
                   </div>
@@ -704,7 +714,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       onChange={(v) => setRetrs({ speed: v })}
                       min={1}
                       max={3}
-                      step={0.5}
                       disabled={isRunning}
                     />
                     <Slider
