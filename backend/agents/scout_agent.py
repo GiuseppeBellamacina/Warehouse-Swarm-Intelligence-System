@@ -67,6 +67,7 @@ class ScoutAgent(BaseAgent):
         self._ANTI_CLUSTERING: bool = _b.get("anti_clustering", True)
         self._SEEK_COORDINATOR: bool = _b.get("seek_coordinator", True)
         self._TARGET_LOCK_DURATION: int = _b.get("target_lock_duration", 12)
+        self._MIN_FRONTIER_CLUSTER_SIZE: int = _b.get("min_frontier_cluster_size", 5)
 
         self.state = AgentState.EXPLORING
         self.pathfinder = AStarPathfinder(model.grid)
@@ -301,7 +302,13 @@ class ScoutAgent(BaseAgent):
         for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 30]:
             del self.unreachable_targets[pos]
 
-        frontiers = FrontierExplorer.find_frontiers(self.local_map)
+        frontiers = FrontierExplorer.find_frontiers(
+            self.local_map, min_cluster_size=self._MIN_FRONTIER_CLUSTER_SIZE
+        )
+        # If the high threshold filtered everything out, retry with minimum=1
+        # so the scout still has *something* to explore.
+        if not frontiers:
+            frontiers = FrontierExplorer.find_frontiers(self.local_map, min_cluster_size=1)
 
         # Filter blacklisted / stale frontiers and recently-reached targets.
         # Skipping recently-reached targets prevents immediate oscillation back
