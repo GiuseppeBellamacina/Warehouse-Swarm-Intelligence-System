@@ -73,6 +73,8 @@ class CoordinatorAgent(BaseAgent):
         self._SEEK_RETRIEVERS: bool = _b["seek_retrievers"]
         self._BOREDOM_PATROL: bool = _b["boredom_patrol"]
         self._OBJECT_BIASED_CENTROID: bool = _b["object_biased_centroid"]
+        self._SMART_EXPLORE: bool = _b["smart_explore"]
+        self._EXPLORE_RETARGET: int = _b["explore_retarget_interval"]
 
         self.state = AgentState.IDLE
         self.pathfinder = AStarPathfinder(model.grid)
@@ -104,9 +106,6 @@ class CoordinatorAgent(BaseAgent):
         # Coordinator sync: track last step we synced with each other coordinator
         self.last_sync_step: Dict[int, int] = {}
 
-        # Search mode: cycle through waypoints when no agent positions are known
-        self._search_waypoint_idx: int = 0
-
         # Track recharge attempts to avoid getting stuck
         self.recharge_attempt_start: Optional[int] = None
 
@@ -114,6 +113,10 @@ class CoordinatorAgent(BaseAgent):
         # When this exceeds _BOREDOM_THRESHOLD the coordinator forces a waypoint
         # patrol pass rather than continuing to sit near the agent centroid.
         self._idle_steps: int = 0
+
+        # Exploration state (retriever-style continuous movement)
+        self._explore_target: Optional[Tuple[int, int]] = None
+        self._explore_steps: int = 0
 
         # Warehouse recharge sub-state machine (analogous to retriever _wh_step)
         self._coord_wh_step: Optional[str] = None  # None | "approach" | "recharge" | "exit"
@@ -564,17 +567,24 @@ class CoordinatorAgent(BaseAgent):
 
     def _decide_exploration(self) -> None:
         """
-        Position the coordinator near the centroid of its managed agents.
-        The coordinator never does frontier exploration — that is the scout's job.
-        When already close enough to the centroid, simply hold position (IDLE).
-        When too far, move toward the nearest walkable cell around the centroid.
-        """
-        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        Retriever-style continuous exploration biased toward the retriever
+        centroid.  The coordinator always has a movement target — it never
+        stands still.
 
-        # Comfortable range: full communication radius.  The coordinator considers
-        # itself close enough to the swarm centroid as long as it is within its
-        # communication radius — meaning it can still directly talk to agents there.
-        max_distance_from_agents = self.communication_radius
+        Target priority:
+          1. If known retriever positions exist → compute centroid (optionally
+             biased toward pending objects) and head to a walkable cell near it.
+          2. UNKNOWN boundary in local_map (smart explore) — expands map coverage.
+          3. Random walkable cell (fallback).
+
+        A new target is picked every ``_EXPLORE_RETARGET`` steps or whenever the
+        previous target is reached / invalidated.
+        """
+        import random as _rng
+
+        import numpy as _np
+
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
         _WH_TYPES = (
             CellType.WAREHOUSE,
@@ -583,10 +593,20 @@ class CoordinatorAgent(BaseAgent):
             CellType.OBSTACLE,
         )
 
-        # Build centroid from communicated positions only.
-        # Prefer recent positions, but fall back to last-known (stale) ones
-        # so the coordinator heads toward the last place retrievers were seen
-        # instead of aimlessly patrolling waypoints.
+        # Check if we've reached the current explore target
+        if self._explore_target and my_pos == self._explore_target:
+            self._explore_target = None
+
+        # Pick a new target every N steps or when we don't have one
+        self._explore_steps += 1
+        if self._explore_target is not None and self._explore_steps <= self._EXPLORE_RETARGET:
+            # Keep current target
+            self.state = AgentState.EXPLORING
+            return
+
+        self._explore_steps = 0
+
+        # ── Compute centroid from known retriever positions ──────────
         cs_now = self.model.current_step
         agent_positions = [
             tuple(p)
@@ -594,198 +614,139 @@ class CoordinatorAgent(BaseAgent):
             if p and cs_now - self.retriever_positions_step.get(rid, -9999) <= self._POS_MAX_AGE
         ]
         if not agent_positions:
-            # All positions are stale — use them anyway so the coordinator
-            # heads toward the last-known area rather than random waypoints.
+            # Stale fallback so the coordinator drifts toward the last-known area
             agent_positions = [tuple(p) for p in self.retriever_positions.values() if p]
 
-        # Boredom check: if the coordinator has been IDLE for too long AND there
-        # is nothing useful to do nearby (no known unassigned objects), force a
-        # waypoint patrol so it circulates and discovers new areas.
-        # IMPORTANT: skip the patrol when known_objects exist — the coordinator
-        # must stay near retrievers to deliver those assignments, not wander off.
-        no_work_pending = not any(
-            pos not in self.objects_being_collected for pos in self.known_objects
-        )
-        if self._BOREDOM_PATROL and self._idle_steps >= self._BOREDOM_THRESHOLD and no_work_pending:
-            self._idle_steps = 0
-            if not agent_positions:
-                agent_positions = []  # genuinely no data — waypoint branch
+        centroid: Optional[Tuple[int, int]] = None
+        if agent_positions:
+            cx = sum(p[0] for p in agent_positions) / len(agent_positions)
+            cy = sum(p[1] for p in agent_positions) / len(agent_positions)
 
-        if not agent_positions:
-            # No communicated positions yet — enter search mode: cycle through
-            # strategic waypoints until we come within comm range of any agent.
-            W, H = self.model.grid.width, self.model.grid.height
-            raw_waypoints = [
-                (W // 2, H // 2),
-                (W // 4, H // 4),
-                (3 * W // 4, H // 4),
-                (3 * W // 4, 3 * H // 4),
-                (W // 4, 3 * H // 4),
+            # Bias toward pending objects
+            pending = [
+                pos
+                for pos in self.known_objects
+                if pos not in self.objects_being_collected
+                and pos not in self.assigned_tasks.values()
             ]
-            # Snap each ideal waypoint to the nearest walkable floor cell so we
-            # never try to path-find to an obstacle or warehouse interior.
-            search_waypoints = []
-            for raw in raw_waypoints:
-                if (
-                    self.model.grid.is_walkable(*raw)
-                    and self.model.grid.get_cell_type(*raw) not in _WH_TYPES
-                ):
-                    search_waypoints.append(raw)
-                    continue
-                found = None
-                for r in range(1, max(W, H)):
-                    for dx in range(-r, r + 1):
-                        for dy in range(-r, r + 1):
-                            if abs(dx) != r and abs(dy) != r:
-                                continue  # inner cells already checked at smaller r
-                            cx, cy = raw[0] + dx, raw[1] + dy
-                            if not (0 <= cx < W and 0 <= cy < H):
-                                continue
-                            if self.model.grid.get_cell_type(cx, cy) in _WH_TYPES:
-                                continue
-                            if not self.model.grid.is_walkable(cx, cy):
-                                continue
-                            found = (cx, cy)
-                            break
-                        if found:
-                            break
-                    if found:
-                        break
-                search_waypoints.append(found or raw)
+            if self._OBJECT_BIASED_CENTROID and pending:
+                obj_cx = sum(p[0] for p in pending) / len(pending)
+                obj_cy = sum(p[1] for p in pending) / len(pending)
+                cx = cx * (1.0 - self._CENTROID_OBJECT_BIAS) + obj_cx * self._CENTROID_OBJECT_BIAS
+                cy = cy * (1.0 - self._CENTROID_OBJECT_BIAS) + obj_cy * self._CENTROID_OBJECT_BIAS
 
-            cs = self.model.current_step
-            # Skip waypoints that are unreachable (blacklisted) or already reached.
-            # Try at most one full cycle so we don't spin forever if all are blocked.
-            for _ in range(len(search_waypoints)):
-                wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
-                if wp is None:
-                    self._search_waypoint_idx += 1
-                    continue
-                failed_step = self.unreachable_targets.get(wp, -1)
-                still_blacklisted = failed_step != -1 and cs - failed_step < 200
-                # Consider the waypoint reached when within a few cells.
-                # Use at least 4 so the coordinator doesn't stall trying to
-                # reach the exact cell in a congested area.
-                already_reached = abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= max(
-                    4, max_distance_from_agents
-                )
-                if still_blacklisted or already_reached:
-                    self._search_waypoint_idx += 1
-                    continue
-                break  # found a reachable waypoint
-            else:
-                # All waypoints currently blocked — reset blacklist and try again
-                # next step rather than idling forever.
-                self.unreachable_targets.clear()
-                self.state = AgentState.IDLE
-                return
-            wp = search_waypoints[self._search_waypoint_idx % len(search_waypoints)]
-            print(
-                f"{self.tag} SEARCH: no communicated agent positions — " f"heading to waypoint {wp}"
-            )
-            self.target_position = wp
-            self.state = AgentState.EXPLORING
-            return
+            centroid = (int(cx), int(cy))
 
-        centroid_x = sum(pos[0] for pos in agent_positions) / len(agent_positions)
-        centroid_y = sum(pos[1] for pos in agent_positions) / len(agent_positions)
-
-        # Bias the centroid toward unassigned objects so the coordinator
-        # positions itself where it can quickly relay new assignments
-        # rather than trailing behind retrievers that are already busy.
-        pending_obj_positions = [
-            pos
-            for pos in self.known_objects
-            if pos not in self.objects_being_collected and pos not in self.assigned_tasks.values()
-        ]
-        if self._OBJECT_BIASED_CENTROID and pending_obj_positions:
-            # Weighted average: (1 - bias) retriever centroid, bias object centroid
-            obj_cx = sum(p[0] for p in pending_obj_positions) / len(pending_obj_positions)
-            obj_cy = sum(p[1] for p in pending_obj_positions) / len(pending_obj_positions)
-            centroid_x = (
-                centroid_x * (1.0 - self._CENTROID_OBJECT_BIAS)
-                + obj_cx * self._CENTROID_OBJECT_BIAS
-            )
-            centroid_y = (
-                centroid_y * (1.0 - self._CENTROID_OBJECT_BIAS)
-                + obj_cy * self._CENTROID_OBJECT_BIAS
-            )
-
-        centroid = (int(centroid_x), int(centroid_y))
-
-        dist_from_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
-
-        if dist_from_centroid <= max_distance_from_agents:
-            # Check if current position is a chokepoint (narrow corridor) that
-            # might block other agents.  If so, slide to a nearby open cell
-            # that is still within range of the centroid.
-            if self._is_chokepoint(my_pos) or self._is_blocking_others(my_pos):
-                open_cell = self._find_open_cell_near(
-                    my_pos, centroid, max_distance_from_agents, _WH_TYPES
-                )
-                if open_cell:
-                    self.target_position = open_cell
+        # ── Strategy 1: head toward centroid (if we know retriever positions) ──
+        if centroid is not None:
+            dist_to_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
+            if dist_to_centroid > self.communication_radius:
+                # Far from centroid → head toward it (snap to nearest walkable)
+                target = self._snap_to_walkable(centroid, _WH_TYPES)
+                if target:
+                    self._explore_target = target
+                    self.target_position = target
+                    self.path = []
                     self.state = AgentState.EXPLORING
                     self._idle_steps = 0
                     return
+            # Near centroid — fall through to smart explore / random walk
+            # but bias targets to stay within comm range.
 
-            # Well-positioned relative to the centroid — but keep moving.
-            # Pick a micro-patrol target nearby so the coordinator keeps orbiting
-            # instead of standing still.  This mirrors the retriever's continuous
-            # exploration behaviour.
-            self._idle_steps += 1
-            patrol = self._pick_micro_patrol_target(my_pos, centroid, max_distance_from_agents, _WH_TYPES)
-            if patrol and patrol != my_pos:
-                self.target_position = patrol
-                self.state = AgentState.EXPLORING
+        # ── Strategy 2: smart frontier exploration (UNKNOWN boundary) ──
+        if self._SMART_EXPLORE:
+            unknown_mask = self.local_map == 0
+            if _np.any(unknown_mask):
+                padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
+                has_explored = _np.zeros_like(unknown_mask)
+                for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    has_explored |= (
+                        padded[
+                            1 + dy : padded.shape[0] - 1 + dy,
+                            1 + dx : padded.shape[1] - 1 + dx,
+                        ]
+                        != 0
+                    )
+                boundary = unknown_mask & has_explored
+                b_ys, b_xs = _np.where(boundary)
+                if len(b_ys) > 0:
+                    dists = _np.abs(b_xs - my_pos[0]) + _np.abs(b_ys - my_pos[1])  # type: ignore[operator]
+                    if centroid is not None:
+                        # Prefer frontier cells near the centroid so the coordinator
+                        # explores new territory while staying close to the swarm.
+                        centroid_dists = _np.abs(b_xs - centroid[0]) + _np.abs(b_ys - centroid[1])  # type: ignore[operator]
+                        scores = dists.astype(_np.float64) + 0.5 * centroid_dists.astype(
+                            _np.float64
+                        )
+                        best_idx = int(_np.argmin(scores))
+                    else:
+                        best_idx = int(_np.argmin(dists))
+                    target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
+                    if self.model.grid.is_walkable(*target):
+                        self._explore_target = target
+                        self.target_position = target
+                        self.path = []
+                        self.state = AgentState.EXPLORING
+                        return
+
+        # ── Strategy 3: random walkable cell (fallback) ──
+        candidates: List[Tuple[int, int]] = []
+        scan = 12
+        for dx in range(-scan, scan + 1):
+            for dy in range(-scan, scan + 1):
+                nx, ny = my_pos[0] + dx, my_pos[1] + dy
+                if 0 <= nx < self.model.grid.width and 0 <= ny < self.model.grid.height:
+                    if (
+                        self.model.grid.get_cell_type(nx, ny) not in _WH_TYPES
+                        and self.model.grid.is_walkable(nx, ny)
+                    ):
+                        candidates.append((nx, ny))
+        if candidates:
+            if centroid is not None:
+                # Prefer cells near the centroid
+                candidates.sort(
+                    key=lambda c: abs(c[0] - centroid[0]) + abs(c[1] - centroid[1])
+                )
+                # Pick from the closest quarter
+                pool = candidates[: max(1, len(candidates) // 4)]
+                self._explore_target = _rng.choice(pool)
             else:
-                self.state = AgentState.IDLE
-            return
-
-        # Moving — reset boredom counter.
-        self._idle_steps = 0
-
-        # Need to reposition — snap centroid to nearest usable cell if necessary
-        reposition_target = centroid
-        if (
-            not self.model.grid.is_walkable(*centroid)
-            or self.model.grid.get_cell_type(*centroid) in _WH_TYPES
-            or centroid in self.unreachable_targets
-        ):
-            reposition_target = None
-            for radius in range(1, 6):
-                for dx in range(-radius, radius + 1):
-                    for dy in range(-radius, radius + 1):
-                        if abs(dx) != radius and abs(dy) != radius:
-                            continue  # only the outer ring
-                        cx, cy = centroid[0] + dx, centroid[1] + dy
-                        if not (
-                            0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height
-                        ):
-                            continue
-                        if self.model.grid.get_cell_type(cx, cy) in _WH_TYPES:
-                            continue
-                        if not self.model.grid.is_walkable(cx, cy):
-                            continue
-                        candidate = (cx, cy)
-                        if candidate in self.unreachable_targets:
-                            continue
-                        reposition_target = candidate
-                        break
-                    if reposition_target:
-                        break
-
-        if reposition_target is None or reposition_target in self.unreachable_targets:
-            # Can't find a suitable nearby cell — hold position
+                self._explore_target = _rng.choice(candidates)
+            self.target_position = self._explore_target
+            self.path = []
+            self.state = AgentState.EXPLORING
+        else:
             self.state = AgentState.IDLE
-            return
+            self.target_position = None
 
-        print(
-            f"{self.tag} REPOSITION: Too far from agents "
-            f"(distance: {dist_from_centroid}), moving towards {reposition_target}"
-        )
-        self.target_position = reposition_target
-        self.state = AgentState.EXPLORING
+    def _snap_to_walkable(
+        self,
+        target: Tuple[int, int],
+        wh_types: tuple,
+    ) -> Optional[Tuple[int, int]]:
+        """Return ``target`` if walkable, otherwise the nearest walkable cell."""
+        if (
+            self.model.grid.is_walkable(*target)
+            and self.model.grid.get_cell_type(*target) not in wh_types
+            and target not in self.unreachable_targets
+        ):
+            return target
+        for radius in range(1, 6):
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue
+                    cx, cy = target[0] + dx, target[1] + dy
+                    if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
+                        continue
+                    if self.model.grid.get_cell_type(cx, cy) in wh_types:
+                        continue
+                    if not self.model.grid.is_walkable(cx, cy):
+                        continue
+                    if (cx, cy) in self.unreachable_targets:
+                        continue
+                    return (cx, cy)
+        return None
 
     def _is_chokepoint(self, pos: Tuple[int, int]) -> bool:
         """
@@ -818,86 +779,6 @@ class CoordinatorAgent(BaseAgent):
                         return True
         return False
 
-    def _pick_micro_patrol_target(
-        self,
-        my_pos: Tuple[int, int],
-        centroid: Tuple[int, int],
-        max_dist: int,
-        wh_types: tuple,
-    ) -> Optional[Tuple[int, int]]:
-        """
-        Pick a random walkable cell near the coordinator that stays within
-        ``max_dist`` of ``centroid``.  This keeps the coordinator orbiting
-        around the swarm centroid instead of standing still.
-        """
-        import random
-        candidates: List[Tuple[int, int]] = []
-        # Scan cells within a 3-cell radius of current position
-        for r in range(1, 4):
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    cx, cy = my_pos[0] + dx, my_pos[1] + dy
-                    if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
-                        continue
-                    if self.model.grid.get_cell_type(cx, cy) in wh_types:
-                        continue
-                    if not self.model.grid.is_walkable(cx, cy):
-                        continue
-                    d = abs(cx - centroid[0]) + abs(cy - centroid[1])
-                    if d > max_dist + 1:
-                        continue
-                    candidates.append((cx, cy))
-        if not candidates:
-            return None
-        return random.choice(candidates)
-
-    def _find_open_cell_near(
-        self,
-        origin: Tuple[int, int],
-        centroid: Tuple[int, int],
-        max_dist: int,
-        wh_types: tuple,
-    ) -> Optional[Tuple[int, int]]:
-        """
-        Find a non-chokepoint walkable cell near ``origin`` that is still within
-        ``max_dist`` of ``centroid``.  Returns None if no suitable cell is found.
-        """
-        best: Optional[Tuple[int, int]] = None
-        best_walkable = 0
-        for r in range(1, 4):
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    if abs(dx) != r and abs(dy) != r:
-                        continue
-                    cx, cy = origin[0] + dx, origin[1] + dy
-                    if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
-                        continue
-                    if self.model.grid.get_cell_type(cx, cy) in wh_types:
-                        continue
-                    if not self.model.grid.is_walkable(cx, cy):
-                        continue
-                    if not self.model.grid.is_cell_empty((cx, cy)):
-                        continue
-                    d = abs(cx - centroid[0]) + abs(cy - centroid[1])
-                    if d > max_dist + 2:
-                        continue
-                    # Prefer cells with more walkable neighbours (open areas)
-                    w = sum(
-                        1
-                        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                        if 0 <= cx + ddx < self.model.grid.width
-                        and 0 <= cy + ddy < self.model.grid.height
-                        and self.model.grid.is_walkable(cx + ddx, cy + ddy)
-                    )
-                    if w > best_walkable:
-                        best_walkable = w
-                        best = (cx, cy)
-            if best is not None:
-                break
-        return best
-
     def step_act(self) -> None:
         """Execute decided action: communicate AND move in the same step."""
         if self.energy <= 0:
@@ -922,7 +803,7 @@ class CoordinatorAgent(BaseAgent):
                     self.state = AgentState.IDLE
 
         elif self.state == AgentState.IDLE:
-            # Unblock warehouse doors immediately (base class check is overridden)
+            # Unblock warehouse doors immediately
             if self.pos:
                 idle_pos = pos_to_tuple(self.pos)
                 idle_ct = self.model.grid.get_cell_type(*idle_pos)
@@ -938,6 +819,10 @@ class CoordinatorAgent(BaseAgent):
                 idle_pos = pos_to_tuple(self.pos)
                 if self._is_chokepoint(idle_pos) or self._is_blocking_others(idle_pos):
                     self._try_move_off_cell(avoid_warehouse=False)
+                    return
+
+            # No target — generate one immediately so the coordinator never stands still
+            self._decide_exploration()
 
     def _execute_recharge_step(self) -> None:
         """Sub-state machine: approach warehouse → recharge → exit."""

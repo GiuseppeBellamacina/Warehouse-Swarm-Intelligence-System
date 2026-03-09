@@ -1024,6 +1024,26 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       }
                       disabled={isRunning}
                     />
+                    <Toggle
+                      label="Smart explore"
+                      tip="Head toward unknown map boundaries (vs random walk)"
+                      value={overrides.coordinatorBehavior.smart_explore}
+                      onChange={(v) => setCoordBeh({ smart_explore: v })}
+                      disabled={isRunning}
+                    />
+                    <Slider
+                      label="Explore retarget"
+                      tip="Steps between picking new exploration targets"
+                      value={
+                        overrides.coordinatorBehavior.explore_retarget_interval
+                      }
+                      onChange={(v) =>
+                        setCoordBeh({ explore_retarget_interval: v })
+                      }
+                      min={1}
+                      max={50}
+                      disabled={isRunning}
+                    />
                   </div>
                 )}
               </div>
