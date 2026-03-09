@@ -729,10 +729,17 @@ class CoordinatorAgent(BaseAgent):
                     self._idle_steps = 0
                     return
 
-            # Already well-positioned — nothing to do this step.
-            # Increment boredom counter so persistent idling eventually triggers patrol.
+            # Well-positioned relative to the centroid — but keep moving.
+            # Pick a micro-patrol target nearby so the coordinator keeps orbiting
+            # instead of standing still.  This mirrors the retriever's continuous
+            # exploration behaviour.
             self._idle_steps += 1
-            self.state = AgentState.IDLE
+            patrol = self._pick_micro_patrol_target(my_pos, centroid, max_distance_from_agents, _WH_TYPES)
+            if patrol and patrol != my_pos:
+                self.target_position = patrol
+                self.state = AgentState.EXPLORING
+            else:
+                self.state = AgentState.IDLE
             return
 
         # Moving — reset boredom counter.
@@ -811,6 +818,41 @@ class CoordinatorAgent(BaseAgent):
                         return True
         return False
 
+    def _pick_micro_patrol_target(
+        self,
+        my_pos: Tuple[int, int],
+        centroid: Tuple[int, int],
+        max_dist: int,
+        wh_types: tuple,
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Pick a random walkable cell near the coordinator that stays within
+        ``max_dist`` of ``centroid``.  This keeps the coordinator orbiting
+        around the swarm centroid instead of standing still.
+        """
+        import random
+        candidates: List[Tuple[int, int]] = []
+        # Scan cells within a 3-cell radius of current position
+        for r in range(1, 4):
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    cx, cy = my_pos[0] + dx, my_pos[1] + dy
+                    if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
+                        continue
+                    if self.model.grid.get_cell_type(cx, cy) in wh_types:
+                        continue
+                    if not self.model.grid.is_walkable(cx, cy):
+                        continue
+                    d = abs(cx - centroid[0]) + abs(cy - centroid[1])
+                    if d > max_dist + 1:
+                        continue
+                    candidates.append((cx, cy))
+        if not candidates:
+            return None
+        return random.choice(candidates)
+
     def _find_open_cell_near(
         self,
         origin: Tuple[int, int],
@@ -857,21 +899,20 @@ class CoordinatorAgent(BaseAgent):
         return best
 
     def step_act(self) -> None:
-        """Execute decided action: COMMUNICATE or MOVE (not both)"""
+        """Execute decided action: communicate AND move in the same step."""
         if self.energy <= 0:
             return
 
-        # OPTION 1: Assign tasks (communicate this step, skip movement)
+        # Send task assignments (non-blocking — movement still happens below)
         if self.should_communicate_this_step and self.tasks_to_assign:
             self._send_task_assignments()
-            return
 
-        # OPTION 2: Execute recharge sub-state machine
+        # Execute recharge sub-state machine
         if self.state == AgentState.RECHARGING or self._coord_wh_step is not None:
             self._execute_recharge_step()
             return
 
-        # OPTION 3: Move based on exploration state
+        # Move based on exploration state
         if self.state == AgentState.EXPLORING:
             if self.target_position:
                 self.move_towards(self.target_position)
