@@ -699,6 +699,19 @@ class CoordinatorAgent(BaseAgent):
         dist_from_centroid = abs(my_pos[0] - centroid[0]) + abs(my_pos[1] - centroid[1])
 
         if dist_from_centroid <= max_distance_from_agents:
+            # Check if current position is a chokepoint (narrow corridor) that
+            # might block other agents.  If so, slide to a nearby open cell
+            # that is still within range of the centroid.
+            if self._is_chokepoint(my_pos) or self._is_blocking_others(my_pos):
+                open_cell = self._find_open_cell_near(
+                    my_pos, centroid, max_distance_from_agents, _WH_TYPES
+                )
+                if open_cell:
+                    self.target_position = open_cell
+                    self.state = AgentState.EXPLORING
+                    self._idle_steps = 0
+                    return
+
             # Already well-positioned — nothing to do this step.
             # Increment boredom counter so persistent idling eventually triggers patrol.
             self._idle_steps += 1
@@ -750,6 +763,82 @@ class CoordinatorAgent(BaseAgent):
         self.target_position = reposition_target
         self.state = AgentState.EXPLORING
 
+    def _is_chokepoint(self, pos: Tuple[int, int]) -> bool:
+        """
+        Return True if ``pos`` is a narrow corridor cell (≤ 2 walkable neighbours).
+        Coordinators should not park at chokepoints because they block passage.
+        """
+        walkable = 0
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = pos[0] + dx, pos[1] + dy
+            if 0 <= nx < self.model.grid.width and 0 <= ny < self.model.grid.height:
+                if self.model.grid.is_walkable(nx, ny):
+                    walkable += 1
+        return walkable <= 2
+
+    def _is_blocking_others(self, pos: Tuple[int, int]) -> bool:
+        """
+        Return True if an adjacent agent appears to be stuck (waiting to pass through
+        ``pos``).  Heuristic: another agent occupies a neighbouring cell AND has a
+        stuck_counter ≥ 2, meaning it has been unable to move for multiple steps.
+        """
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            nx, ny = pos[0] + dx, pos[1] + dy
+            if not (0 <= nx < self.model.grid.width and 0 <= ny < self.model.grid.height):
+                continue
+            for agent in self.model.agents:
+                if agent.unique_id == self.unique_id or not agent.pos:
+                    continue
+                if pos_to_tuple(agent.pos) == (nx, ny):
+                    if getattr(agent, "stuck_counter", 0) >= 2:
+                        return True
+        return False
+
+    def _find_open_cell_near(
+        self,
+        origin: Tuple[int, int],
+        centroid: Tuple[int, int],
+        max_dist: int,
+        wh_types: tuple,
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Find a non-chokepoint walkable cell near ``origin`` that is still within
+        ``max_dist`` of ``centroid``.  Returns None if no suitable cell is found.
+        """
+        best: Optional[Tuple[int, int]] = None
+        best_walkable = 0
+        for r in range(1, 4):
+            for dx in range(-r, r + 1):
+                for dy in range(-r, r + 1):
+                    if abs(dx) != r and abs(dy) != r:
+                        continue
+                    cx, cy = origin[0] + dx, origin[1] + dy
+                    if not (0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height):
+                        continue
+                    if self.model.grid.get_cell_type(cx, cy) in wh_types:
+                        continue
+                    if not self.model.grid.is_walkable(cx, cy):
+                        continue
+                    if not self.model.grid.is_cell_empty((cx, cy)):
+                        continue
+                    d = abs(cx - centroid[0]) + abs(cy - centroid[1])
+                    if d > max_dist + 2:
+                        continue
+                    # Prefer cells with more walkable neighbours (open areas)
+                    w = sum(
+                        1
+                        for ddx, ddy in [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                        if 0 <= cx + ddx < self.model.grid.width
+                        and 0 <= cy + ddy < self.model.grid.height
+                        and self.model.grid.is_walkable(cx + ddx, cy + ddy)
+                    )
+                    if w > best_walkable:
+                        best_walkable = w
+                        best = (cx, cy)
+            if best is not None:
+                break
+        return best
+
     def step_act(self) -> None:
         """Execute decided action: COMMUNICATE or MOVE (not both)"""
         if self.energy <= 0:
@@ -775,10 +864,22 @@ class CoordinatorAgent(BaseAgent):
                     self.state = AgentState.IDLE
 
         elif self.state == AgentState.IDLE:
-            # Hold position — the coordinator's job is coordination, not exploration.
-            # Movement is handled deliberately via _decide_exploration (centroid
-            # repositioning) and _seek_retrievers_if_needed.
-            pass
+            # Unblock warehouse doors immediately (base class check is overridden)
+            if self.pos:
+                idle_pos = pos_to_tuple(self.pos)
+                idle_ct = self.model.grid.get_cell_type(*idle_pos)
+                if idle_ct in (
+                    CellType.WAREHOUSE_ENTRANCE,
+                    CellType.WAREHOUSE_EXIT,
+                ):
+                    self._try_move_off_cell(avoid_warehouse=True)
+                    return
+
+            # If sitting at a chokepoint or blocking others, move aside
+            if self.pos:
+                idle_pos = pos_to_tuple(self.pos)
+                if self._is_chokepoint(idle_pos) or self._is_blocking_others(idle_pos):
+                    self._try_move_off_cell(avoid_warehouse=False)
 
     def _execute_recharge_step(self) -> None:
         """Sub-state machine: approach warehouse → recharge → exit."""
