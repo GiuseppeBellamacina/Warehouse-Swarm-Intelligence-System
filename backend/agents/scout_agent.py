@@ -54,21 +54,26 @@ class ScoutAgent(BaseAgent):
         )
 
         # ── Behavior params (overridable from UI / config) ─────────────
-        _b = behavior or {}
-        self._RECENT_TARGET_TTL: int = _b.get("recent_target_ttl", 50)
-        self._RESCAN_AGE: int = _b.get("rescan_age", 120)
-        self._DISCOVERY_TIMEOUT: int = _b.get("discovery_timeout", 80)
-        self._ANTI_CLUSTER_DIST: int = _b.get("anti_cluster_distance", 8)
-        self._TARGET_HYSTERESIS: int = _b.get("target_hysteresis", 15)
-        self._STUCK_THRESHOLD: int = _b.get("stuck_threshold", 8)
-        self._RECHARGE_THRESHOLD: float = _b.get("recharge_threshold", 0.25)
-        self._FAR_FRONTIER_ENABLED: bool = _b.get("far_frontier_enabled", True)
-        self._STALE_COVERAGE_PATROL: bool = _b.get("stale_coverage_patrol", True)
-        self._ANTI_CLUSTERING: bool = _b.get("anti_clustering", True)
-        self._SEEK_COORDINATOR: bool = _b.get("seek_coordinator", True)
-        self._SEEK_COORDINATOR_DELAY: int = _b.get("seek_coordinator_delay", 25)
-        self._TARGET_LOCK_DURATION: int = _b.get("target_lock_duration", 12)
-        self._MIN_FRONTIER_CLUSTER_SIZE: int = _b.get("min_frontier_cluster_size", 5)
+        # All keys are guaranteed present by Pydantic (ScoutBehaviorParams).
+        if behavior is None:
+            from backend.config.schemas import ScoutBehaviorParams
+
+            behavior = ScoutBehaviorParams().model_dump()
+        _b = behavior
+        self._RECENT_TARGET_TTL: int = _b["recent_target_ttl"]
+        self._RESCAN_AGE: int = _b["rescan_age"]
+        self._DISCOVERY_TIMEOUT: int = _b["discovery_timeout"]
+        self._ANTI_CLUSTER_DIST: int = _b["anti_cluster_distance"]
+        self._TARGET_HYSTERESIS: int = _b["target_hysteresis"]
+        self._STUCK_THRESHOLD: int = _b["stuck_threshold"]
+        self._RECHARGE_THRESHOLD: float = _b["recharge_threshold"]
+        self._FAR_FRONTIER_ENABLED: bool = _b["far_frontier_enabled"]
+        self._STALE_COVERAGE_PATROL: bool = _b["stale_coverage_patrol"]
+        self._ANTI_CLUSTERING: bool = _b["anti_clustering"]
+        self._SEEK_COORDINATOR: bool = _b["seek_coordinator"]
+        self._SEEK_COORDINATOR_DELAY: int = _b["seek_coordinator_delay"]
+        self._TARGET_LOCK_DURATION: int = _b["target_lock_duration"]
+        self._MIN_FRONTIER_CLUSTER_SIZE: int = _b["min_frontier_cluster_size"]
 
         self.state = AgentState.EXPLORING
         self.pathfinder = AStarPathfinder(model.grid)

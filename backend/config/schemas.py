@@ -306,6 +306,19 @@ class RetrieverBehaviorParams(BaseModel):
     smart_explore: bool = Field(
         default=True, description="Head toward UNKNOWN boundary when idle (vs random walk)"
     )
+    warehouse_congestion_reroute: bool = Field(
+        default=True,
+        description="Reroute to a less crowded warehouse when the target entrance is congested",
+    )
+    warehouse_congestion_threshold: int = Field(
+        default=3,
+        ge=1,
+        description="Agents heading to a warehouse before it is considered congested",
+    )
+    jam_priority: bool = Field(
+        default=True,
+        description="In traffic jams, retrievers carrying more objects get movement priority",
+    )
 
 
 class AgentRoleParams(BaseModel):

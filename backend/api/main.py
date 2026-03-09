@@ -97,6 +97,12 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/api/defaults")
+async def get_defaults():
+    """Return default agent configuration (single source of truth for frontend)."""
+    return SimulationAgentsConfig().model_dump()
+
+
 @app.get("/api/configs")
 async def list_configs():
     """

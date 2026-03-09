@@ -78,15 +78,23 @@ class RetrieverAgent(BaseAgent):
         )
 
         # ── Behavior params (overridable from UI / config) ─────────────
-        _b = behavior or {}
-        self._RECHARGE_THRESHOLD: float = _b.get("recharge_threshold", 0.20)
-        self._STALE_CLAIM_AGE: int = _b.get("stale_claim_age", 45)
-        self._EXPLORE_RETARGET: int = _b.get("explore_retarget_interval", 15)
-        self._OPPORTUNISTIC_PICKUP: bool = _b.get("opportunistic_pickup", True)
-        self._TASK_QUEUE_REORDER: bool = _b.get("task_queue_reorder", True)
-        self._SELF_ASSIGN: bool = _b.get("self_assign_from_shared_map", True)
-        self._PEER_BROADCAST: bool = _b.get("peer_broadcast", True)
-        self._SMART_EXPLORE: bool = _b.get("smart_explore", True)
+        # All keys are guaranteed present by Pydantic (RetrieverBehaviorParams).
+        if behavior is None:
+            from backend.config.schemas import RetrieverBehaviorParams
+
+            behavior = RetrieverBehaviorParams().model_dump()
+        _b = behavior
+        self._RECHARGE_THRESHOLD: float = _b["recharge_threshold"]
+        self._STALE_CLAIM_AGE: int = _b["stale_claim_age"]
+        self._EXPLORE_RETARGET: int = _b["explore_retarget_interval"]
+        self._OPPORTUNISTIC_PICKUP: bool = _b["opportunistic_pickup"]
+        self._TASK_QUEUE_REORDER: bool = _b["task_queue_reorder"]
+        self._SELF_ASSIGN: bool = _b["self_assign_from_shared_map"]
+        self._PEER_BROADCAST: bool = _b["peer_broadcast"]
+        self._SMART_EXPLORE: bool = _b["smart_explore"]
+        self._WH_CONGESTION_REROUTE: bool = _b["warehouse_congestion_reroute"]
+        self._WH_CONGESTION_THRESHOLD: int = _b["warehouse_congestion_threshold"]
+        self._JAM_PRIORITY: bool = _b["jam_priority"]
 
         self.carrying_capacity = carrying_capacity
         self.carrying_objects = 0
@@ -100,6 +108,7 @@ class RetrieverAgent(BaseAgent):
         # Possible values: None | "approach" | "deposit_cell" | "recharge_cell" | "exit"
         self._wh_step: Optional[str] = None
         self._wh_station: Optional[Dict[str, Any]] = None
+        self._wh_approach_steps: int = 0  # steps spent in "approach" phase
 
         # Pending events to report to coordinator
         self.pending_events: List[str] = []
@@ -523,6 +532,17 @@ class RetrieverAgent(BaseAgent):
         self.model.comm_manager.send_message(status_msg, target_ids)
         self.consume_energy(self.energy_consumption["communicate"])
 
+    def _count_agents_heading_to(self, entrance: Tuple[int, int]) -> int:
+        """Count retriever agents whose warehouse target entrance matches *entrance*."""
+        count = 0
+        for agent in self.model.agents:
+            if getattr(agent, "role", None) != "retriever":
+                continue
+            wh = getattr(agent, "_wh_station", None)
+            if wh and wh.get("entrance") == entrance:
+                count += 1
+        return count
+
     def _start_warehouse_sequence(self, purpose: str) -> None:
         """
         Begin entering the best warehouse for this agent.
@@ -551,6 +571,7 @@ class RetrieverAgent(BaseAgent):
 
         self._wh_station = station
         self._wh_step = "approach"
+        self._wh_approach_steps = 0
         self.target_position = station["entrance"]
 
         if purpose == "deliver":
@@ -746,6 +767,7 @@ class RetrieverAgent(BaseAgent):
                 or cell_type == CellType.WAREHOUSE_EXIT
             )
             if at_or_inside:
+                self._wh_approach_steps = 0
                 if self.carrying_objects > 0:
                     # Must deposit — head to deposit cell
                     self._wh_step = "deposit_cell"
@@ -772,6 +794,40 @@ class RetrieverAgent(BaseAgent):
                     if my_pos != queue_cell:
                         self.move_towards(queue_cell)
             else:
+                self._wh_approach_steps += 1
+
+                # ── Congestion reroute ─────────────────────────────────────
+                # If the target warehouse is too crowded and there is an
+                # alternative with less congestion, reroute — provided the
+                # agent has enough energy to reach it.
+                if self._WH_CONGESTION_REROUTE and self._wh_approach_steps >= 6:
+                    heading_count = self._count_agents_heading_to(entrance)
+                    if heading_count >= self._WH_CONGESTION_THRESHOLD:
+                        alt = self.model.get_best_warehouse_for(
+                            pos=my_pos,
+                            known_entrances=[
+                                wh
+                                for wh in self.known_warehouses
+                                if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
+                            ],
+                            excluded_entrance=entrance,
+                            agent_energy=self.energy,
+                        )
+                        alt_ent = alt["entrance"]
+                        if alt_ent != entrance:
+                            alt_heading = self._count_agents_heading_to(alt_ent)
+                            if alt_heading < heading_count:
+                                print(
+                                    f"{self.tag} REROUTE: {entrance} congested "
+                                    f"({heading_count} agents) → {alt_ent} "
+                                    f"({alt_heading} agents)"
+                                )
+                                self._wh_station = alt
+                                self._wh_approach_steps = 0
+                                self.target_position = alt_ent
+                                self.path = []
+                                self.stuck_counter = 0
+
                 # If the entrance cell is occupied, ask the blocker to move
                 blocker = self._get_agent_at_pos(entrance)
                 if blocker is not None:

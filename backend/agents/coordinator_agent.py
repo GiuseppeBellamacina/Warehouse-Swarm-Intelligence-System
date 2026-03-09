@@ -59,15 +59,20 @@ class CoordinatorAgent(BaseAgent):
         )
 
         # ── Behavior params (overridable from UI / config) ─────────────
-        _b = behavior or {}
-        self._BOREDOM_THRESHOLD: int = _b.get("boredom_threshold", 20)
-        self._POS_MAX_AGE: int = _b.get("pos_max_age", 25)
-        self._RECHARGE_THRESHOLD: float = _b.get("recharge_threshold", 0.20)
-        self._CENTROID_OBJECT_BIAS: float = _b.get("centroid_object_bias", 0.4)
-        self._SYNC_RATE_LIMIT: int = _b.get("sync_rate_limit", 10)
-        self._SEEK_RETRIEVERS: bool = _b.get("seek_retrievers", True)
-        self._BOREDOM_PATROL: bool = _b.get("boredom_patrol", True)
-        self._OBJECT_BIASED_CENTROID: bool = _b.get("object_biased_centroid", True)
+        # All keys are guaranteed present by Pydantic (CoordinatorBehaviorParams).
+        if behavior is None:
+            from backend.config.schemas import CoordinatorBehaviorParams
+
+            behavior = CoordinatorBehaviorParams().model_dump()
+        _b = behavior
+        self._BOREDOM_THRESHOLD: int = _b["boredom_threshold"]
+        self._POS_MAX_AGE: int = _b["pos_max_age"]
+        self._RECHARGE_THRESHOLD: float = _b["recharge_threshold"]
+        self._CENTROID_OBJECT_BIAS: float = _b["centroid_object_bias"]
+        self._SYNC_RATE_LIMIT: int = _b["sync_rate_limit"]
+        self._SEEK_RETRIEVERS: bool = _b["seek_retrievers"]
+        self._BOREDOM_PATROL: bool = _b["boredom_patrol"]
+        self._OBJECT_BIASED_CENTROID: bool = _b["object_biased_centroid"]
 
         self.state = AgentState.IDLE
         self.pathfinder = AStarPathfinder(model.grid)
