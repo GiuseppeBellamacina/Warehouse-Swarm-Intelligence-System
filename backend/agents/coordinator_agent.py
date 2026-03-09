@@ -542,10 +542,10 @@ class CoordinatorAgent(BaseAgent):
         """
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
-        # Comfortable range: a quarter of comm radius.  Small enough that the
-        # coordinator actively tracks the retriever swarm and shows movement in
-        # the UI, yet large enough to avoid micro-oscillation.
-        max_distance_from_agents = max(2, self.communication_radius // 4)
+        # Comfortable range: full communication radius.  The coordinator considers
+        # itself close enough to the swarm centroid as long as it is within its
+        # communication radius — meaning it can still directly talk to agents there.
+        max_distance_from_agents = self.communication_radius
 
         _WH_TYPES = (
             CellType.WAREHOUSE,

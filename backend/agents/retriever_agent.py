@@ -194,6 +194,37 @@ class RetrieverAgent(BaseAgent):
                             f"dropped {peer_task} (peer {peer_id} has it)"
                         )
 
+            elif isinstance(message, RetrieverEventMessage):
+                # React to "object_spotted" broadcasts from PEER retrievers that are
+                # full and cannot collect the cargo themselves.  Add the object to
+                # known_objects so P4 (or P3b opportunistic) can self-assign to it
+                # in the next decide phase.
+                if message.event_type != "object_spotted":
+                    continue
+                peer_id = message.sender_id
+                if peer_id == self.unique_id:
+                    continue  # own echo
+                sender_agent = next((a for a in self.model.agents if a.unique_id == peer_id), None)
+                if sender_agent is None or getattr(sender_agent, "role", None) != "retriever":
+                    continue  # only handle peer-retriever broadcasts here
+                obj_pos = message.object_position
+                if obj_pos is None:
+                    continue
+                # Only insert if not already known and not tombstoned as gone
+                if (
+                    obj_pos not in self.known_objects
+                    and message.timestamp
+                    > self.known_objects_cleared.get(obj_pos, -1)
+                ):
+                    obc = getattr(self, "objects_being_collected", None)
+                    if obc is None or obj_pos not in obc:
+                        self.known_objects[obj_pos] = 1.0
+                        self.known_objects_step[obj_pos] = message.timestamp
+                        print(
+                            f"{self.tag} PEER-SPOT: learned object {obj_pos} "
+                            f"from full peer retriever {peer_id} — adding to known_objects"
+                        )
+
     # ------------------------------------------------------------------
     # Decide
     # ------------------------------------------------------------------
@@ -215,7 +246,19 @@ class RetrieverAgent(BaseAgent):
         #   (a) fully loaded, OR
         #   (b) carrying something but the task queue is exhausted (nothing left to pick up)
         if self.carrying_objects > 0 and self._wh_step is None:
-            if self.carrying_objects >= self.carrying_capacity or not self.task_queue:
+            if self.carrying_objects >= self.carrying_capacity:
+                # Release ALL remaining claims immediately so peer retrievers
+                # can pick them up without waiting for the 50-step stale timeout.
+                for remaining_task in list(self.task_queue):
+                    self.model.comm_manager.release_claim(remaining_task, self.unique_id)
+                    print(
+                        f"{self.tag} FULL-RELEASE: releasing claim {remaining_task} "
+                        f"(at capacity, offering to peers)"
+                    )
+                self.task_queue.clear()
+                self._start_warehouse_sequence("deliver")
+                return
+            elif not self.task_queue:
                 self._start_warehouse_sequence("deliver")
                 return
             # else: still have capacity AND queued tasks — fall through to P3
@@ -274,22 +317,19 @@ class RetrieverAgent(BaseAgent):
     def _try_opportunistic_pickup(self) -> None:
         """
         Scan known objects near the current position and try to self-claim any that
-        are unclaimed, unqueued, and within a small radius.  The claim goes through
-        the shared CommunicationManager so it is race-safe: if another retriever or
-        coordinator already locked the object, try_claim_object returns False and we
-        skip it cleanly.
+        are unclaimed, unqueued, and within communication_radius.  All objects in
+        known_objects (direct vision OR map-share from peers) are evaluated with the
+        same full communication_radius — no reduced or multi-tier distances.
 
-        After claiming, the object is appended to task_queue.  The next
-        TaskStatusMessage broadcast (sent every communication step) will inform the
-        coordinator, which then skips re-assigning that object.
+        The claim goes through the shared CommunicationManager so it is race-safe.
+        After claiming, the object is appended to task_queue and a TaskStatusMessage
+        is broadcast so all peers see the updated queue immediately.
         """
         spare = self.carrying_capacity - self.carrying_objects - len(self.task_queue)
         if spare <= 0:
             return  # no room for extra items
 
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-        # Radius: half of vision so we don't deviate far from the current path
-        radius = max(2, self.vision_radius // 2)
 
         candidates: List[Tuple[int, Tuple[int, int]]] = []
         for obj_pos in list(self.known_objects.keys()):
@@ -298,7 +338,7 @@ class RetrieverAgent(BaseAgent):
             if obj_pos not in self.model.grid.objects:
                 continue  # already picked up by someone else
             dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
-            if dist <= radius:
+            if dist <= self.communication_radius:
                 candidates.append((dist, obj_pos))
 
         candidates.sort()  # closest first
@@ -375,9 +415,19 @@ class RetrieverAgent(BaseAgent):
                 # Prune stale entry so we don't keep re-checking it
                 del self.known_objects[obj_pos]
                 continue
-            # layer 2: global claim check
-            if self.model.comm_manager.get_claimer(obj_pos) is not None:
-                continue
+            # layer 2: global claim check — skip only if the claim is FRESH.
+            # A stale claim (>= 45 steps old with no refresh) indicates the
+            # original claimer died, got stuck, or was reassigned.  In that case
+            # fall through to try_claim_object which will atomically take it over.
+            # If the claimer is ourselves, always fall through (refresh our claim).
+            claimer = self.model.comm_manager.get_claimer(obj_pos)
+            if claimer is not None and claimer != self.unique_id:
+                claim_data = self.model.comm_manager.claimed_objects.get(obj_pos)
+                if claim_data is not None:
+                    _, claim_time, _ = claim_data
+                    if self.model.current_step - claim_time < 45:
+                        continue  # fresh claim by someone else — skip
+                # else: stale claim — fall through to let try_claim_object take over
             # layer 3: peer queue check
             if obj_pos in peer_queued:
                 continue
@@ -534,9 +584,26 @@ class RetrieverAgent(BaseAgent):
         if self.energy <= 0:
             return
 
-        # OPTION 1: Communicate status to coordinators (non-blocking — movement still runs)
+        # OPTION 1b: Peer broadcast runs FIRST so newly_spotted_objects is still
+        # populated before _send_status_to_coordinators() clears it.
+        # When delivering (full), push spotted-object info to peer retrievers
+        # even if no coordinator is nearby.  Peers can then self-assign immediately
+        # rather than waiting for the next passive MapDataMessage relay.
+        if self.newly_spotted_objects and self.carrying_objects >= self.carrying_capacity:
+            self._broadcast_spotted_to_peers()
+
+        # OPTION 1: Communicate status to coordinators (non-blocking — movement still runs).
+        # Must run AFTER peer broadcast so both channels see the full spotted list
+        # before _send_status_to_coordinators() clears newly_spotted_objects.
         if self.should_communicate_this_step:
             self._send_status_to_coordinators()
+
+        # Consume newly_spotted_objects here — both communication channels above have
+        # processed the list.  Clearing before the warehouse-step early-return ensures
+        # stale entries never accumulate across steps regardless of which branch fires.
+        # (When a coordinator was present, _send_status_to_coordinators already cleared
+        # the list; this is a harmless no-op in that case.)
+        self.newly_spotted_objects = []
 
         # OPTION 2: Handle warehouse sub-sequence
         if self._wh_step is not None and self._wh_station is not None:
@@ -741,7 +808,17 @@ class RetrieverAgent(BaseAgent):
                     del self.known_objects[pos_tuple]
 
                 if self.carrying_objects >= self.carrying_capacity:
-                    # Clear remaining tasks (will need to deliver first)
+                    # Release remaining claims so peers can grab those objects
+                    # immediately without waiting for the stale-claim timeout.
+                    for remaining_task in list(self.task_queue):
+                        self.model.comm_manager.release_claim(
+                            remaining_task, self.unique_id
+                        )
+                        print(
+                            f"{self.tag} FULL-RELEASE: releasing claim {remaining_task} "
+                            f"(full after pickup, offering to peers)"
+                        )
+                    self.task_queue.clear()
                     self.state = AgentState.DELIVERING
                     self._start_warehouse_sequence("deliver")
                 else:
@@ -767,6 +844,46 @@ class RetrieverAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Communication helpers
     # ------------------------------------------------------------------
+
+    def _broadcast_spotted_to_peers(self, nearby_agents: Optional[List] = None) -> None:
+        """
+        When this retriever is full (or in delivery mode) and has spotted objects it
+        cannot collect, explicitly notify nearby peer RETRIEVERS so they can react
+        immediately without relying solely on the passive MapDataMessage relay.
+
+        This complements ``_send_status_to_coordinators``, which only sends
+        ``object_spotted`` events to coordinators.  If no coordinator is nearby the
+        spotted objects would otherwise only propagate via MapDataMessage at the
+        next communication step.
+        """
+        if not self.newly_spotted_objects:
+            return
+        if nearby_agents is None:
+            nearby_agents = self.get_nearby_agents(self.communication_radius)
+        peer_ids = [
+            a.unique_id
+            for a in nearby_agents
+            if getattr(a, "role", None) == "retriever" and a.unique_id != self.unique_id
+        ]
+        if not peer_ids:
+            return
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        for obj_pos in self.newly_spotted_objects:
+            spot_msg = RetrieverEventMessage(
+                sender_id=self.unique_id,
+                timestamp=self.model.current_step,
+                retriever_id=self.unique_id,
+                event_type="object_spotted",
+                position=my_pos,
+                object_position=obj_pos,
+                carrying_count=self.carrying_objects,
+            )
+            self.model.comm_manager.send_message(spot_msg, peer_ids)
+            print(
+                f"{self.tag} PEER-SPOT: full, broadcasting spotted {obj_pos} "
+                f"to peer retrievers {peer_ids}"
+            )
+        self.consume_energy(self.energy_consumption["communicate"])
 
     def _send_status_to_coordinators(self) -> None:
         """Send TaskStatusMessage + pending events + spotted objects to nearby coordinators."""
