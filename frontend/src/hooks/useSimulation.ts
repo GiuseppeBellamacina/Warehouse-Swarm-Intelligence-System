@@ -37,6 +37,7 @@ export const useSimulation = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isStopped, setIsStopped] = useState(false);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>("unknown");
   const socketRef = useRef<Socket | null>(null);
 
@@ -70,6 +71,7 @@ export const useSimulation = () => {
     socket.on("simulation_complete", (data) => {
       console.log("Simulation complete:", data);
       setIsRunning(false);
+      setIsStopped(true);
     });
 
     socket.on("simulation_paused", () => {
@@ -83,6 +85,7 @@ export const useSimulation = () => {
     socket.on("simulation_stopped", () => {
       setIsRunning(false);
       setIsPaused(false);
+      setIsStopped(true);
     });
 
     socket.on("simulation_reset", () => {
@@ -91,6 +94,7 @@ export const useSimulation = () => {
       setIsRunning(false);
       setIsPaused(false);
       setIsLoaded(true);
+      setIsStopped(false);
     });
 
     return () => {
@@ -150,6 +154,7 @@ export const useSimulation = () => {
         setIsLoaded(true);
         setIsRunning(false);
         setIsPaused(false);
+        setIsStopped(false);
         return result;
       } catch (error) {
         console.error("Error loading simulation:", error);
@@ -237,6 +242,7 @@ export const useSimulation = () => {
         headers: { "X-Session-ID": SESSION_ID },
       });
       setIsRunning(false);
+      setIsStopped(true);
     } catch (error) {
       console.error("Error stopping simulation:", error);
     }
@@ -279,6 +285,7 @@ export const useSimulation = () => {
     isRunning,
     isPaused,
     isLoaded,
+    isStopped,
     backendStatus,
     wakeBackend,
     setBackendOffline,
