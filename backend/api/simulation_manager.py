@@ -137,9 +137,11 @@ class SimulationManager:
 
     def _find_tl_spawn_position(self) -> Optional[Tuple[int, int]]:
         """
-        Find the next free spawn position by scanning from (0, 0) in
-        row-major order (x increases first, then y), i.e. top-left corner
-        of the grid first.
+        Find the next free spawn position by expanding square shells
+        from (0, 0).  Each shell *d* adds the new column x=d (top to
+        bottom) then the new row y=d (left to right, excluding the
+        corner already visited), keeping agents packed in a tight
+        rectangle as close to the origin as possible.
         """
         if not self.model:
             return None
@@ -148,17 +150,32 @@ class SimulationManager:
             CellType.WAREHOUSE_ENTRANCE,
             CellType.WAREHOUSE_EXIT,
         )
-        for y in range(self.model.grid.height):
-            for x in range(self.model.grid.width):
-                pos = (x, y)
-                if (
-                    pos not in self.occupied_spawn_positions
-                    and self.model.grid.is_walkable(x, y)
-                    and self.model.grid.is_cell_empty(pos)
-                    and self.model.grid.get_cell_type(x, y) not in _WAREHOUSE_TYPES
-                ):
-                    self.occupied_spawn_positions.add(pos)
-                    return pos
+        w, h = self.model.grid.width, self.model.grid.height
+        for d in range(max(w, h)):
+            # New column at x = d  (y: 0 → d)
+            if d < w:
+                for y in range(min(d + 1, h)):
+                    pos = (d, y)
+                    if (
+                        pos not in self.occupied_spawn_positions
+                        and self.model.grid.is_walkable(d, y)
+                        and self.model.grid.is_cell_empty(pos)
+                        and self.model.grid.get_cell_type(d, y) not in _WAREHOUSE_TYPES
+                    ):
+                        self.occupied_spawn_positions.add(pos)
+                        return pos
+            # New row at y = d  (x: 0 → d-1, corner (d,d) already covered)
+            if d < h:
+                for x in range(min(d, w)):
+                    pos = (x, d)
+                    if (
+                        pos not in self.occupied_spawn_positions
+                        and self.model.grid.is_walkable(x, d)
+                        and self.model.grid.is_cell_empty(pos)
+                        and self.model.grid.get_cell_type(x, d) not in _WAREHOUSE_TYPES
+                    ):
+                        self.occupied_spawn_positions.add(pos)
+                        return pos
         return None
 
     def initialize_simulation(self, config: ScenarioConfig) -> None:
