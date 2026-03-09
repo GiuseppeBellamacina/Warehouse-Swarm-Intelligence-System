@@ -2,15 +2,18 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useSimulation } from "./hooks/useSimulation";
+import { useBenchmark } from "./hooks/useBenchmark";
 import { GridCanvas } from "./components/GridCanvas";
 import { ControlPanel } from "./components/ControlPanel";
 import { MetricsDisplay } from "./components/MetricsDisplay";
+import { BenchmarkPanel } from "./components/BenchmarkPanel";
 import { MapEditor } from "./components/MapEditor";
 import { AgentList } from "./components/AgentList";
 import "./index.css";
 
 type ViewMode = "simulation" | "editor";
-type MobileTab = "dashboard" | "agents" | "metrics" | "controls";
+type MobileTab = "dashboard" | "agents" | "metrics" | "controls" | "benchmark";
+type MetricsPanelView = "metrics" | "benchmark";
 
 /** Hook: returns true when viewport width < breakpoint (default 768) */
 function useIsMobile(breakpoint = 768) {
@@ -92,6 +95,46 @@ function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
   const isMobile = useIsMobile();
   const [mobileTab, setMobileTab] = useState<MobileTab>("dashboard");
+  const [metricsPanelView, setMetricsPanelView] =
+    useState<MetricsPanelView>("metrics");
+
+  // ── Benchmark ──
+  const benchmark = useBenchmark();
+
+  /** Feed every simulation state tick into the benchmark recorder. */
+  useEffect(() => {
+    if (benchmark.recording && state) {
+      benchmark.recordTick(state);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, benchmark.recording, benchmark.recordTick]);
+
+  /** Auto-stop recording when simulation stops or completes. */
+  useEffect(() => {
+    if (benchmark.recording && isStopped) {
+      benchmark.stopRecording();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStopped, benchmark.recording, benchmark.stopRecording]);
+
+  const handleStartRecording = useCallback(() => {
+    if (!state) return;
+    const agents = state.agents;
+    const scouts = agents.filter((a) => a.role === "scout").length;
+    const coordinators = agents.filter((a) => a.role === "coordinator").length;
+    const retrievers = agents.filter((a) => a.role === "retriever").length;
+    benchmark.startRecording({
+      configName: state.grid
+        ? `${state.grid.width}×${state.grid.height}`
+        : "unknown",
+      gridSize: state.grid ? [state.grid.width, state.grid.height] : [0, 0],
+      agents: { scouts, coordinators, retrievers },
+      totalObjects: state.metrics.total_objects,
+      seed: null,
+      maxSteps: 0,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, benchmark.startRecording]);
 
   // Wake-up retry loop: ping every 10 s, up to 10 attempts (100 s total)
   const MAX_WAKE_ATTEMPTS = 10;
@@ -518,8 +561,11 @@ function App() {
                   {!isRunning && isLoaded && (
                     <button
                       onClick={resetSimulation}
-                      className="px-3 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-semibold
-                        bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-gray-300 transition-colors"
+                      className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-colors ${
+                        isStopped
+                          ? "bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white"
+                          : "bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-gray-300"
+                      }`}
                     >
                       <svg
                         className="w-3.5 h-3.5"
@@ -586,6 +632,25 @@ function App() {
                 />
               </div>
             )}
+
+            {mobileTab === "benchmark" && (
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm m-1.5">
+                <BenchmarkPanel
+                  runs={benchmark.runs}
+                  recording={benchmark.recording}
+                  onStartRecording={handleStartRecording}
+                  onStopRecording={benchmark.stopRecording}
+                  onCancelRecording={benchmark.cancelRecording}
+                  onDeleteRun={benchmark.deleteRun}
+                  onClearAll={benchmark.clearAllRuns}
+                  onRenameRun={benchmark.renameRun}
+                  onExportJSON={benchmark.exportRunsJSON}
+                  onImportJSON={benchmark.importRunsJSON}
+                  isLoaded={isLoaded}
+                  isRunning={isRunning}
+                />
+              </div>
+            )}
           </div>
 
           {/* ── Mobile bottom tab bar ── */}
@@ -610,6 +675,11 @@ function App() {
                 key: "controls" as MobileTab,
                 label: "Controls",
                 icon: "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z",
+              },
+              {
+                key: "benchmark" as MobileTab,
+                label: "Bench",
+                icon: "M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z",
               },
             ].map(({ key, label, icon }) => (
               <button
@@ -725,13 +795,46 @@ function App() {
 
           <DragHandle onDrag={(dx) => setMetricsW((w) => clamp(w - dx))} />
 
-          {/* Panel 3: Metrics */}
+          {/* Panel 3: Metrics / Benchmark */}
           <div
             className="flex-shrink-0 flex flex-col overflow-hidden bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm"
             style={{ width: metricsW }}
           >
+            {/* Sub-tab toggle */}
+            <div className="flex-shrink-0 flex gap-0.5 m-1.5 mb-0 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
+              {(["metrics", "benchmark"] as MetricsPanelView[]).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setMetricsPanelView(v)}
+                  className={`flex-1 py-1 px-2 rounded-md font-medium text-[11px] transition-all duration-200 ${
+                    metricsPanelView === v
+                      ? "bg-gray-700/80 text-white shadow-sm"
+                      : "text-gray-500 hover:text-gray-300 hover:bg-gray-800/40"
+                  }`}
+                >
+                  {v === "metrics" ? "Metrics" : "Benchmark"}
+                </button>
+              ))}
+            </div>
             <div className="flex-1 overflow-y-auto">
-              <MetricsDisplay state={state} />
+              {metricsPanelView === "metrics" ? (
+                <MetricsDisplay state={state} />
+              ) : (
+                <BenchmarkPanel
+                  runs={benchmark.runs}
+                  recording={benchmark.recording}
+                  onStartRecording={handleStartRecording}
+                  onStopRecording={benchmark.stopRecording}
+                  onCancelRecording={benchmark.cancelRecording}
+                  onDeleteRun={benchmark.deleteRun}
+                  onClearAll={benchmark.clearAllRuns}
+                  onRenameRun={benchmark.renameRun}
+                  onExportJSON={benchmark.exportRunsJSON}
+                  onImportJSON={benchmark.importRunsJSON}
+                  isLoaded={isLoaded}
+                  isRunning={isRunning}
+                />
+              )}
             </div>
           </div>
 

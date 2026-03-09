@@ -1232,8 +1232,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           <button
             onClick={onReset}
             disabled={!isLoaded || !connected}
-            className="bg-gray-600/80 hover:bg-gray-500/80 disabled:bg-gray-700 disabled:cursor-not-allowed
-                       py-2 rounded-md font-medium transition-colors text-xs"
+            className={`py-2 rounded-md font-medium transition-colors text-xs disabled:bg-gray-700 disabled:cursor-not-allowed ${
+              isStopped
+                ? "bg-amber-600/80 hover:bg-amber-500/80 text-white"
+                : "bg-gray-600/80 hover:bg-gray-500/80"
+            }`}
           >
             ↺ Reset
           </button>
