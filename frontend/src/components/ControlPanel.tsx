@@ -18,6 +18,7 @@ interface ControlPanelProps {
   isRunning: boolean;
   isPaused: boolean;
   isLoaded: boolean;
+  isStopped: boolean;
   onLoad: (
     scenario: GridScenarioConfig,
     agents: SimulationAgentsConfig,
@@ -281,6 +282,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   isRunning,
   isPaused,
   isLoaded,
+  isStopped,
   onLoad,
   onStartRun,
   onPause,
@@ -435,7 +437,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
   const canLoad =
     !!rawConfig && !!defaults && !isRunning && connected && !isFetching;
-  const canStart = isLoaded && !isRunning && connected;
+  const canStart = isLoaded && !isRunning && !isStopped && connected;
 
   return (
     <div className="p-4 space-y-4 text-sm select-none">

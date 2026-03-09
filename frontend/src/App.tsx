@@ -10,7 +10,7 @@ import { AgentList } from "./components/AgentList";
 import "./index.css";
 
 type ViewMode = "simulation" | "editor";
-type MobileTab = "map" | "agents" | "metrics" | "controls";
+type MobileTab = "dashboard" | "agents" | "metrics" | "controls";
 
 /** Hook: returns true when viewport width < breakpoint (default 768) */
 function useIsMobile(breakpoint = 768) {
@@ -75,6 +75,7 @@ function App() {
     isRunning,
     isPaused,
     isLoaded,
+    isStopped,
     backendStatus,
     wakeBackend,
     setBackendOffline,
@@ -90,7 +91,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("simulation");
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(null);
   const isMobile = useIsMobile();
-  const [mobileTab, setMobileTab] = useState<MobileTab>("map");
+  const [mobileTab, setMobileTab] = useState<MobileTab>("dashboard");
 
   // Wake-up retry loop: ping every 10 s, up to 10 attempts (100 s total)
   const MAX_WAKE_ATTEMPTS = 10;
@@ -323,29 +324,31 @@ function App() {
 
       {/* ── Main area ── */}
       {isMobile ? (
-        /* ═══ MOBILE LAYOUT: tabbed single-panel ═══ */
+        /* ═══ MOBILE LAYOUT: dashboard + detail tabs ═══ */
         <>
-          <div className="flex-1 flex flex-col overflow-hidden min-h-0 p-1.5 pb-0">
-            {mobileTab === "map" && (
-              <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+            {mobileTab === "dashboard" && (
+              <div className="flex-1 flex flex-col overflow-hidden min-h-0 p-1.5 gap-1.5">
                 {/* Sim / Editor toggle */}
-                <div className="flex-shrink-0 flex gap-0.5 mb-1 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
+                <div className="flex-shrink-0 flex gap-0.5 bg-gray-900/60 p-0.5 rounded-lg border border-gray-800/50">
                   {(["simulation", "editor"] as ViewMode[]).map((mode) => (
                     <button
                       key={mode}
                       onClick={() => setViewMode(mode)}
-                      className={`flex-1 py-1.5 px-3 rounded-md font-medium text-xs transition-all duration-200 ${
+                      className={`flex-1 py-1 px-2 rounded-md font-medium text-[11px] transition-all duration-200 ${
                         viewMode === mode
                           ? "bg-gray-700/80 text-white shadow-sm"
-                          : "text-gray-500 hover:text-gray-300 hover:bg-gray-800/40"
+                          : "text-gray-500 hover:text-gray-300"
                       }`}
                     >
                       {mode === "simulation" ? "Simulation" : "Map Editor"}
                     </button>
                   ))}
                 </div>
+
+                {/* Grid area — takes remaining space */}
                 {viewMode === "simulation" ? (
-                  <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-1.5 min-h-0 backdrop-blur-sm">
+                  <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-1 min-h-0 backdrop-blur-sm">
                     {state && state.grid ? (
                       <GridCanvas
                         state={state}
@@ -373,7 +376,7 @@ function App() {
                     )}
                   </div>
                 ) : (
-                  <div className="flex-1 overflow-auto">
+                  <div className="flex-1 overflow-auto rounded-xl border border-gray-800/60">
                     <MapEditor
                       onExport={(scenario, agents) => {
                         loadConfig(scenario, agents).then(() =>
@@ -383,11 +386,163 @@ function App() {
                     />
                   </div>
                 )}
+
+                {/* ── Key metrics strip ── */}
+                {state && state.metrics && (
+                  <div className="flex-shrink-0 flex gap-1">
+                    {[
+                      {
+                        label: "Step",
+                        value: String(state.step),
+                        color: "text-blue-400",
+                      },
+                      {
+                        label: "Retrieved",
+                        value: `${state.metrics.objects_retrieved}/${state.metrics.total_objects}`,
+                        color: "text-emerald-400",
+                      },
+                      {
+                        label: "Progress",
+                        value: `${(state.metrics.retrieval_progress * 100).toFixed(0)}%`,
+                        color:
+                          state.metrics.retrieval_progress > 0.5
+                            ? "text-emerald-400"
+                            : "text-yellow-400",
+                      },
+                    ].map(({ label, value, color }) => (
+                      <div
+                        key={label}
+                        className="flex-1 bg-gray-800/60 border border-gray-700/40 rounded-lg px-2 py-1.5 text-center"
+                      >
+                        <div className="text-[8px] font-medium text-gray-500 uppercase tracking-widest">
+                          {label}
+                        </div>
+                        <div
+                          className={`text-sm font-bold leading-tight ${color}`}
+                        >
+                          {value}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Action buttons ── */}
+                <div className="flex-shrink-0 flex gap-1.5">
+                  {!isRunning && !isLoaded && (
+                    <button
+                      onClick={() => setMobileTab("controls")}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold
+                        bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white transition-colors"
+                    >
+                      <svg
+                        className="w-3.5 h-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"
+                        />
+                      </svg>
+                      Load Config
+                    </button>
+                  )}
+                  {isLoaded && !isRunning && !isStopped && (
+                    <button
+                      onClick={startSimulation}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold
+                        bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white transition-colors"
+                    >
+                      <svg
+                        className="w-3.5 h-3.5"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                      >
+                        <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+                      </svg>
+                      Start
+                    </button>
+                  )}
+                  {isRunning && !isPaused && (
+                    <button
+                      onClick={pauseSimulation}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold
+                        bg-yellow-600 hover:bg-yellow-500 active:bg-yellow-700 text-white transition-colors"
+                    >
+                      <svg
+                        className="w-3.5 h-3.5"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                      >
+                        <path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75A.75.75 0 007.25 3h-1.5zM12.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 00.75-.75V3.75a.75.75 0 00-.75-.75h-1.5z" />
+                      </svg>
+                      Pause
+                    </button>
+                  )}
+                  {isRunning && isPaused && (
+                    <button
+                      onClick={resumeSimulation}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold
+                        bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white transition-colors"
+                    >
+                      <svg
+                        className="w-3.5 h-3.5"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                      >
+                        <path d="M6.3 2.841A1.5 1.5 0 004 4.11v11.78a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+                      </svg>
+                      Resume
+                    </button>
+                  )}
+                  {isRunning && (
+                    <button
+                      onClick={stopSimulation}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold
+                        bg-red-600 hover:bg-red-500 active:bg-red-700 text-white transition-colors"
+                    >
+                      <svg
+                        className="w-3.5 h-3.5"
+                        fill="currentColor"
+                        viewBox="0 0 20 20"
+                      >
+                        <path d="M5.25 3A2.25 2.25 0 003 5.25v9.5A2.25 2.25 0 005.25 17h9.5A2.25 2.25 0 0017 14.75v-9.5A2.25 2.25 0 0014.75 3h-9.5z" />
+                      </svg>
+                      Stop
+                    </button>
+                  )}
+                  {!isRunning && isLoaded && (
+                    <button
+                      onClick={resetSimulation}
+                      className="px-3 flex items-center justify-center gap-1 py-2 rounded-lg text-xs font-semibold
+                        bg-gray-700 hover:bg-gray-600 active:bg-gray-800 text-gray-300 transition-colors"
+                    >
+                      <svg
+                        className="w-3.5 h-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182"
+                        />
+                      </svg>
+                      Reset
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
             {mobileTab === "agents" && (
-              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm">
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm m-1.5">
                 {state && state.agents && state.agents.length > 0 ? (
                   <AgentList
                     agents={state.agents}
@@ -408,18 +563,19 @@ function App() {
             )}
 
             {mobileTab === "metrics" && (
-              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm">
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm m-1.5">
                 <MetricsDisplay state={state} />
               </div>
             )}
 
             {mobileTab === "controls" && (
-              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm">
+              <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm m-1.5">
                 <ControlPanel
                   connected={connected}
                   isRunning={isRunning}
                   isPaused={isPaused}
                   isLoaded={isLoaded}
+                  isStopped={isStopped}
                   onLoad={loadConfig}
                   onStartRun={startSimulation}
                   onPause={pauseSimulation}
@@ -436,9 +592,9 @@ function App() {
           <nav className="flex-shrink-0 border-t border-gray-800/80 bg-gray-900/80 backdrop-blur-md flex safe-bottom">
             {[
               {
-                key: "map" as MobileTab,
-                label: "Map",
-                icon: "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7",
+                key: "dashboard" as MobileTab,
+                label: "Dashboard",
+                icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1m-2 0h2",
               },
               {
                 key: "agents" as MobileTab,
@@ -592,6 +748,7 @@ function App() {
                 isRunning={isRunning}
                 isPaused={isPaused}
                 isLoaded={isLoaded}
+                isStopped={isStopped}
                 onLoad={loadConfig}
                 onStartRun={startSimulation}
                 onPause={pauseSimulation}
