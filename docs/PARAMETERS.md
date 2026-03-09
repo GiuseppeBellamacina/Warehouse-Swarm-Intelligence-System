@@ -23,16 +23,18 @@ These control the agent's physical capabilities on the grid.
 
 Control how scouts explore, communicate, and avoid redundant work.
 
-| Parameter               | Default | Range    | Description                                                                      |
-| ----------------------- | ------- | -------- | -------------------------------------------------------------------------------- |
-| `recent_target_ttl`     | 50      | ≥ 1      | Steps a reached frontier is blacklisted to prevent oscillation                   |
-| `rescan_age`            | 120     | ≥ 10     | Steps without vision before a cell becomes re-eligible for stale-coverage patrol |
-| `discovery_timeout`     | 80      | ≥ 10     | Steps without a coordinator before discarding undelivered discoveries            |
-| `anti_cluster_distance` | 8       | ≥ 0      | Min Manhattan distance from other scouts when selecting frontiers                |
-| `target_hysteresis`     | 15      | ≥ 0      | Min Manhattan distance before switching to a new best frontier (prevents jitter) |
-| `stuck_threshold`       | 8       | ≥ 1      | Consecutive move failures before giving up on the current target                 |
-| `recharge_threshold`    | 0.25    | 0.05–0.5 | Energy fraction (of `max_energy`) that triggers warehouse recharge               |
-| `target_lock_duration`  | 12      | ≥ 1      | Steps a committed target is locked before frontier re-evaluation is allowed      |
+| Parameter                   | Default | Range    | Description                                                                                                                             |
+| --------------------------- | ------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `recent_target_ttl`         | 50      | ≥ 1      | Steps a reached frontier is blacklisted to prevent oscillation                                                                          |
+| `rescan_age`                | 120     | ≥ 10     | Steps without vision before a cell becomes re-eligible for stale-coverage patrol                                                        |
+| `discovery_timeout`         | 80      | ≥ 10     | Steps without a coordinator before discarding undelivered discoveries                                                                   |
+| `anti_cluster_distance`     | 8       | ≥ 0      | Min Manhattan distance from other scouts when selecting frontiers                                                                       |
+| `target_hysteresis`         | 15      | ≥ 0      | Min Manhattan distance before switching to a new best frontier (prevents jitter)                                                        |
+| `stuck_threshold`           | 8       | ≥ 1      | Consecutive move failures before giving up on the current target                                                                        |
+| `recharge_threshold`        | 0.25    | 0.05–0.5 | Energy fraction (of `max_energy`) that triggers warehouse recharge                                                                      |
+| `target_lock_duration`      | 12      | ≥ 1      | Steps a committed target is locked before frontier re-evaluation is allowed                                                             |
+| `min_frontier_cluster_size` | 5       | ≥ 1      | Minimum unexplored-cell cluster size to consider as a frontier; smaller clusters are ignored (falls back to size 1 if nothing survives) |
+| `seek_coordinator_delay`    | 25      | ≥ 0      | Steps without ANY agent contact before the scout actively seeks a coordinator; info relays passively via `MapDataMessage` until then    |
 
 ### Scout Feature Toggles
 

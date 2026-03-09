@@ -67,7 +67,7 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     }
 
     // Clear canvas
-    ctx.fillStyle = "#1a1a1a";
+    ctx.fillStyle = "#0c0e14";
     ctx.fillRect(0, 0, width, height);
 
     // ── Determine the fog-of-war mask to use ──
@@ -84,7 +84,7 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
     };
 
     // Draw grid lines (subtle)
-    ctx.strokeStyle = "#333";
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
     ctx.lineWidth = 0.5;
     for (let x = 0; x <= gridWidth; x++) {
       ctx.beginPath();
@@ -451,8 +451,8 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         ref={canvasRef}
         width={width}
         height={height}
-        className="border border-gray-700 rounded-lg"
-        style={{ backgroundColor: "#1a1a1a" }}
+        className="border border-gray-800/60 rounded-xl shadow-2xl shadow-black/30"
+        style={{ backgroundColor: "#0c0e14" }}
       />
     </div>
   );

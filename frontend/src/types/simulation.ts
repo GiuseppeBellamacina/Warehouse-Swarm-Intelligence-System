@@ -167,6 +167,9 @@ export interface ScoutBehaviorParams {
   target_hysteresis: number;
   stuck_threshold: number;
   recharge_threshold: number;
+  target_lock_duration: number;
+  min_frontier_cluster_size: number;
+  seek_coordinator_delay: number;
   far_frontier_enabled: boolean;
   stale_coverage_patrol: boolean;
   anti_clustering: boolean;
@@ -212,6 +215,9 @@ export const DEFAULT_SCOUT_BEHAVIOR: ScoutBehaviorParams = {
   target_hysteresis: 15,
   stuck_threshold: 8,
   recharge_threshold: 0.25,
+  target_lock_duration: 12,
+  min_frontier_cluster_size: 5,
+  seek_coordinator_delay: 25,
   far_frontier_enabled: true,
   stale_coverage_patrol: true,
   anti_clustering: true,

@@ -1,13 +1,16 @@
 // Predefined map configurations
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type PresetConfig = Record<string, any>;
+
 export interface MapPreset {
   id: string;
   label: string;
   description: string;
-  config: object;
+  config: PresetConfig;
 }
 
-const pavone: object = {
+const pavone: PresetConfig = {
   simulation: {
     grid_width: 25,
     grid_height: 25,
@@ -184,7 +187,7 @@ const pavone: object = {
   },
 };
 
-const pavoneComplex: object = {
+const pavoneComplex: PresetConfig = {
   simulation: {
     grid_width: 25,
     grid_height: 25,

@@ -9,7 +9,11 @@ import {
   DEFAULT_COORDINATOR_BEHAVIOR,
   DEFAULT_RETRIEVER_BEHAVIOR,
 } from "../types/simulation";
-import { MAP_PRESETS } from "../presets";
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyConfig = Record<string, any>;
 
 type CellType =
   | "free"
@@ -52,8 +56,23 @@ export const MapEditor: React.FC<{
   });
 
   const [isDrawing, setIsDrawing] = useState(false);
+  const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
+
+  // Fetch available configs from backend
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/configs`);
+        if (!res.ok) return;
+        const data = await res.json();
+        setAvailableConfigs(data.configs ?? []);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
 
   // Initialize grid when dimensions change, but skip if cells already match
   useEffect(() => {
@@ -152,24 +171,17 @@ export const MapEditor: React.FC<{
   };
 
   // ---------- JSON import ----------
-  const loadFromConfig = (
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    json: Record<string, any>,
-  ) => {
-    // Detect format: new grid-based (has metadata.grid_size + grid matrix) vs old verbose
-    if (json.metadata?.grid_size !== undefined && Array.isArray(json.grid)) {
-      // ── New compact format ───────────────────────────────────────────────
-      const size: number = json.metadata.grid_size;
-      // The grid matrix may be smaller than grid_size if it was saved with explicit height
-      const height: number = json.grid.length || size;
-      const width: number = json.grid[0]?.length || size;
+  const loadFromConfig = (json: AnyConfig) => {
+    const size: number = json.metadata?.grid_size ?? 25;
+    const height: number = json.grid?.length || size;
+    const width: number = json.grid?.[0]?.length || size;
 
-      const newCells: CellType[][] = Array(height)
-        .fill(null)
-        .map(() => Array(width).fill("free" as CellType));
+    const newCells: CellType[][] = Array(height)
+      .fill(null)
+      .map(() => Array(width).fill("free" as CellType));
 
-      // Map grid values to editor cell types
-      // 0=free, 1=obstacle, 2=warehouse, 3=entrance, 4=exit
+    // Map grid values: 0=free, 1=obstacle, 2=warehouse, 3=entrance, 4=exit
+    if (Array.isArray(json.grid)) {
       for (let row = 0; row < height; row++) {
         for (let col = 0; col < width; col++) {
           const v: number = json.grid[row]?.[col] ?? 0;
@@ -191,84 +203,13 @@ export const MapEditor: React.FC<{
           }
         }
       }
-
-      // Mark object positions as object_zone
-      if (Array.isArray(json.objects)) {
-        for (const [row, col] of json.objects) {
-          if (row >= 0 && row < height && col >= 0 && col < width)
-            newCells[row][col] = "object_zone";
-        }
-      }
-
-      setState((prev) => ({
-        ...prev,
-        gridWidth: width,
-        gridHeight: height,
-        cells: newCells,
-        objectCount: json.metadata.num_objects ?? prev.objectCount,
-      }));
-      return;
     }
 
-    // ── Old verbose format ───────────────────────────────────────────────────
-    const width: number = json.simulation?.grid_width ?? state.gridWidth;
-    const height: number = json.simulation?.grid_height ?? state.gridHeight;
-
-    const newCells: CellType[][] = Array(height)
-      .fill(null)
-      .map(() => Array(width).fill("free" as CellType));
-
-    // Warehouse cells
-    if (json.warehouse?.warehouse_cells) {
-      for (const { x, y } of json.warehouse.warehouse_cells) {
-        if (y >= 0 && y < height && x >= 0 && x < width)
-          newCells[y][x] = "warehouse";
-      }
-    }
-
-    // Entrances
-    if (json.warehouse?.entrances) {
-      for (const { x, y } of json.warehouse.entrances) {
-        if (y >= 0 && y < height && x >= 0 && x < width)
-          newCells[y][x] = "entrance";
-      }
-    }
-
-    // Exits
-    if (json.warehouse?.exits) {
-      for (const { x, y } of json.warehouse.exits) {
-        if (y >= 0 && y < height && x >= 0 && x < width)
-          newCells[y][x] = "exit";
-      }
-    }
-
-    // Obstacles – expand start→end segment
-    if (json.obstacles) {
-      for (const obs of json.obstacles) {
-        const sx: number = obs.start?.x ?? obs.x ?? 0;
-        const sy: number = obs.start?.y ?? obs.y ?? 0;
-        const ex: number = obs.end?.x ?? sx;
-        const ey: number = obs.end?.y ?? sy;
-        for (let cy = Math.min(sy, ey); cy <= Math.max(sy, ey); cy++) {
-          for (let cx = Math.min(sx, ex); cx <= Math.max(sx, ex); cx++) {
-            if (cy >= 0 && cy < height && cx >= 0 && cx < width)
-              newCells[cy][cx] = "obstacle";
-          }
-        }
-      }
-    }
-
-    // Object spawn zones
-    if (json.objects?.spawn_zones) {
-      for (const zone of json.objects.spawn_zones) {
-        const [x0, x1]: [number, number] = zone.x_range ?? [0, 0];
-        const [y0, y1]: [number, number] = zone.y_range ?? [0, 0];
-        for (let cy = Math.min(y0, y1); cy <= Math.max(y0, y1); cy++) {
-          for (let cx = Math.min(x0, x1); cx <= Math.max(x0, x1); cx++) {
-            if (cy >= 0 && cy < height && cx >= 0 && cx < width)
-              if (newCells[cy][cx] === "free") newCells[cy][cx] = "object_zone";
-          }
-        }
+    // Mark object positions as object_zone
+    if (Array.isArray(json.objects)) {
+      for (const [row, col] of json.objects) {
+        if (row >= 0 && row < height && col >= 0 && col < width)
+          newCells[row][col] = "object_zone";
       }
     }
 
@@ -277,10 +218,7 @@ export const MapEditor: React.FC<{
       gridWidth: width,
       gridHeight: height,
       cells: newCells,
-      scouts: json.agents?.scouts?.count ?? prev.scouts,
-      coordinators: json.agents?.coordinators?.count ?? prev.coordinators,
-      retrievers: json.agents?.retrievers?.count ?? prev.retrievers,
-      objectCount: json.objects?.count ?? prev.objectCount,
+      objectCount: json.metadata?.num_objects ?? prev.objectCount,
     }));
   };
 
@@ -467,9 +405,11 @@ export const MapEditor: React.FC<{
   };
 
   return (
-    <div className="bg-gray-800 rounded-lg p-6 space-y-4">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">Map Editor</h2>
+    <div className="p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300">
+          Map Editor
+        </h2>
         <div>
           <input
             ref={importRef}
@@ -480,35 +420,53 @@ export const MapEditor: React.FC<{
           />
           <button
             onClick={() => importRef.current?.click()}
-            className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded font-medium transition text-sm"
-            title="Importa una configurazione JSON per pre-popolare la mappa"
+            className="bg-indigo-600/80 hover:bg-indigo-500/80 px-3 py-1.5 rounded-lg font-medium transition-colors text-xs"
+            title="Import a JSON configuration to pre-populate the map"
           >
-            Importa JSON
+            Import JSON
           </button>
         </div>
       </div>
 
-      {/* Preset selector */}
-      <div className="border border-gray-700 rounded-lg p-3">
-        <p className="text-sm font-medium text-gray-300 mb-2">Preconfigurati</p>
-        <div className="flex flex-wrap gap-2">
-          {MAP_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              onClick={() => loadFromConfig(preset.config)}
-              title={preset.description}
-              className="bg-gray-700 hover:bg-gray-600 border border-gray-600 hover:border-indigo-400 px-3 py-1.5 rounded text-sm font-medium transition"
-            >
-              {preset.label}
-            </button>
-          ))}
+      {/* Preset selector — loaded from backend configs */}
+      {availableConfigs.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-3">
+          <p className="text-[10px] font-medium text-gray-500 uppercase tracking-widest mb-2">
+            Presets
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {availableConfigs.map((name) => (
+              <button
+                key={name}
+                onClick={async () => {
+                  try {
+                    const res = await fetch(
+                      `${BACKEND_URL}/configs/${name}.json`,
+                    );
+                    if (!res.ok) return;
+                    const cfg = await res.json();
+                    loadFromConfig(cfg);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                className="bg-gray-700/60 hover:bg-gray-600/60 border border-gray-600/40 hover:border-indigo-500/40 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all duration-200"
+              >
+                {name
+                  .replace(/_/g, " ")
+                  .replace(/\b\w/g, (l) => l.toUpperCase())}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Grid Size Controls */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-sm font-medium mb-1">Grid Width</label>
+          <label className="block text-[10px] font-medium text-gray-500 uppercase tracking-widest mb-1">
+            Width
+          </label>
           <input
             type="number"
             value={state.gridWidth}
@@ -518,13 +476,16 @@ export const MapEditor: React.FC<{
                 gridWidth: Math.max(10, parseInt(e.target.value) || 10),
               })
             }
-            className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+            className="w-full bg-gray-800/80 border border-gray-600/60 rounded-md px-3 py-1.5 text-xs
+                       focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none transition-colors"
             min="10"
             max="100"
           />
         </div>
         <div>
-          <label className="block text-sm font-medium mb-1">Grid Height</label>
+          <label className="block text-[10px] font-medium text-gray-500 uppercase tracking-widest mb-1">
+            Height
+          </label>
           <input
             type="number"
             value={state.gridHeight}
@@ -534,7 +495,8 @@ export const MapEditor: React.FC<{
                 gridHeight: Math.max(10, parseInt(e.target.value) || 10),
               })
             }
-            className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+            className="w-full bg-gray-800/80 border border-gray-600/60 rounded-md px-3 py-1.5 text-xs
+                       focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none transition-colors"
             min="10"
             max="100"
           />
@@ -543,24 +505,46 @@ export const MapEditor: React.FC<{
 
       {/* Tool Selection */}
       <div>
-        <label className="block text-sm font-medium mb-2">Drawing Tool</label>
-        <div className="grid grid-cols-3 gap-2">
+        <label className="block text-[10px] font-medium text-gray-500 uppercase tracking-widest mb-1.5">
+          Drawing Tool
+        </label>
+        <div className="grid grid-cols-3 gap-1.5">
           {[
-            { value: "obstacle", label: "Obstacle", color: "bg-gray-600" },
-            { value: "warehouse", label: "Warehouse", color: "bg-blue-600" },
-            { value: "entrance", label: "Entrance", color: "bg-green-600" },
-            { value: "exit", label: "Exit", color: "bg-red-600" },
+            {
+              value: "obstacle",
+              label: "Obstacle",
+              color: "bg-gray-600/80 hover:bg-gray-500/80",
+            },
+            {
+              value: "warehouse",
+              label: "Warehouse",
+              color: "bg-blue-600/80 hover:bg-blue-500/80",
+            },
+            {
+              value: "entrance",
+              label: "Entrance",
+              color: "bg-emerald-600/80 hover:bg-emerald-500/80",
+            },
+            {
+              value: "exit",
+              label: "Exit",
+              color: "bg-red-600/80 hover:bg-red-500/80",
+            },
             {
               value: "object_zone",
               label: "Object Zone",
-              color: "bg-yellow-600",
+              color: "bg-yellow-600/80 hover:bg-yellow-500/80",
             },
-            { value: "erase", label: "Erase", color: "bg-gray-900" },
+            {
+              value: "erase",
+              label: "Erase",
+              color: "bg-gray-800/80 hover:bg-gray-700/80",
+            },
           ].map((tool) => (
             <button
               key={tool.value}
               onClick={() => setState({ ...state, tool: tool.value as Tool })}
-              className={`${tool.color} ${state.tool === tool.value ? "ring-2 ring-white" : ""} px-3 py-2 rounded font-medium transition`}
+              className={`${tool.color} ${state.tool === tool.value ? "ring-1 ring-white/60 ring-offset-1 ring-offset-gray-950" : ""} px-2.5 py-1.5 rounded-md font-medium transition-all text-xs`}
             >
               {tool.label}
             </button>
@@ -569,7 +553,7 @@ export const MapEditor: React.FC<{
       </div>
 
       {/* Canvas */}
-      <div className="overflow-auto max-h-[500px] bg-gray-900 rounded border border-gray-700">
+      <div className="overflow-auto max-h-[500px] bg-gray-950/60 rounded-lg border border-gray-700/40">
         <canvas
           ref={canvasRef}
           onMouseDown={() => setIsDrawing(true)}
@@ -582,11 +566,15 @@ export const MapEditor: React.FC<{
       </div>
 
       {/* Agent Configuration */}
-      <div className="border-t border-gray-700 pt-4">
-        <h3 className="text-lg font-semibold mb-3">Agents</h3>
-        <div className="grid grid-cols-2 gap-4">
+      <div className="border-t border-gray-800/60 pt-3">
+        <h3 className="text-[10px] font-medium text-gray-500 uppercase tracking-widest mb-2">
+          Agents
+        </h3>
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium mb-1">Scouts</label>
+            <label className="block text-[10px] text-gray-400 mb-0.5">
+              Scouts
+            </label>
             <input
               type="number"
               value={state.scouts}
@@ -596,12 +584,13 @@ export const MapEditor: React.FC<{
                   scouts: Math.max(0, parseInt(e.target.value) || 0),
                 })
               }
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+              className="w-full bg-gray-800/80 border border-gray-600/60 rounded-md px-3 py-1.5 text-xs
+                         focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none transition-colors"
               min="0"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">
+            <label className="block text-[10px] text-gray-400 mb-0.5">
               Coordinators
             </label>
             <input
@@ -613,12 +602,15 @@ export const MapEditor: React.FC<{
                   coordinators: Math.max(0, parseInt(e.target.value) || 0),
                 })
               }
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+              className="w-full bg-gray-800/80 border border-gray-600/60 rounded-md px-3 py-1.5 text-xs
+                         focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none transition-colors"
               min="0"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Retrievers</label>
+            <label className="block text-[10px] text-gray-400 mb-0.5">
+              Retrievers
+            </label>
             <input
               type="number"
               value={state.retrievers}
@@ -628,12 +620,15 @@ export const MapEditor: React.FC<{
                   retrievers: Math.max(0, parseInt(e.target.value) || 0),
                 })
               }
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+              className="w-full bg-gray-800/80 border border-gray-600/60 rounded-md px-3 py-1.5 text-xs
+                         focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none transition-colors"
               min="0"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Objects</label>
+            <label className="block text-[10px] text-gray-400 mb-0.5">
+              Objects
+            </label>
             <input
               type="number"
               value={state.objectCount}
@@ -643,7 +638,8 @@ export const MapEditor: React.FC<{
                   objectCount: Math.max(1, parseInt(e.target.value) || 1),
                 })
               }
-              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2"
+              className="w-full bg-gray-800/80 border border-gray-600/60 rounded-md px-3 py-1.5 text-xs
+                         focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none transition-colors"
               min="1"
             />
           </div>
@@ -654,13 +650,15 @@ export const MapEditor: React.FC<{
       <div className="flex gap-2">
         <button
           onClick={handleExport}
-          className="flex-1 bg-green-600 hover:bg-green-700 px-4 py-2 rounded font-medium transition"
+          className="flex-1 bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600
+                     py-2 rounded-lg font-semibold transition-all text-xs shadow-md shadow-emerald-900/30"
         >
           Load in Simulation
         </button>
         <button
           onClick={handleDownloadJSON}
-          className="flex-1 bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded font-medium transition"
+          className="flex-1 bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-500 hover:to-purple-600
+                     py-2 rounded-lg font-semibold transition-all text-xs shadow-md shadow-purple-900/30"
         >
           Download JSON
         </button>
