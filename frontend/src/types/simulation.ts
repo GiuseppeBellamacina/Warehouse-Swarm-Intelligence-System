@@ -217,7 +217,7 @@ export const DEFAULT_SCOUT_BEHAVIOR: ScoutBehaviorParams = {
   recharge_threshold: 0.25,
   target_lock_duration: 12,
   min_frontier_cluster_size: 5,
-  seek_coordinator_delay: 25,
+  seek_coordinator_delay: 60,
   far_frontier_enabled: true,
   stale_coverage_patrol: true,
   anti_clustering: true,
@@ -253,7 +253,7 @@ export const DEFAULT_AGENTS_CONFIG: SimulationAgentsConfig = {
     vision_radius: 3,
     communication_radius: 2,
     max_energy: 500,
-    speed: 1.5,
+    speed: 2,
     carrying_capacity: 0,
   },
   coordinators: {

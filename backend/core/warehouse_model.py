@@ -45,6 +45,10 @@ class WarehouseModel(Model):
         if config.simulation.seed is not None:
             np.random.seed(config.simulation.seed)
 
+        # Will be populated by snapshot_rng() after full initialisation
+        self._py_rng_state: Optional[tuple] = None
+        self._np_rng_state: Optional[dict] = None
+
         # Initialize grid
         self.grid = GridManager(
             config.simulation.grid_width, config.simulation.grid_height, torus=False
@@ -178,6 +182,10 @@ class WarehouseModel(Model):
 
         if meta.seed is not None:
             np.random.seed(meta.seed)
+
+        # Will be populated by snapshot_rng() after full initialisation
+        model._py_rng_state = None
+        model._np_rng_state = None
 
         model.grid = GridManager(size, size, torus=False)
         model.comm_manager = CommunicationManager()
@@ -681,6 +689,15 @@ class WarehouseModel(Model):
                     positions[agent_id] = agent.pos
         return positions
 
+    def snapshot_rng(self) -> None:
+        """Capture current RNG state so that ``step()`` can restore it.
+
+        Must be called once after the model and all agents have been fully
+        initialised (i.e. after agent spawning + initial ``step_sense()``).
+        """
+        self._py_rng_state = random.getstate()
+        self._np_rng_state = np.random.get_state()
+
     def step(self) -> None:
         """
         Advance simulation by one step
@@ -691,6 +708,12 @@ class WarehouseModel(Model):
         3. DECIDE: Agents make decisions
         4. ACT: Agents execute actions
         """
+        # Restore private RNG state so that external random consumers
+        # (WebSocket, HTTP handlers, Telegram notifier …) cannot desync us.
+        if self._py_rng_state is not None:
+            random.setstate(self._py_rng_state)
+        if self._np_rng_state is not None:
+            np.random.set_state(self._np_rng_state)
         # Update spatial index for proximity queries
         agent_positions = [agent.pos for agent in self.agents if agent.pos]
         self.grid.update_agent_spatial_index(agent_positions)
@@ -718,6 +741,10 @@ class WarehouseModel(Model):
         if self.objects_retrieved >= self.total_objects:
             self.running = False
             print(f"All objects retrieved in {self.current_step} steps!")
+
+        # Save RNG state for next step (isolates from external consumers)
+        self._py_rng_state = random.getstate()
+        self._np_rng_state = np.random.get_state()
 
     def get_state_dict(self) -> Dict:
         """
