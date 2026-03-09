@@ -149,11 +149,88 @@ export interface AgentRoleParams {
   carrying_capacity: number;
 }
 
+// ── Behavior parameter interfaces (mirror backend Pydantic schemas) ──────────
+
+export interface ScoutBehaviorParams {
+  recent_target_ttl: number;
+  rescan_age: number;
+  discovery_timeout: number;
+  anti_cluster_distance: number;
+  target_hysteresis: number;
+  stuck_threshold: number;
+  recharge_threshold: number;
+  far_frontier_enabled: boolean;
+  stale_coverage_patrol: boolean;
+  anti_clustering: boolean;
+  seek_coordinator: boolean;
+}
+
+export interface CoordinatorBehaviorParams {
+  boredom_threshold: number;
+  pos_max_age: number;
+  recharge_threshold: number;
+  centroid_object_bias: number;
+  sync_rate_limit: number;
+  seek_retrievers: boolean;
+  boredom_patrol: boolean;
+  object_biased_centroid: boolean;
+}
+
+export interface RetrieverBehaviorParams {
+  recharge_threshold: number;
+  stale_claim_age: number;
+  explore_retarget_interval: number;
+  opportunistic_pickup: boolean;
+  task_queue_reorder: boolean;
+  self_assign_from_shared_map: boolean;
+  peer_broadcast: boolean;
+  smart_explore: boolean;
+}
+
 export interface SimulationAgentsConfig {
   scouts: AgentRoleParams;
   coordinators: AgentRoleParams;
   retrievers: AgentRoleParams;
+  scout_behavior: ScoutBehaviorParams;
+  coordinator_behavior: CoordinatorBehaviorParams;
+  retriever_behavior: RetrieverBehaviorParams;
 }
+
+export const DEFAULT_SCOUT_BEHAVIOR: ScoutBehaviorParams = {
+  recent_target_ttl: 50,
+  rescan_age: 120,
+  discovery_timeout: 80,
+  anti_cluster_distance: 8,
+  target_hysteresis: 15,
+  stuck_threshold: 8,
+  recharge_threshold: 0.25,
+  far_frontier_enabled: true,
+  stale_coverage_patrol: true,
+  anti_clustering: true,
+  seek_coordinator: true,
+};
+
+export const DEFAULT_COORDINATOR_BEHAVIOR: CoordinatorBehaviorParams = {
+  boredom_threshold: 20,
+  pos_max_age: 25,
+  recharge_threshold: 0.2,
+  centroid_object_bias: 0.4,
+  sync_rate_limit: 10,
+  seek_retrievers: true,
+  boredom_patrol: true,
+  object_biased_centroid: true,
+};
+
+export const DEFAULT_RETRIEVER_BEHAVIOR: RetrieverBehaviorParams = {
+  recharge_threshold: 0.2,
+  stale_claim_age: 45,
+  explore_retarget_interval: 15,
+  opportunistic_pickup: true,
+  task_queue_reorder: true,
+  self_assign_from_shared_map: true,
+  peer_broadcast: true,
+  smart_explore: true,
+};
 
 /** Default agent configuration matching the backend SimulationAgentsConfig defaults */
 export const DEFAULT_AGENTS_CONFIG: SimulationAgentsConfig = {
@@ -181,4 +258,7 @@ export const DEFAULT_AGENTS_CONFIG: SimulationAgentsConfig = {
     speed: 1.0,
     carrying_capacity: 2,
   },
+  scout_behavior: { ...DEFAULT_SCOUT_BEHAVIOR },
+  coordinator_behavior: { ...DEFAULT_COORDINATOR_BEHAVIOR },
+  retriever_behavior: { ...DEFAULT_RETRIEVER_BEHAVIOR },
 };

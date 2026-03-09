@@ -194,6 +194,111 @@ class GridScenarioConfig(BaseModel):
     objects: List[List[int]]  # [[row, col], ...]
 
 
+class ScoutBehaviorParams(BaseModel):
+    """Tunable behavioral parameters for scout agents (beyond physical stats)."""
+
+    recent_target_ttl: int = Field(
+        default=50, ge=1, description="Steps a reached target is blacklisted to prevent oscillation"
+    )
+    rescan_age: int = Field(
+        default=120,
+        ge=10,
+        description="Steps without vision before a cell becomes re-eligible for patrol",
+    )
+    discovery_timeout: int = Field(
+        default=80,
+        ge=10,
+        description="Steps without coordinator before discarding stale discoveries",
+    )
+    anti_cluster_distance: int = Field(
+        default=8,
+        ge=0,
+        description="Min Manhattan distance from other scouts for frontier selection",
+    )
+    target_hysteresis: int = Field(
+        default=15,
+        ge=0,
+        description="Min Manhattan distance before switching to new frontier target",
+    )
+    stuck_threshold: int = Field(
+        default=8, ge=1, description="Consecutive move failures before giving up on target"
+    )
+    recharge_threshold: float = Field(
+        default=0.25, ge=0.05, le=0.5, description="Energy fraction triggering recharge"
+    )
+    far_frontier_enabled: bool = Field(
+        default=True, description="Prefer distant frontiers over nearby ones"
+    )
+    stale_coverage_patrol: bool = Field(
+        default=True, description="Re-explore cells not seen for rescan_age steps"
+    )
+    anti_clustering: bool = Field(default=True, description="Avoid frontiers near other scouts")
+    seek_coordinator: bool = Field(
+        default=True, description="Move toward last-known coordinator to deliver discoveries"
+    )
+
+
+class CoordinatorBehaviorParams(BaseModel):
+    """Tunable behavioral parameters for coordinator agents."""
+
+    boredom_threshold: int = Field(
+        default=20, ge=5, description="Idle steps before forcing waypoint patrol"
+    )
+    pos_max_age: int = Field(
+        default=25, ge=5, description="Max age (steps) of retriever positions for centroid"
+    )
+    recharge_threshold: float = Field(
+        default=0.20, ge=0.05, le=0.5, description="Energy fraction triggering recharge"
+    )
+    centroid_object_bias: float = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Weight of pending-object centroid vs retriever centroid (0=only retrievers, 1=only objects)",
+    )
+    sync_rate_limit: int = Field(
+        default=10, ge=1, description="Min steps between coordinator-to-coordinator syncs"
+    )
+    seek_retrievers: bool = Field(
+        default=True, description="Move toward retrievers when tasks exist but none in range"
+    )
+    boredom_patrol: bool = Field(
+        default=True, description="Force waypoint cycling after idle threshold"
+    )
+    object_biased_centroid: bool = Field(
+        default=True, description="Bias positioning toward pending objects"
+    )
+
+
+class RetrieverBehaviorParams(BaseModel):
+    """Tunable behavioral parameters for retriever agents."""
+
+    recharge_threshold: float = Field(
+        default=0.20, ge=0.05, le=0.5, description="Energy fraction triggering recharge"
+    )
+    stale_claim_age: int = Field(
+        default=45, ge=10, description="Steps before a peer's claim is considered stale"
+    )
+    explore_retarget_interval: int = Field(
+        default=15, ge=1, description="Steps between picking new idle explore targets"
+    )
+    opportunistic_pickup: bool = Field(
+        default=True, description="Claim nearby unclaimed objects while traveling"
+    )
+    task_queue_reorder: bool = Field(
+        default=True, description="Re-sort task queue by distance every step (nearest first)"
+    )
+    self_assign_from_shared_map: bool = Field(
+        default=True, description="Claim objects learned from peers, not just vision"
+    )
+    peer_broadcast: bool = Field(
+        default=True, description="Full retrievers push spotted objects to peer retrievers"
+    )
+    smart_explore: bool = Field(
+        default=True, description="Head toward UNKNOWN boundary when idle (vs random walk)"
+    )
+
+
 class AgentRoleParams(BaseModel):
     """Per-role agent parameters used with the new grid format"""
 
@@ -223,3 +328,9 @@ class SimulationAgentsConfig(BaseModel):
             count=3, vision_radius=2, communication_radius=2, carrying_capacity=2
         )
     )
+
+    scout_behavior: ScoutBehaviorParams = Field(default_factory=ScoutBehaviorParams)
+    coordinator_behavior: CoordinatorBehaviorParams = Field(
+        default_factory=CoordinatorBehaviorParams
+    )
+    retriever_behavior: RetrieverBehaviorParams = Field(default_factory=RetrieverBehaviorParams)

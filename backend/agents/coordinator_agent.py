@@ -41,6 +41,7 @@ class CoordinatorAgent(BaseAgent):
         communication_radius: int = 3,
         max_energy: float = 500.0,
         speed: float = 1.0,
+        behavior: Optional[dict] = None,
     ):
         super().__init__(
             unique_id=unique_id,
@@ -56,6 +57,17 @@ class CoordinatorAgent(BaseAgent):
                 "communicate": 0.0,
             },
         )
+
+        # ── Behavior params (overridable from UI / config) ─────────────
+        _b = behavior or {}
+        self._BOREDOM_THRESHOLD: int = _b.get("boredom_threshold", 20)
+        self._POS_MAX_AGE: int = _b.get("pos_max_age", 25)
+        self._RECHARGE_THRESHOLD: float = _b.get("recharge_threshold", 0.20)
+        self._CENTROID_OBJECT_BIAS: float = _b.get("centroid_object_bias", 0.4)
+        self._SYNC_RATE_LIMIT: int = _b.get("sync_rate_limit", 10)
+        self._SEEK_RETRIEVERS: bool = _b.get("seek_retrievers", True)
+        self._BOREDOM_PATROL: bool = _b.get("boredom_patrol", True)
+        self._OBJECT_BIASED_CENTROID: bool = _b.get("object_biased_centroid", True)
 
         self.state = AgentState.IDLE
         self.pathfinder = AStarPathfinder(model.grid)
@@ -97,7 +109,6 @@ class CoordinatorAgent(BaseAgent):
         # When this exceeds _BOREDOM_THRESHOLD the coordinator forces a waypoint
         # patrol pass rather than continuing to sit near the agent centroid.
         self._idle_steps: int = 0
-        self._BOREDOM_THRESHOLD: int = 20
 
         # Warehouse recharge sub-state machine (analogous to retriever _wh_step)
         self._coord_wh_step: Optional[str] = None  # None | "approach" | "recharge" | "exit"
@@ -275,7 +286,7 @@ class CoordinatorAgent(BaseAgent):
         # Check if need to recharge — only start the sub-machine when energy is
         # genuinely low.  Skip if already at or above the recharge trigger range to
         # avoid the coordinator wandering into a warehouse and immediately exiting.
-        if self.energy < self.max_energy * 0.20:
+        if self.energy < self.max_energy * self._RECHARGE_THRESHOLD:
             if self.state != AgentState.RECHARGING:
                 closest_wh = self.get_closest_warehouse()
                 if closest_wh:
@@ -323,7 +334,7 @@ class CoordinatorAgent(BaseAgent):
             # up-to-date even in steps where it is busy sending assignments.
 
         # Priority 1b: Tasks exist but no retrievers in range — go find them
-        if not self.tasks_to_assign and self._seek_retrievers_if_needed():
+        if self._SEEK_RETRIEVERS and not self.tasks_to_assign and self._seek_retrievers_if_needed():
             return
 
         # Priority 2: Explore / reposition — runs every step so state is always current
@@ -443,7 +454,7 @@ class CoordinatorAgent(BaseAgent):
             if cid is None:
                 continue
             last = self.last_sync_step.get(cid, -999)
-            if current_step - last < 10:
+            if current_step - last < self._SYNC_RATE_LIMIT:
                 continue  # already synced recently
             self.last_sync_step[cid] = current_step
 
@@ -564,12 +575,11 @@ class CoordinatorAgent(BaseAgent):
         # Stale positions (retrievers that have moved far away and stopped reporting)
         # would pin the coordinator to the delivery area — if no fresh data is available,
         # fall back to the waypoint patrol so the coordinator keeps moving.
-        _POS_MAX_AGE = 25  # steps; tuned to ~2 communication cycles
         cs_now = self.model.current_step
         agent_positions = [
             tuple(p)
             for rid, p in self.retriever_positions.items()
-            if p and cs_now - self.retriever_positions_step.get(rid, -9999) <= _POS_MAX_AGE
+            if p and cs_now - self.retriever_positions_step.get(rid, -9999) <= self._POS_MAX_AGE
         ]
 
         # Boredom check: if the coordinator has been IDLE for too long AND there
@@ -578,10 +588,9 @@ class CoordinatorAgent(BaseAgent):
         # IMPORTANT: skip the patrol when known_objects exist — the coordinator
         # must stay near retrievers to deliver those assignments, not wander off.
         no_work_pending = not any(
-            pos not in self.objects_being_collected
-            for pos in self.known_objects
+            pos not in self.objects_being_collected for pos in self.known_objects
         )
-        if self._idle_steps >= self._BOREDOM_THRESHOLD and no_work_pending:
+        if self._BOREDOM_PATROL and self._idle_steps >= self._BOREDOM_THRESHOLD and no_work_pending:
             self._idle_steps = 0
             agent_positions = []  # pretend we have no positions → waypoint branch
 
@@ -640,9 +649,8 @@ class CoordinatorAgent(BaseAgent):
                 # Cap the "already_reached" threshold at 8 cells regardless of
                 # communication_radius: large radii would mark every waypoint as
                 # already-reached and collapse the patrol entirely.
-                already_reached = (
-                    abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1])
-                    <= min(8, max_distance_from_agents)
+                already_reached = abs(my_pos[0] - wp[0]) + abs(my_pos[1] - wp[1]) <= min(
+                    8, max_distance_from_agents
                 )
                 if still_blacklisted or already_reached:
                     self._search_waypoint_idx += 1
@@ -669,16 +677,22 @@ class CoordinatorAgent(BaseAgent):
         # positions itself where it can quickly relay new assignments
         # rather than trailing behind retrievers that are already busy.
         pending_obj_positions = [
-            pos for pos in self.known_objects
-            if pos not in self.objects_being_collected
-            and pos not in self.assigned_tasks.values()
+            pos
+            for pos in self.known_objects
+            if pos not in self.objects_being_collected and pos not in self.assigned_tasks.values()
         ]
-        if pending_obj_positions:
-            # Weighted average: 60% retriever centroid, 40% object centroid
+        if self._OBJECT_BIASED_CENTROID and pending_obj_positions:
+            # Weighted average: (1 - bias) retriever centroid, bias object centroid
             obj_cx = sum(p[0] for p in pending_obj_positions) / len(pending_obj_positions)
             obj_cy = sum(p[1] for p in pending_obj_positions) / len(pending_obj_positions)
-            centroid_x = centroid_x * 0.6 + obj_cx * 0.4
-            centroid_y = centroid_y * 0.6 + obj_cy * 0.4
+            centroid_x = (
+                centroid_x * (1.0 - self._CENTROID_OBJECT_BIAS)
+                + obj_cx * self._CENTROID_OBJECT_BIAS
+            )
+            centroid_y = (
+                centroid_y * (1.0 - self._CENTROID_OBJECT_BIAS)
+                + obj_cy * self._CENTROID_OBJECT_BIAS
+            )
 
         centroid = (int(centroid_x), int(centroid_y))
 
@@ -774,7 +788,8 @@ class CoordinatorAgent(BaseAgent):
         if self._coord_wh_step is None:
             # Use congestion-aware warehouse selection (same as retrievers)
             visible_entrances = [
-                wh for wh in self.known_warehouses
+                wh
+                for wh in self.known_warehouses
                 if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
             ]
             station = self.model.get_best_warehouse_for(

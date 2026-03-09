@@ -60,6 +60,7 @@ class RetrieverAgent(BaseAgent):
         max_energy: float = 500.0,
         speed: float = 1.0,
         carrying_capacity: int = 2,
+        behavior: Optional[dict] = None,
     ):
         super().__init__(
             unique_id=unique_id,
@@ -75,6 +76,17 @@ class RetrieverAgent(BaseAgent):
                 "communicate": 0.0,
             },
         )
+
+        # ── Behavior params (overridable from UI / config) ─────────────
+        _b = behavior or {}
+        self._RECHARGE_THRESHOLD: float = _b.get("recharge_threshold", 0.20)
+        self._STALE_CLAIM_AGE: int = _b.get("stale_claim_age", 45)
+        self._EXPLORE_RETARGET: int = _b.get("explore_retarget_interval", 15)
+        self._OPPORTUNISTIC_PICKUP: bool = _b.get("opportunistic_pickup", True)
+        self._TASK_QUEUE_REORDER: bool = _b.get("task_queue_reorder", True)
+        self._SELF_ASSIGN: bool = _b.get("self_assign_from_shared_map", True)
+        self._PEER_BROADCAST: bool = _b.get("peer_broadcast", True)
+        self._SMART_EXPLORE: bool = _b.get("smart_explore", True)
 
         self.carrying_capacity = carrying_capacity
         self.carrying_objects = 0
@@ -263,7 +275,7 @@ class RetrieverAgent(BaseAgent):
             # else: still have capacity AND queued tasks — fall through to P3
 
         # ---- P2: Recharge if energy critically low ----
-        if self.energy < self.max_energy * 0.20 and self._wh_step is None:
+        if self.energy < self.max_energy * self._RECHARGE_THRESHOLD and self._wh_step is None:
             self._start_warehouse_sequence("recharge")
             return
 
@@ -277,10 +289,11 @@ class RetrieverAgent(BaseAgent):
             # Re-sort queue by Manhattan distance so the nearest task is always first.
             # This avoids FIFO suboptimality: a closer task added later should be
             # picked up before a farther task added earlier.
-            pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
-            self.task_queue.sort(
-                key=lambda t: abs(t[0] - pos_tuple[0]) + abs(t[1] - pos_tuple[1])
-            )
+            if self._TASK_QUEUE_REORDER:
+                pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                self.task_queue.sort(
+                    key=lambda t: abs(t[0] - pos_tuple[0]) + abs(t[1] - pos_tuple[1])
+                )
 
             next_target = self.task_queue[0]
             # Skip if object is gone from the world
@@ -308,7 +321,8 @@ class RetrieverAgent(BaseAgent):
             # Even if we already have a primary task, try to claim unclaimed objects
             # that are close by and fit in the remaining carrying slots.
             if self.state == AgentState.RETRIEVING and self._wh_step is None:
-                self._try_opportunistic_pickup()
+                if self._OPPORTUNISTIC_PICKUP:
+                    self._try_opportunistic_pickup()
             return
 
         # ---- P4: No tasks — self-assign from full known_objects map before exploring ----
@@ -317,7 +331,7 @@ class RetrieverAgent(BaseAgent):
         # behaviour: if any peer has spotted objects and shared the info, the retriever
         # will proactively head there without waiting for a coordinator assignment.
         if self._wh_step is None:
-            if self._try_self_assign_visible():
+            if self._SELF_ASSIGN and self._try_self_assign_visible():
                 return  # claimed something, P3 will handle it next step
             self._update_explore_target()
 
@@ -434,7 +448,7 @@ class RetrieverAgent(BaseAgent):
                 claim_data = self.model.comm_manager.claimed_objects.get(obj_pos)
                 if claim_data is not None:
                     _, claim_time, _ = claim_data
-                    if self.model.current_step - claim_time < 45:
+                    if self.model.current_step - claim_time < self._STALE_CLAIM_AGE:
                         continue  # fresh claim by someone else — skip
                 # else: stale claim — fall through to let try_claim_object take over
             # layer 3: peer queue check
@@ -567,33 +581,39 @@ class RetrieverAgent(BaseAgent):
 
         # Pick a new target every 15 steps or when we don't have one
         self._explore_steps += 1
-        if self._explore_target is None or self._explore_steps > 15:
+        if self._explore_target is None or self._explore_steps > self._EXPLORE_RETARGET:
             self._explore_steps = 0
 
             # --- Strategy 1: head toward UNKNOWN boundary cells ---
             # If the retriever's local map still has unexplored areas, head there
             # to expand coverage and potentially spot new objects.
-            import numpy as _np
-            unknown_mask = self.local_map == 0
-            if _np.any(unknown_mask):
-                padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
-                has_explored = _np.zeros_like(unknown_mask)
-                for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                    has_explored |= padded[1 + dy: padded.shape[0] - 1 + dy,
-                                           1 + dx: padded.shape[1] - 1 + dx] != 0
-                boundary = unknown_mask & has_explored
-                b_ys, b_xs = _np.where(boundary)
-                if len(b_ys) > 0:
-                    # Pick the nearest boundary cell
-                    dists = _np.abs(b_xs - pos_tuple[0]) + _np.abs(b_ys - pos_tuple[1])
-                    nearest_idx = int(_np.argmin(dists))
-                    target = (int(b_xs[nearest_idx]), int(b_ys[nearest_idx]))
-                    if self.model.grid.is_walkable(*target):
-                        self._explore_target = target
-                        self.target_position = target
-                        self.path = []
-                        self.state = AgentState.EXPLORING
-                        return
+            if self._SMART_EXPLORE:
+                import numpy as _np
+
+                unknown_mask = self.local_map == 0
+                if _np.any(unknown_mask):
+                    padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
+                    has_explored = _np.zeros_like(unknown_mask)
+                    for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                        has_explored |= (
+                            padded[
+                                1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx
+                            ]
+                            != 0
+                        )
+                    boundary = unknown_mask & has_explored
+                    b_ys, b_xs = _np.where(boundary)
+                    if len(b_ys) > 0:
+                        # Pick the nearest boundary cell
+                        dists = _np.abs(b_xs - pos_tuple[0]) + _np.abs(b_ys - pos_tuple[1])
+                        nearest_idx = int(_np.argmin(dists))
+                        target = (int(b_xs[nearest_idx]), int(b_ys[nearest_idx]))
+                        if self.model.grid.is_walkable(*target):
+                            self._explore_target = target
+                            self.target_position = target
+                            self.path = []
+                            self.state = AgentState.EXPLORING
+                            return
 
             # --- Strategy 2: random walkable cell (fallback) ---
             candidates = []
@@ -634,7 +654,8 @@ class RetrieverAgent(BaseAgent):
         # even if no coordinator is nearby.  Peers can then self-assign immediately
         # rather than waiting for the next passive MapDataMessage relay.
         if self.newly_spotted_objects and self.carrying_objects >= self.carrying_capacity:
-            self._broadcast_spotted_to_peers()
+            if self._PEER_BROADCAST:
+                self._broadcast_spotted_to_peers()
 
         # OPTION 1: Communicate status to coordinators (non-blocking — movement still runs).
         # Must run AFTER peer broadcast so both channels see the full spotted list

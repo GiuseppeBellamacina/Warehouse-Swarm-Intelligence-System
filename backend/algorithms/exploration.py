@@ -45,10 +45,10 @@ class FrontierExplorer:
         # Boolean mask: at least one 8-neighbour is UNKNOWN (value 0)
         # Check all 8 shifts on the padded array (offset +1 due to padding)
         has_unknown_neighbour = np.zeros_like(is_free)
-        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                        (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-            has_unknown_neighbour |= padded[1 + dy: padded.shape[0] - 1 + dy,
-                                            1 + dx: padded.shape[1] - 1 + dx] == 0
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            has_unknown_neighbour |= (
+                padded[1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx] == 0
+            )
 
         frontier_map = is_free & has_unknown_neighbour
 
@@ -135,7 +135,7 @@ class FrontierExplorer:
             # With linear distance: cluster_size=3 at dist=2 (score=1.0) beats
             # cluster_size=15 at dist=25 (score=0.58) — wrong direction.
             # With dist^0.4: those same examples score 1.24 vs 2.97 respectively.
-            utility = (cluster_size / (dist ** 0.4 + 1)) - agent_penalty * 2
+            utility = (cluster_size / (dist**0.4 + 1)) - agent_penalty * 2
 
             if utility > best_utility:
                 best_utility = utility

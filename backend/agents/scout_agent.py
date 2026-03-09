@@ -1,7 +1,7 @@
 """
 Scout Agent - Fast explorer with wide vision
 """
- 
+
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -36,6 +36,7 @@ class ScoutAgent(BaseAgent):
         communication_radius: int = 2,
         max_energy: float = 500.0,
         speed: float = 1.5,
+        behavior: Optional[dict] = None,
     ):
         super().__init__(
             unique_id=unique_id,
@@ -51,6 +52,20 @@ class ScoutAgent(BaseAgent):
                 "communicate": 0.0,
             },
         )
+
+        # ── Behavior params (overridable from UI / config) ─────────────
+        _b = behavior or {}
+        self._RECENT_TARGET_TTL: int = _b.get("recent_target_ttl", 50)
+        self._RESCAN_AGE: int = _b.get("rescan_age", 120)
+        self._DISCOVERY_TIMEOUT: int = _b.get("discovery_timeout", 80)
+        self._ANTI_CLUSTER_DIST: int = _b.get("anti_cluster_distance", 8)
+        self._TARGET_HYSTERESIS: int = _b.get("target_hysteresis", 15)
+        self._STUCK_THRESHOLD: int = _b.get("stuck_threshold", 8)
+        self._RECHARGE_THRESHOLD: float = _b.get("recharge_threshold", 0.25)
+        self._FAR_FRONTIER_ENABLED: bool = _b.get("far_frontier_enabled", True)
+        self._STALE_COVERAGE_PATROL: bool = _b.get("stale_coverage_patrol", True)
+        self._ANTI_CLUSTERING: bool = _b.get("anti_clustering", True)
+        self._SEEK_COORDINATOR: bool = _b.get("seek_coordinator", True)
 
         self.state = AgentState.EXPLORING
         self.pathfinder = AStarPathfinder(model.grid)
@@ -80,10 +95,7 @@ class ScoutAgent(BaseAgent):
 
         # Recently-reached targets: blacklisted for _RECENT_TARGET_TTL steps after arrival
         # so the scout does not immediately oscillate back to a just-explored cell.
-        # TTL is intentionally short: long blackouts cause stagnation by exhausting
-        # all nearby frontiers and forcing the scout into extended random-walk phases.
         self._recent_targets: Dict[Tuple[int, int], int] = {}
-        self._RECENT_TARGET_TTL: int = 50
 
         # Coverage map: tracks the model step at which each cell was last physically
         # within this scout's vision radius.  When all frontier exploration is
@@ -94,7 +106,6 @@ class ScoutAgent(BaseAgent):
         H = model.grid.height
         W = model.grid.width
         self._coverage_step: np.ndarray = np.zeros((H, W), dtype=np.int32)
-        self._RESCAN_AGE: int = 120  # steps without vision before a cell is re-eligible
 
         # Setup decision making
         self._setup_decision_maker()
@@ -165,7 +176,7 @@ class ScoutAgent(BaseAgent):
         # ---- Priority 1: Recharge if critically low (< 25 %) ----
         # MUST be checked before discoveries so a scout carrying pending discoveries
         # never starves to death while looping on the coordinator-broadcast path.
-        if self.energy < self.max_energy * 0.25:
+        if self.energy < self.max_energy * self._RECHARGE_THRESHOLD:
             if self._scout_wh_step is None:
                 # Start the warehouse recharge sub-state machine
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
@@ -205,7 +216,7 @@ class ScoutAgent(BaseAgent):
                 return
             # No coordinator in range — head toward the last known coordinator position
             # so the scout can hand off its discoveries without just waiting idly.
-            if self.last_seen_coordinator_pos:
+            if self._SEEK_COORDINATOR and self.last_seen_coordinator_pos:
                 my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
                 dist_to_saved = abs(self.last_seen_coordinator_pos[0] - my_pos[0]) + abs(
                     self.last_seen_coordinator_pos[1] - my_pos[1]
@@ -240,9 +251,9 @@ class ScoutAgent(BaseAgent):
                         f"({len(self.newly_discovered_objects)} discoveries pending)"
                     )
                     return
-            # No known coordinator position — keep discoveries, but discard after 80 steps
+            # No known coordinator position — keep discoveries, but discard after timeout
             # of being truly unable to locate any coordinator.
-            if self._discovery_age > 80:
+            if self._discovery_age > self._DISCOVERY_TIMEOUT:
                 print(
                     f"{self.tag} TIMEOUT: discarding "
                     f"{len(self.newly_discovered_objects)} stale discoveries"
@@ -266,8 +277,7 @@ class ScoutAgent(BaseAgent):
 
         # Expire unreachable_targets entries that are older than their 30-step TTL
         # so the dict doesn't grow unbounded (base_agent never auto-purges it).
-        for pos in [p for p, s in self.unreachable_targets.items()
-                    if current_step - s >= 30]:
+        for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 30]:
             del self.unreachable_targets[pos]
 
         frontiers = FrontierExplorer.find_frontiers(self.local_map)
@@ -293,35 +303,42 @@ class ScoutAgent(BaseAgent):
             for a in nearby
             if getattr(a, "role", None) == "scout" and a.pos and pos_to_tuple(a.pos) != my_pos
         ]
-        anti_clustered = [
-            f
-            for f in valid_frontiers
-            if all(abs(f[0][0] - sp[0]) + abs(f[0][1] - sp[1]) >= 8 for sp in scout_positions)
-        ]
-        frontiers_to_use = anti_clustered if anti_clustered else valid_frontiers
+        if self._ANTI_CLUSTERING:
+            anti_clustered = [
+                f
+                for f in valid_frontiers
+                if all(
+                    abs(f[0][0] - sp[0]) + abs(f[0][1] - sp[1]) >= self._ANTI_CLUSTER_DIST
+                    for sp in scout_positions
+                )
+            ]
+            frontiers_to_use = anti_clustered if anti_clustered else valid_frontiers
+        else:
+            frontiers_to_use = valid_frontiers
 
         if frontiers_to_use:
-            # Prefer frontiers that require actual travel (> 2× vision radius) so the
-            # scout pushes into genuinely new territory rather than hopping between
-            # tiny adjacent clusters it can already partially see.
-            min_dist = max(self.vision_radius * 2, 8)
-            far_frontiers = [
-                f for f in frontiers_to_use
-                if abs(f[0][0] - my_pos[0]) + abs(f[0][1] - my_pos[1]) >= min_dist
-            ]
-            # When ONLY nearby frontiers remain, skip them and jump directly to
-            # stale-coverage patrol.  This avoids the A→B→A oscillation between
-            # a handful of adjacent residual clusters: the scout will instead seek
-            # the oldest-unseen area of the map before returning to work any
-            # leftover nearby frontiers on its way back.
-            if not far_frontiers:
-                self._pick_stale_coverage_target(my_pos)
-                if self.target_position is not None:
-                    return  # heading to a stale area
-                # No stale area either — fall through and let nearby frontiers run
-                frontiers_to_use = frontiers_to_use  # keep as-is (already near-only)
-            else:
-                frontiers_to_use = far_frontiers
+            if self._FAR_FRONTIER_ENABLED:
+                # Prefer frontiers that require actual travel (> 2× vision radius) so the
+                # scout pushes into genuinely new territory rather than hopping between
+                # tiny adjacent clusters it can already partially see.
+                min_dist = max(self.vision_radius * 2, 8)
+                far_frontiers = [
+                    f
+                    for f in frontiers_to_use
+                    if abs(f[0][0] - my_pos[0]) + abs(f[0][1] - my_pos[1]) >= min_dist
+                ]
+                # When ONLY nearby frontiers remain, skip them and jump directly to
+                # stale-coverage patrol.  This avoids the A→B→A oscillation between
+                # a handful of adjacent residual clusters.
+                if not far_frontiers:
+                    if self._STALE_COVERAGE_PATROL:
+                        self._pick_stale_coverage_target(my_pos)
+                        if self.target_position is not None:
+                            return  # heading to a stale area
+                    # No stale area either — fall through and let nearby frontiers run
+                    frontiers_to_use = frontiers_to_use  # keep as-is (already near-only)
+                else:
+                    frontiers_to_use = far_frontiers
 
             nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
             best = FrontierExplorer.select_best_frontier(frontiers_to_use, my_pos, nearby_positions)
@@ -330,7 +347,9 @@ class ScoutAgent(BaseAgent):
                 # current one — prevents jittering between two nearby candidates.
                 if (
                     not self.target_position
-                    or abs(best[0] - self.target_position[0]) + abs(best[1] - self.target_position[1]) > 15
+                    or abs(best[0] - self.target_position[0])
+                    + abs(best[1] - self.target_position[1])
+                    > self._TARGET_HYSTERESIS
                 ):
                     self.target_position = best
                     self.path = []
@@ -345,7 +364,7 @@ class ScoutAgent(BaseAgent):
         # Triggered only when _pick_unexplored_target found nothing (map fully
         # explored).  The scout seeks the oldest-unseen explored cell so it
         # continuously re-sweeps the warehouse for newly-appeared objects.
-        if self.target_position is None:
+        if self.target_position is None and self._STALE_COVERAGE_PATROL:
             self._pick_stale_coverage_target(my_pos)
 
     def _pick_stale_coverage_target(self, my_pos: Tuple[int, int]) -> None:
@@ -450,8 +469,9 @@ class ScoutAgent(BaseAgent):
         padded = np.pad(self.local_map, 1, mode="constant", constant_values=0)
         has_explored_neighbour = np.zeros_like(unknown_mask)
         for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-            has_explored_neighbour |= padded[1 + dy: padded.shape[0] - 1 + dy,
-                                             1 + dx: padded.shape[1] - 1 + dx] != 0
+            has_explored_neighbour |= (
+                padded[1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx] != 0
+            )
 
         boundary_mask = unknown_mask & has_explored_neighbour
         b_ys, b_xs = np.where(boundary_mask)
@@ -521,7 +541,7 @@ class ScoutAgent(BaseAgent):
 
                 if not moved:
                     self.consecutive_failures_on_target += 1
-                    if self.consecutive_failures_on_target >= 8:
+                    if self.consecutive_failures_on_target >= self._STUCK_THRESHOLD:
                         print(f"{self.tag} STUCK: giving up on " f"{self.target_position}")
                         if self.target_position:
                             self.unreachable_targets[self.target_position] = self.model.current_step
@@ -547,7 +567,7 @@ class ScoutAgent(BaseAgent):
                 self._pick_unexplored_target(my_pos)
 
                 # Fallback 2: oldest unvisited explored cell (cyclic patrol)
-                if self.target_position is None:
+                if self.target_position is None and self._STALE_COVERAGE_PATROL:
                     self._pick_stale_coverage_target(my_pos)
 
                 if self.target_position:
