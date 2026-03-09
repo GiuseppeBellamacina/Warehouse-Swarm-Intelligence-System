@@ -598,12 +598,15 @@ class RetrieverAgent(BaseAgent):
         if self.should_communicate_this_step:
             self._send_status_to_coordinators()
 
-        # Consume newly_spotted_objects here — both communication channels above have
-        # processed the list.  Clearing before the warehouse-step early-return ensures
-        # stale entries never accumulate across steps regardless of which branch fires.
+        # Consume both event lists here — all communication channels above have already
+        # processed them.  Clearing unconditionally before the warehouse-step early-return
+        # ensures neither list accumulates across steps regardless of which branch fires.
         # (When a coordinator was present, _send_status_to_coordinators already cleared
-        # the list; this is a harmless no-op in that case.)
+        # both lists; these are harmless no-ops in that case.  In retriever-only mode —
+        # no coordinator ever nearby — pending_events would grow unbounded without this
+        # unconditional drain, because _send_status_to_coordinators never fires.)
         self.newly_spotted_objects = []
+        self.pending_events = []
 
         # OPTION 2: Handle warehouse sub-sequence
         if self._wh_step is not None and self._wh_station is not None:

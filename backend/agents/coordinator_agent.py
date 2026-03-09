@@ -277,7 +277,6 @@ class CoordinatorAgent(BaseAgent):
                     self.state = AgentState.RECHARGING
                     self.target_position = closest_wh
                     self.recharge_attempt_start = self.model.current_step
-                    self.was_recharging_at_warehouse = False
                     # Always reset sub-machine so it re-initialises cleanly
                     self._coord_wh_step = None
                     self._coord_wh_station = None

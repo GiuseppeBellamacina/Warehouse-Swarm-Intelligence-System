@@ -125,7 +125,35 @@ class ScoutAgent(BaseAgent):
         if self._scout_wh_step is not None:
             return
 
-        # ---- Priority 1: Communicate discoveries to any nearby coordinator ----
+        # ---- Priority 1: Recharge if critically low (< 25 %) ----
+        # MUST be checked before discoveries so a scout carrying pending discoveries
+        # never starves to death while looping on the coordinator-broadcast path.
+        if self.energy < self.max_energy * 0.25:
+            if self._scout_wh_step is None:
+                # Start the warehouse recharge sub-state machine
+                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                visible_entrances = [
+                    wh
+                    for wh in self.known_warehouses
+                    if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
+                ]
+                station = self.model.get_best_warehouse_for(
+                    pos=my_pos,
+                    known_entrances=visible_entrances,
+                    agent_energy=self.energy,
+                )
+                self._scout_wh_station = station
+                self._scout_wh_step = "approach"
+                self.state = AgentState.RECHARGING
+                self.target_position = station.get("entrance")
+                print(
+                    f"{self.tag} LOW-E ({self.energy:.1f}), "
+                    f"heading to WH entrance {self.target_position}"
+                )
+            # Sub-machine runs in step_act — just return here
+            return
+
+        # ---- Priority 2: Communicate discoveries to any nearby coordinator ----
         if self.newly_discovered_objects:
             # _discovery_age counts steps WITHOUT a known coordinator destination.
             # While we are actively heading somewhere don't count — reset instead.
@@ -186,32 +214,6 @@ class ScoutAgent(BaseAgent):
                 self._discovery_age = 0
         else:
             self._discovery_age = 0
-
-        # ---- Priority 2: Recharge if critically low (< 25 %) ----
-        if self.energy < self.max_energy * 0.25:
-            if self._scout_wh_step is None:
-                # Start the warehouse recharge sub-state machine
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                visible_entrances = [
-                    wh
-                    for wh in self.known_warehouses
-                    if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
-                ]
-                station = self.model.get_best_warehouse_for(
-                    pos=my_pos,
-                    known_entrances=visible_entrances,
-                    agent_energy=self.energy,
-                )
-                self._scout_wh_station = station
-                self._scout_wh_step = "approach"
-                self.state = AgentState.RECHARGING
-                self.target_position = station.get("entrance")
-                print(
-                    f"{self.tag} LOW-E ({self.energy:.1f}), "
-                    f"heading to WH entrance {self.target_position}"
-                )
-            # Sub-machine runs in step_act — just return here
-            return
 
         # ---- Priority 3: Frontier-based exploration ----
         self.state = AgentState.EXPLORING
@@ -323,10 +325,14 @@ class ScoutAgent(BaseAgent):
 
         # OPTION 1: Communicate newly discovered objects to coordinators
         if self.should_communicate_this_step and self.newly_discovered_objects:
-            self._broadcast_discovered_objects()
-            self.newly_discovered_objects = []
-            self._discovery_age = 0
-            return  # Don't move this step
+            sent = self._broadcast_discovered_objects()
+            # Only consume the list when at least one coordinator actually received it.
+            # If the coordinator moved out of range between decide and act, the objects
+            # are preserved for the next step rather than silently discarded.
+            if sent:
+                self.newly_discovered_objects = []
+                self._discovery_age = 0
+            return  # Don't move this step regardless (avoid double-action)
 
         # OPTION 2: Warehouse recharge sub-state machine
         if self._scout_wh_step is not None:
@@ -505,14 +511,18 @@ class ScoutAgent(BaseAgent):
                 if exit_cell:
                     self.move_towards(exit_cell)
 
-    def _broadcast_discovered_objects(self) -> None:
-        """Send object location messages to nearby coordinators"""
+    def _broadcast_discovered_objects(self) -> bool:
+        """Send object location messages to nearby coordinators.
+
+        Returns True if at least one coordinator received the broadcast,
+        False if no coordinator was in range (caller should NOT clear the list).
+        """
         # Get nearby coordinators
         nearby = self.get_nearby_agents(self.communication_radius)
         coordinators = [a for a in nearby if getattr(a, "role", None) == "coordinator"]
 
         if not coordinators:
-            return
+            return False
 
         coordinator_ids = [
             getattr(c, "unique_id", 0) for c in coordinators if hasattr(c, "unique_id")
@@ -550,3 +560,4 @@ class ScoutAgent(BaseAgent):
         # Consume energy for broadcast
         self.consume_energy(self.energy_consumption["communicate"] * len(coordinators))
         self.last_communication_step = self.model.current_step
+        return True
