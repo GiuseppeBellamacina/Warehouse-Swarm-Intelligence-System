@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useSimulation } from "./hooks/useSimulation";
 import { useBenchmark } from "./hooks/useBenchmark";
+import { GridScenarioConfig, SimulationAgentsConfig } from "./types/simulation";
 import { GridCanvas } from "./components/GridCanvas";
 import { ControlPanel } from "./components/ControlPanel";
 import { MetricsDisplay } from "./components/MetricsDisplay";
@@ -98,6 +99,18 @@ function App() {
   const [metricsPanelView, setMetricsPanelView] =
     useState<MetricsPanelView>("metrics");
 
+  // Capture last-loaded agents config for benchmark snapshot
+  const lastAgentsConfigRef = useRef<SimulationAgentsConfig | null>(null);
+
+  const wrappedLoadConfig = useCallback(
+    async (scenario: GridScenarioConfig, agents?: SimulationAgentsConfig) => {
+      const result = await loadConfig(scenario, agents);
+      if (agents) lastAgentsConfigRef.current = agents;
+      return result;
+    },
+    [loadConfig],
+  );
+
   // ── Benchmark ──
   const benchmark = useBenchmark();
 
@@ -169,6 +182,7 @@ function App() {
         },
       },
       totalObjects: state.metrics.total_objects,
+      configSnapshot: lastAgentsConfigRef.current ?? undefined,
       seed: null,
       maxSteps: 0,
     });
@@ -249,15 +263,15 @@ function App() {
   );
 
   // Panel widths in pixels — initialised as % of viewport.
-  // Agents 18% | Map 42.5% (flex-1) | Metrics 18% | Controls 22.5%
+  // Agents 15.5% | Map 39% (flex-1) | Metrics 23% | Controls 20%
   const [agentsW, setAgentsW] = useState(() =>
-    Math.round(window.innerWidth * 0.18),
+    Math.round(window.innerWidth * 0.155),
   );
   const [metricsW, setMetricsW] = useState(() =>
-    Math.round(window.innerWidth * 0.18),
+    Math.round(window.innerWidth * 0.23),
   );
   const [controlsW, setControlsW] = useState(() =>
-    Math.round(window.innerWidth * 0.225),
+    Math.round(window.innerWidth * 0.2),
   );
 
   const MIN = 120;
@@ -461,7 +475,7 @@ function App() {
                   <div className="flex-1 overflow-auto rounded-xl border border-gray-800/60">
                     <MapEditor
                       onExport={(scenario, agents) => {
-                        loadConfig(scenario, agents).then(() =>
+                        wrappedLoadConfig(scenario, agents).then(() =>
                           setViewMode("simulation"),
                         );
                       }}
@@ -661,7 +675,7 @@ function App() {
                   isPaused={isPaused}
                   isLoaded={isLoaded}
                   isStopped={isStopped}
-                  onLoad={loadConfig}
+                  onLoad={wrappedLoadConfig}
                   onStartRun={startSimulation}
                   onPause={pauseSimulation}
                   onResume={resumeSimulation}
@@ -683,6 +697,7 @@ function App() {
                   onDeleteRun={benchmark.deleteRun}
                   onClearAll={benchmark.clearAllRuns}
                   onRenameRun={benchmark.renameRun}
+                  onUpdateNotes={benchmark.updateNotes}
                   onExportJSON={benchmark.exportRunsJSON}
                   onImportJSON={benchmark.importRunsJSON}
                   isLoaded={isLoaded}
@@ -823,7 +838,7 @@ function App() {
               <div className="flex-1 overflow-auto">
                 <MapEditor
                   onExport={(scenario, agents) => {
-                    loadConfig(scenario, agents).then(() =>
+                    wrappedLoadConfig(scenario, agents).then(() =>
                       setViewMode("simulation"),
                     );
                   }}
@@ -868,6 +883,7 @@ function App() {
                   onDeleteRun={benchmark.deleteRun}
                   onClearAll={benchmark.clearAllRuns}
                   onRenameRun={benchmark.renameRun}
+                  onUpdateNotes={benchmark.updateNotes}
                   onExportJSON={benchmark.exportRunsJSON}
                   onImportJSON={benchmark.importRunsJSON}
                   isLoaded={isLoaded}
@@ -891,7 +907,7 @@ function App() {
                 isPaused={isPaused}
                 isLoaded={isLoaded}
                 isStopped={isStopped}
-                onLoad={loadConfig}
+                onLoad={wrappedLoadConfig}
                 onStartRun={startSimulation}
                 onPause={pauseSimulation}
                 onResume={resumeSimulation}

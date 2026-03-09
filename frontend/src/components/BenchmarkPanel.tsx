@@ -1,7 +1,8 @@
 // Benchmark Panel — recording controls, run history, comparison charts, PNG export
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useMemo } from "react";
 import { BenchmarkRun, BenchmarkSnapshot } from "../hooks/useBenchmark";
+import { SimulationAgentsConfig } from "../types/simulation";
 
 // ── Theme palette ────────────────────────────────────────────────────────────
 
@@ -693,6 +694,72 @@ const CHART_DEFS: {
   },
 ];
 
+// ── Config diff helper ───────────────────────────────────────────────────────
+
+/** Flatten a SimulationAgentsConfig into a flat record of human-readable key → value. */
+function flattenConfig(
+  cfg: SimulationAgentsConfig,
+): Record<string, string | number | boolean> {
+  const flat: Record<string, string | number | boolean> = {};
+  for (const role of ["scouts", "coordinators", "retrievers"] as const) {
+    const r = cfg[role];
+    flat[`${role}.count`] = r.count;
+    flat[`${role}.vision_radius`] = r.vision_radius;
+    flat[`${role}.communication_radius`] = r.communication_radius;
+    flat[`${role}.max_energy`] = r.max_energy;
+    flat[`${role}.speed`] = r.speed;
+    flat[`${role}.carrying_capacity`] = r.carrying_capacity;
+  }
+  for (const [bKey, bVal] of [
+    ["scout_behavior", cfg.scout_behavior],
+    ["coordinator_behavior", cfg.coordinator_behavior],
+    ["retriever_behavior", cfg.retriever_behavior],
+  ] as const) {
+    if (!bVal) continue;
+    for (const [k, v] of Object.entries(
+      bVal as unknown as Record<string, unknown>,
+    )) {
+      if (
+        typeof v === "number" ||
+        typeof v === "boolean" ||
+        typeof v === "string"
+      )
+        flat[`${bKey}.${k}`] = v;
+    }
+  }
+  return flat;
+}
+
+interface ConfigDiff {
+  key: string;
+  values: (string | number | boolean | null)[];
+}
+
+/** Compare configSnapshots across runs; return only keys that differ. */
+function diffConfigs(runs: BenchmarkRun[]): ConfigDiff[] {
+  const configs = runs.map((r) =>
+    r.configSnapshot ? flattenConfig(r.configSnapshot) : null,
+  );
+  if (configs.every((c) => c === null)) return [];
+  // Collect all keys
+  const allKeys = new Set<string>();
+  for (const c of configs) {
+    if (c) Object.keys(c).forEach((k) => allKeys.add(k));
+  }
+  const diffs: ConfigDiff[] = [];
+  for (const key of [...allKeys].sort()) {
+    const vals = configs.map((c) => (c ? (c[key] ?? null) : null));
+    // Check if any value differs
+    const first = vals.find((v) => v !== null);
+    if (first === undefined) continue;
+    const allSame = vals.every((v) => v === null || v === first);
+    if (!allSame) {
+      diffs.push({ key, values: vals });
+    }
+  }
+  return diffs;
+}
+
 interface BenchmarkPanelProps {
   runs: BenchmarkRun[];
   recording: boolean;
@@ -702,6 +769,7 @@ interface BenchmarkPanelProps {
   onDeleteRun: (id: string) => void;
   onClearAll: () => void;
   onRenameRun: (id: string, label: string) => void;
+  onUpdateNotes: (id: string, notes: string) => void;
   onExportJSON: () => void;
   onImportJSON: (file: File) => void;
   /** Is the simulation loaded (so we can start recording)? */
@@ -718,6 +786,7 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
   onDeleteRun,
   onClearAll,
   onRenameRun,
+  onUpdateNotes,
   onExportJSON,
   onImportJSON,
   isLoaded,
@@ -795,6 +864,12 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
       })),
     ),
   }));
+
+  // Auto-diff configs of selected runs
+  const configDiffs = useMemo(
+    () => (selectedRuns.length >= 2 ? diffConfigs(selectedRuns) : []),
+    [selectedRuns],
+  );
 
   const canRecord = isLoaded && !recording;
 
@@ -931,84 +1006,99 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
             No runs recorded yet
           </p>
         ) : (
-          <div className="space-y-1 max-h-48 overflow-y-auto">
+          <div className="space-y-1 max-h-64 overflow-y-auto">
             {runs.map((run) => {
               const selected = selectedIds.has(run.id);
               const color = selected
                 ? pickColor([...selectedIds].indexOf(run.id))
                 : undefined;
               return (
-                <div
-                  key={run.id}
-                  className={`flex items-center gap-1.5 p-1.5 rounded-md border transition-colors cursor-pointer ${
-                    selected
-                      ? "bg-gray-700/60 border-gray-600/60"
-                      : "bg-gray-800/30 border-gray-800/40 hover:border-gray-700/50"
-                  }`}
-                  onClick={() => toggleRun(run.id)}
-                >
-                  {/* Color indicator */}
+                <div key={run.id} className="space-y-0">
                   <div
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0 border"
-                    style={{
-                      backgroundColor: selected ? color : "transparent",
-                      borderColor: selected ? color : "#4b5563",
-                    }}
-                  />
+                    className={`flex items-center gap-1.5 p-1.5 rounded-md border transition-colors cursor-pointer ${
+                      selected
+                        ? "bg-gray-700/60 border-gray-600/60"
+                        : "bg-gray-800/30 border-gray-800/40 hover:border-gray-700/50"
+                    }`}
+                    onClick={() => toggleRun(run.id)}
+                  >
+                    {/* Color indicator */}
+                    <div
+                      className="w-2.5 h-2.5 rounded-full flex-shrink-0 border"
+                      style={{
+                        backgroundColor: selected ? color : "transparent",
+                        borderColor: selected ? color : "#4b5563",
+                      }}
+                    />
 
-                  {/* Label / edit */}
-                  <div className="flex-1 min-w-0">
-                    {editingId === run.id ? (
-                      <input
-                        autoFocus
-                        value={editLabel}
-                        onChange={(e) => setEditLabel(e.target.value)}
-                        onBlur={() => handleRename(run.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleRename(run.id);
-                          if (e.key === "Escape") setEditingId(null);
-                        }}
-                        className="w-full bg-gray-900 border border-gray-600 rounded px-1 py-0.5 text-[10px] text-gray-200 outline-none"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      <div className="truncate text-[10px] font-medium text-gray-300">
-                        {run.label}
+                    {/* Label / edit */}
+                    <div className="flex-1 min-w-0">
+                      {editingId === run.id ? (
+                        <input
+                          autoFocus
+                          value={editLabel}
+                          onChange={(e) => setEditLabel(e.target.value)}
+                          onBlur={() => handleRename(run.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleRename(run.id);
+                            if (e.key === "Escape") setEditingId(null);
+                          }}
+                          className="w-full bg-gray-900 border border-gray-600 rounded px-1 py-0.5 text-[10px] text-gray-200 outline-none"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <div className="truncate text-[10px] font-medium text-gray-300">
+                          {run.label}
+                        </div>
+                      )}
+                      <div className="text-[9px] text-gray-600 truncate">
+                        {run.configName} · {run.summary?.totalSteps ?? 0} steps
+                        · {run.summary?.completionPct.toFixed(0) ?? 0}%
                       </div>
-                    )}
-                    <div className="text-[9px] text-gray-600 truncate">
-                      {run.configName} · {run.summary?.totalSteps ?? 0} steps ·{" "}
-                      {run.summary?.completionPct.toFixed(0) ?? 0}%
                     </div>
+
+                    {/* Actions */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingId(run.id);
+                        setEditLabel(run.label);
+                      }}
+                      className="text-gray-600 hover:text-gray-400 p-0.5"
+                      title="Rename"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteRun(run.id);
+                        setSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          next.delete(run.id);
+                          return next;
+                        });
+                      }}
+                      className="text-gray-600 hover:text-red-400 p-0.5"
+                      title="Delete"
+                    >
+                      ✕
+                    </button>
                   </div>
 
-                  {/* Actions */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setEditingId(run.id);
-                      setEditLabel(run.label);
-                    }}
-                    className="text-gray-600 hover:text-gray-400 p-0.5"
-                    title="Rename"
-                  >
-                    ✎
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteRun(run.id);
-                      setSelectedIds((prev) => {
-                        const next = new Set(prev);
-                        next.delete(run.id);
-                        return next;
-                      });
-                    }}
-                    className="text-gray-600 hover:text-red-400 p-0.5"
-                    title="Delete"
-                  >
-                    ✕
-                  </button>
+                  {/* Notes — shown when selected */}
+                  {selected && (
+                    <div className="ml-4 mt-0.5 mb-1">
+                      <textarea
+                        value={run.notes ?? ""}
+                        onChange={(e) => onUpdateNotes(run.id, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        placeholder="Notes (e.g. smart_explore=false, increased vision…)"
+                        rows={2}
+                        className="w-full bg-gray-900/80 border border-gray-700/50 rounded px-1.5 py-1 text-[9px] text-gray-400 placeholder-gray-700 resize-none outline-none focus:border-gray-500 leading-tight"
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1070,6 +1160,65 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
             </svg>
             Export chart as PNG
           </button>
+        </div>
+      )}
+
+      {/* ── Config diff between selected runs ── */}
+      {selectedRuns.length >= 2 && configDiffs.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+          <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest">
+            Config Differences
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[9px]">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-700/40">
+                  <th className="text-left py-0.5 pr-2 font-medium">
+                    Parameter
+                  </th>
+                  {selectedRuns.map((run, i) => (
+                    <th
+                      key={run.id}
+                      className="text-right py-0.5 px-1 font-medium"
+                    >
+                      <span
+                        className="inline-block w-1.5 h-1.5 rounded-full mr-0.5"
+                        style={{ backgroundColor: pickColor(i) }}
+                      />
+                      {run.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {configDiffs.map((d) => (
+                  <tr
+                    key={d.key}
+                    className="border-b border-gray-800/30 text-gray-300"
+                  >
+                    <td className="py-0.5 pr-2 font-mono text-gray-400">
+                      {d.key}
+                    </td>
+                    {d.values.map((v, vi) => (
+                      <td key={vi} className="text-right py-0.5 px-1 font-mono">
+                        {v === null ? (
+                          <span className="text-gray-600">—</span>
+                        ) : typeof v === "boolean" ? (
+                          <span
+                            className={v ? "text-emerald-400" : "text-red-400"}
+                          >
+                            {String(v)}
+                          </span>
+                        ) : (
+                          String(v)
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

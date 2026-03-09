@@ -1,7 +1,7 @@
 // Benchmark data collection & session management hook
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { SimulationState } from "../types/simulation";
+import { SimulationState, SimulationAgentsConfig } from "../types/simulation";
 
 // ── Data model ───────────────────────────────────────────────────────────────
 
@@ -40,6 +40,10 @@ export interface BenchmarkRun {
     coordinators: BenchmarkAgentParams;
     retrievers: BenchmarkAgentParams;
   };
+  /** Full agents configuration snapshot (includes behavior params) */
+  configSnapshot?: SimulationAgentsConfig;
+  /** User-provided notes / annotations */
+  notes: string;
   /** Total objects in the scenario */
   totalObjects: number;
   /** Seed used */
@@ -146,6 +150,7 @@ export const useBenchmark = () => {
         coordinators: BenchmarkAgentParams;
         retrievers: BenchmarkAgentParams;
       };
+      configSnapshot?: SimulationAgentsConfig;
       totalObjects: number;
       seed: number | null;
       maxSteps: number;
@@ -163,6 +168,8 @@ export const useBenchmark = () => {
         gridSize: opts.gridSize,
         agents: opts.agents,
         agentParams: opts.agentParams,
+        configSnapshot: opts.configSnapshot,
+        notes: "",
         totalObjects: opts.totalObjects,
         seed: opts.seed,
         maxSteps: opts.maxSteps,
@@ -228,6 +235,11 @@ export const useBenchmark = () => {
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, label } : r)));
   }, []);
 
+  /** Update notes for a run. */
+  const updateNotes = useCallback((id: string, notes: string) => {
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, notes } : r)));
+  }, []);
+
   /** Export all runs as JSON. */
   const exportRunsJSON = useCallback(() => {
     const blob = new Blob([JSON.stringify(runs, null, 2)], {
@@ -273,6 +285,7 @@ export const useBenchmark = () => {
     deleteRun,
     clearAllRuns,
     renameRun,
+    updateNotes,
     exportRunsJSON,
     importRunsJSON,
   };
