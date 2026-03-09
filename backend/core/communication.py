@@ -44,12 +44,14 @@ class MapDataMessage(Message):
     - known_objects:           {(x,y): Stamped(value=float, step=int)}
     - objects_being_collected: {(x,y): Stamped(value=None,  step=int)}
     - retriever_positions:     {rid:   Stamped(value=(x,y), step=int)}
+    - coordinator_positions:   {cid:   Stamped(value=(x,y), step=int)}
     """
 
     explored_cells: List[Tuple[int, int, int]]
     known_objects: Dict = field(default_factory=dict)  # {(x,y): Stamped}
     objects_being_collected: Dict = field(default_factory=dict)  # {(x,y): Stamped}
     retriever_positions: Dict = field(default_factory=dict)  # {rid:   Stamped}
+    coordinator_positions: Dict = field(default_factory=dict)  # {cid:   Stamped}
 
 
 @dataclass

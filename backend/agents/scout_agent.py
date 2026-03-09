@@ -95,6 +95,7 @@ class ScoutAgent(BaseAgent):
         # Last known coordinator position — used to seek the coordinator when
         # discoveries are pending but no coordinator is currently in comms range.
         self.last_seen_coordinator_pos: Optional[Tuple[int, int]] = None
+        self._last_seen_coordinator_step: int = 0
 
         # Step at which this scout last had ANY agent within communication range.
         # Used to decide whether passive relay (MapDataMessage) is likely propagating
@@ -161,13 +162,24 @@ class ScoutAgent(BaseAgent):
         # Update last known coordinator position whenever one is within vision
         # (use vision_radius so we track coordinator movements sooner than comm range)
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        cs = self.model.current_step
         for agent in self.model.agents:
             if getattr(agent, "role", None) == "coordinator" and agent.pos:
                 c_pos = pos_to_tuple(agent.pos)
                 dist = abs(c_pos[0] - my_pos[0]) + abs(c_pos[1] - my_pos[1])
                 if dist <= self.vision_radius:
                     self.last_seen_coordinator_pos = c_pos
+                    self._last_seen_coordinator_step = cs
                     break
+
+        # Also check relayed coordinator positions (received from other agents
+        # via MapDataMessage).  Use the freshest one if it is newer than what
+        # we have from direct vision.
+        for cid, c_pos in self.coordinator_positions.items():
+            c_step = self.coordinator_positions_step.get(cid, 0)
+            if c_step > self._last_seen_coordinator_step:
+                self.last_seen_coordinator_pos = (int(c_pos[0]), int(c_pos[1]))
+                self._last_seen_coordinator_step = c_step
 
         # Mark all cells currently within vision as surveyed in the coverage map.
         # The coverage map is local-only (never broadcast) and decays over time;

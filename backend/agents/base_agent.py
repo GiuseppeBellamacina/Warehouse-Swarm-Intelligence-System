@@ -118,6 +118,11 @@ class BaseAgent(Agent):
         # Step at which each retriever_positions entry was last updated
         self.retriever_positions_step: Dict[int, int] = {}
 
+        # Last-known positions of coordinators, learned via message relay
+        # {coordinator_id: (x, y)} — re-broadcast so every agent is a relay
+        self.coordinator_positions: Dict[int, Tuple[int, int]] = {}
+        self.coordinator_positions_step: Dict[int, int] = {}
+
         # Known warehouse locations
         self.known_warehouses: List[Tuple[int, int]] = []
 
@@ -381,6 +386,11 @@ class BaseAgent(Agent):
                 for rid, p in self.retriever_positions.items()
                 if p
             },
+            coordinator_positions={
+                cid: Stamped(tuple(p), self.coordinator_positions_step.get(cid, 0))
+                for cid, p in self.coordinator_positions.items()
+                if p
+            },
         )
 
         # Send to all nearby agents
@@ -476,6 +486,14 @@ class BaseAgent(Agent):
                     if step > self.retriever_positions_step.get(rid, -1):
                         self.retriever_positions[rid] = tuple(pos_val)
                         self.retriever_positions_step[rid] = step
+
+                # --- coordinator_positions relay: Stamped(value=(x,y), step), newest wins ---
+                for cid, stamped in message.coordinator_positions.items():
+                    pos_val = stamped.value if isinstance(stamped, Stamped) else stamped[0]
+                    step = stamped.step if isinstance(stamped, Stamped) else stamped[1]
+                    if step > self.coordinator_positions_step.get(cid, -1):
+                        self.coordinator_positions[cid] = tuple(pos_val)
+                        self.coordinator_positions_step[cid] = step
 
             elif isinstance(message, ObjectLocationMessage):
                 # Accept only if newer, not tombstoned, and not currently being collected
@@ -915,6 +933,23 @@ class BaseAgent(Agent):
         # Perceive visible cells
         visible = self.perceive_environment()
         self.update_local_map(visible)
+
+        # Track coordinator positions from direct vision so every agent
+        # can relay them via MapDataMessage.
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        cs = self.model.current_step
+        # If this agent IS a coordinator, register own position first
+        if getattr(self, "role", None) == "coordinator":
+            self.coordinator_positions[self.unique_id] = my_pos
+            self.coordinator_positions_step[self.unique_id] = cs
+        for agent in self.model.agents:
+            if getattr(agent, "role", None) == "coordinator" and agent.pos:
+                c_pos = pos_to_tuple(agent.pos)
+                dist = abs(c_pos[0] - my_pos[0]) + abs(c_pos[1] - my_pos[1])
+                if dist <= self.vision_radius:
+                    cid = agent.unique_id
+                    self.coordinator_positions[cid] = c_pos
+                    self.coordinator_positions_step[cid] = cs
 
     def step_communicate(self) -> None:
         """Stage 1: Drain mailbox once, share map, process messages."""
