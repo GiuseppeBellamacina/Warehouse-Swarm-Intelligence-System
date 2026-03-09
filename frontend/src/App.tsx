@@ -150,16 +150,16 @@ function App() {
     [],
   );
 
-  // Panel widths in pixels — initialised as % of viewport so the map gets ~50%,
-  // agents ~15%, metrics ~15%, controls ~20%.
+  // Panel widths in pixels — initialised as % of viewport.
+  // Agents 18% | Map 42.5% (flex-1) | Metrics 18% | Controls 22.5%
   const [agentsW, setAgentsW] = useState(() =>
-    Math.round(window.innerWidth * 0.15),
+    Math.round(window.innerWidth * 0.18),
   );
   const [metricsW, setMetricsW] = useState(() =>
-    Math.round(window.innerWidth * 0.15),
+    Math.round(window.innerWidth * 0.18),
   );
   const [controlsW, setControlsW] = useState(() =>
-    Math.round(window.innerWidth * 0.2),
+    Math.round(window.innerWidth * 0.225),
   );
 
   const MIN = 120;
