@@ -120,15 +120,54 @@ function App() {
   const handleStartRecording = useCallback(() => {
     if (!state) return;
     const agents = state.agents;
-    const scouts = agents.filter((a) => a.role === "scout").length;
-    const coordinators = agents.filter((a) => a.role === "coordinator").length;
-    const retrievers = agents.filter((a) => a.role === "retriever").length;
+    const scoutAgents = agents.filter((a) => a.role === "scout");
+    const coordAgents = agents.filter((a) => a.role === "coordinator");
+    const retrieverAgents = agents.filter((a) => a.role === "retriever");
+
+    const avgParam = (
+      arr: typeof agents,
+      fn: (a: (typeof agents)[0]) => number,
+    ) => (arr.length > 0 ? arr.reduce((s, a) => s + fn(a), 0) / arr.length : 0);
+
     benchmark.startRecording({
       configName: state.grid
         ? `${state.grid.width}×${state.grid.height}`
         : "unknown",
       gridSize: state.grid ? [state.grid.width, state.grid.height] : [0, 0],
-      agents: { scouts, coordinators, retrievers },
+      agents: {
+        scouts: scoutAgents.length,
+        coordinators: coordAgents.length,
+        retrievers: retrieverAgents.length,
+      },
+      agentParams: {
+        scouts: {
+          visionRadius: avgParam(scoutAgents, (a) => a.vision_radius),
+          communicationRadius: avgParam(
+            scoutAgents,
+            (a) => a.communication_radius,
+          ),
+          speed: 1,
+          maxEnergy: avgParam(scoutAgents, (a) => a.max_energy),
+        },
+        coordinators: {
+          visionRadius: avgParam(coordAgents, (a) => a.vision_radius),
+          communicationRadius: avgParam(
+            coordAgents,
+            (a) => a.communication_radius,
+          ),
+          speed: 1,
+          maxEnergy: avgParam(coordAgents, (a) => a.max_energy),
+        },
+        retrievers: {
+          visionRadius: avgParam(retrieverAgents, (a) => a.vision_radius),
+          communicationRadius: avgParam(
+            retrieverAgents,
+            (a) => a.communication_radius,
+          ),
+          speed: 1,
+          maxEnergy: avgParam(retrieverAgents, (a) => a.max_energy),
+        },
+      },
       totalObjects: state.metrics.total_objects,
       seed: null,
       maxSteps: 0,

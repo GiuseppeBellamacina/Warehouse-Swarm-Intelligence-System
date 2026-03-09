@@ -3,6 +3,33 @@
 import React, { useState, useRef, useCallback } from "react";
 import { BenchmarkRun, BenchmarkSnapshot } from "../hooks/useBenchmark";
 
+// ── Theme palette ────────────────────────────────────────────────────────────
+
+type ChartTheme = "dark" | "light";
+
+const THEME = {
+  dark: {
+    bg: "#111318",
+    title: "#e5e7eb",
+    axisLabel: "#9ca3af",
+    tickLabel: "#6b7280",
+    grid: "#374151",
+    axis: "#4b5563",
+    legend: "#d1d5db",
+    dotStroke: "#111318",
+  },
+  light: {
+    bg: "#ffffff",
+    title: "#111827",
+    axisLabel: "#4b5563",
+    tickLabel: "#6b7280",
+    grid: "#e5e7eb",
+    axis: "#9ca3af",
+    legend: "#374151",
+    dotStroke: "#ffffff",
+  },
+} as const;
+
 // ── Tiny SVG chart renderer (no external dep) ───────────────────────────────
 
 interface ChartSeries {
@@ -18,6 +45,7 @@ interface ChartProps {
   xLabel?: string;
   width?: number;
   height?: number;
+  theme?: ChartTheme;
 }
 
 const CHART_COLORS = [
@@ -42,7 +70,9 @@ const SVGChart: React.FC<ChartProps> = ({
   xLabel = "Step",
   width = 620,
   height = 320,
+  theme = "dark",
 }) => {
+  const t = THEME[theme];
   const pad = { top: 40, right: 20, bottom: 52, left: 58 };
   const w = width - pad.left - pad.right;
   const h = height - pad.top - pad.bottom;
@@ -88,14 +118,14 @@ const SVGChart: React.FC<ChartProps> = ({
       width={width}
       height={height}
       className="w-full h-auto"
-      style={{ background: "#111318", borderRadius: 8 }}
+      style={{ background: t.bg, borderRadius: 8 }}
     >
       {/* Title */}
       <text
         x={width / 2}
         y={22}
         textAnchor="middle"
-        fill="#e5e7eb"
+        fill={t.title}
         fontSize={13}
         fontWeight={700}
       >
@@ -107,7 +137,7 @@ const SVGChart: React.FC<ChartProps> = ({
         x={14}
         y={pad.top + h / 2}
         textAnchor="middle"
-        fill="#9ca3af"
+        fill={t.axisLabel}
         fontSize={10}
         transform={`rotate(-90, 14, ${pad.top + h / 2})`}
       >
@@ -119,7 +149,7 @@ const SVGChart: React.FC<ChartProps> = ({
         x={pad.left + w / 2}
         y={height - 6}
         textAnchor="middle"
-        fill="#9ca3af"
+        fill={t.axisLabel}
         fontSize={10}
       >
         {xLabel}
@@ -133,14 +163,14 @@ const SVGChart: React.FC<ChartProps> = ({
             x2={pad.left + w}
             y1={sy(v)}
             y2={sy(v)}
-            stroke="#374151"
+            stroke={t.grid}
             strokeWidth={0.5}
           />
           <text
             x={pad.left - 6}
             y={sy(v) + 3}
             textAnchor="end"
-            fill="#6b7280"
+            fill={t.tickLabel}
             fontSize={9}
           >
             {Number.isInteger(v) ? v : v.toFixed(1)}
@@ -154,14 +184,14 @@ const SVGChart: React.FC<ChartProps> = ({
             x2={sx(v)}
             y1={pad.top}
             y2={pad.top + h}
-            stroke="#374151"
+            stroke={t.grid}
             strokeWidth={0.5}
           />
           <text
             x={sx(v)}
             y={pad.top + h + 14}
             textAnchor="middle"
-            fill="#6b7280"
+            fill={t.tickLabel}
             fontSize={9}
           >
             {v}
@@ -175,7 +205,7 @@ const SVGChart: React.FC<ChartProps> = ({
         x2={pad.left}
         y1={pad.top}
         y2={pad.top + h}
-        stroke="#4b5563"
+        stroke={t.axis}
         strokeWidth={1}
       />
       <line
@@ -183,7 +213,7 @@ const SVGChart: React.FC<ChartProps> = ({
         x2={pad.left + w}
         y1={pad.top + h}
         y2={pad.top + h}
-        stroke="#4b5563"
+        stroke={t.axis}
         strokeWidth={1}
       />
 
@@ -219,7 +249,7 @@ const SVGChart: React.FC<ChartProps> = ({
                   stroke={s.color}
                   strokeWidth={2}
                 />
-                <text x={lx + 20} y={ly + 3} fill="#d1d5db" fontSize={9}>
+                <text x={lx + 20} y={ly + 3} fill={t.legend} fontSize={9}>
                   {s.label}
                 </text>
               </g>
@@ -262,6 +292,63 @@ function exportSVGAsPNG(svgEl: SVGSVGElement, filename: string) {
   img.src = url;
 }
 
+function exportElementAsPNG(el: HTMLElement, filename: string) {
+  // Use SVG foreignObject to render HTML → canvas → PNG
+  const w = el.scrollWidth;
+  const h = el.scrollHeight;
+  const scale = 2;
+  const clone = el.cloneNode(true) as HTMLElement;
+  // Reset positioning for foreignObject rendering
+  clone.style.width = `${w}px`;
+  clone.style.margin = "0";
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("xmlns", svgNS);
+  const fo = document.createElementNS(svgNS, "foreignObject");
+  fo.setAttribute("width", "100%");
+  fo.setAttribute("height", "100%");
+  const body = document.createElement("div");
+  body.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+  body.appendChild(clone);
+  fo.appendChild(body);
+  svg.appendChild(fo);
+  // Inline computed styles
+  const allEls = [
+    clone,
+    ...Array.from(clone.querySelectorAll("*")),
+  ] as HTMLElement[];
+  const srcEls = [el, ...Array.from(el.querySelectorAll("*"))] as HTMLElement[];
+  for (let i = 0; i < allEls.length; i++) {
+    const cs = window.getComputedStyle(srcEls[i]);
+    (allEls[i] as HTMLElement).style.cssText = cs.cssText;
+  }
+  const svgData = new XMLSerializer().serializeToString(svg);
+  const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = w * scale;
+    canvas.height = h * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }, "image/png");
+  };
+  img.onerror = () => URL.revokeObjectURL(url);
+  img.src = url;
+}
+
 // ── Helper: downsample to max N points for chart performance ─────────────
 
 function downsample(data: { x: number; y: number }[], maxPoints = 300) {
@@ -275,9 +362,310 @@ function downsample(data: { x: number; y: number }[], maxPoints = 300) {
   return out;
 }
 
+// ── Scatter chart for parameter impact ───────────────────────────────────────
+
+interface ScatterPoint {
+  x: number;
+  y: number;
+  label: string;
+  color: string;
+}
+
+interface ScatterChartProps {
+  title: string;
+  points: ScatterPoint[];
+  xLabel: string;
+  yLabel: string;
+  width?: number;
+  height?: number;
+  theme?: ChartTheme;
+}
+
+const SVGScatterChart: React.FC<ScatterChartProps> = ({
+  title,
+  points,
+  xLabel,
+  yLabel,
+  width = 620,
+  height = 320,
+  theme = "dark",
+}) => {
+  const t = THEME[theme];
+  const pad = { top: 40, right: 20, bottom: 52, left: 58 };
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+
+  if (points.length === 0) {
+    return (
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox={`0 0 ${width} ${height}`}
+        width={width}
+        height={height}
+        className="w-full h-auto"
+        style={{ background: t.bg, borderRadius: 8 }}
+      >
+        <text
+          x={width / 2}
+          y={height / 2}
+          textAnchor="middle"
+          fill={t.tickLabel}
+          fontSize={11}
+        >
+          No data (select runs with parameter info)
+        </text>
+      </svg>
+    );
+  }
+
+  let xMin = Infinity,
+    xMax = -Infinity,
+    yMin = Infinity,
+    yMax = -Infinity;
+  for (const p of points) {
+    if (p.x < xMin) xMin = p.x;
+    if (p.x > xMax) xMax = p.x;
+    if (p.y < yMin) yMin = p.y;
+    if (p.y > yMax) yMax = p.y;
+  }
+  // Add padding
+  const xRange = xMax - xMin || 1;
+  const yRange = yMax - yMin || 1;
+  xMin -= xRange * 0.08;
+  xMax += xRange * 0.08;
+  yMin = Math.max(0, yMin - yRange * 0.08);
+  yMax += yRange * 0.08;
+
+  const sx = (x: number) => pad.left + ((x - xMin) / (xMax - xMin || 1)) * w;
+  const sy = (y: number) => pad.top + h - ((y - yMin) / (yMax - yMin || 1)) * h;
+
+  const yTicks: number[] = [];
+  for (let i = 0; i <= 4; i++) yTicks.push(yMin + ((yMax - yMin) * i) / 4);
+  const xTicks: number[] = [];
+  for (let i = 0; i <= 4; i++)
+    xTicks.push(parseFloat((xMin + ((xMax - xMin) * i) / 4).toFixed(1)));
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox={`0 0 ${width} ${height}`}
+      width={width}
+      height={height}
+      className="w-full h-auto"
+      style={{ background: t.bg, borderRadius: 8 }}
+    >
+      <text
+        x={width / 2}
+        y={22}
+        textAnchor="middle"
+        fill={t.title}
+        fontSize={13}
+        fontWeight={700}
+      >
+        {title}
+      </text>
+      <text
+        x={14}
+        y={pad.top + h / 2}
+        textAnchor="middle"
+        fill={t.axisLabel}
+        fontSize={10}
+        transform={`rotate(-90, 14, ${pad.top + h / 2})`}
+      >
+        {yLabel}
+      </text>
+      <text
+        x={pad.left + w / 2}
+        y={height - 6}
+        textAnchor="middle"
+        fill={t.axisLabel}
+        fontSize={10}
+      >
+        {xLabel}
+      </text>
+
+      {/* Grid */}
+      {yTicks.map((v, i) => (
+        <g key={`y${i}`}>
+          <line
+            x1={pad.left}
+            x2={pad.left + w}
+            y1={sy(v)}
+            y2={sy(v)}
+            stroke={t.grid}
+            strokeWidth={0.5}
+          />
+          <text
+            x={pad.left - 6}
+            y={sy(v) + 3}
+            textAnchor="end"
+            fill={t.tickLabel}
+            fontSize={9}
+          >
+            {Number.isInteger(v) ? v : v.toFixed(1)}
+          </text>
+        </g>
+      ))}
+      {xTicks.map((v, i) => (
+        <g key={`x${i}`}>
+          <line
+            x1={sx(v)}
+            x2={sx(v)}
+            y1={pad.top}
+            y2={pad.top + h}
+            stroke={t.grid}
+            strokeWidth={0.5}
+          />
+          <text
+            x={sx(v)}
+            y={pad.top + h + 14}
+            textAnchor="middle"
+            fill={t.tickLabel}
+            fontSize={9}
+          >
+            {v}
+          </text>
+        </g>
+      ))}
+      <line
+        x1={pad.left}
+        x2={pad.left}
+        y1={pad.top}
+        y2={pad.top + h}
+        stroke={t.axis}
+        strokeWidth={1}
+      />
+      <line
+        x1={pad.left}
+        x2={pad.left + w}
+        y1={pad.top + h}
+        y2={pad.top + h}
+        stroke={t.axis}
+        strokeWidth={1}
+      />
+
+      {/* Points */}
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle
+            cx={sx(p.x)}
+            cy={sy(p.y)}
+            r={5}
+            fill={p.color}
+            opacity={0.85}
+            stroke={t.dotStroke}
+            strokeWidth={1.5}
+          />
+          <text
+            x={sx(p.x)}
+            y={sy(p.y) - 8}
+            textAnchor="middle"
+            fill={t.legend}
+            fontSize={8}
+          >
+            {p.label}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+};
+
+// ── Parameter extractors for impact analysis ─────────────────────────────
+
+type ParamKey =
+  | "totalAgents"
+  | "scouts"
+  | "coordinators"
+  | "retrievers"
+  | "scoutVision"
+  | "scoutCommRadius"
+  | "coordVision"
+  | "coordCommRadius"
+  | "retrieverVision"
+  | "retrieverCommRadius";
+
+type MetricKey = "totalSteps" | "efficiency" | "avgEnergy";
+
+const PARAM_DEFS: {
+  key: ParamKey;
+  label: string;
+  extract: (r: BenchmarkRun) => number | null;
+}[] = [
+  {
+    key: "totalAgents",
+    label: "Total Agents",
+    extract: (r) =>
+      r.agents.scouts + r.agents.coordinators + r.agents.retrievers,
+  },
+  { key: "scouts", label: "Scouts", extract: (r) => r.agents.scouts },
+  {
+    key: "coordinators",
+    label: "Coordinators",
+    extract: (r) => r.agents.coordinators,
+  },
+  {
+    key: "retrievers",
+    label: "Retrievers",
+    extract: (r) => r.agents.retrievers,
+  },
+  {
+    key: "scoutVision",
+    label: "Scout Vision Radius",
+    extract: (r) => r.agentParams?.scouts.visionRadius ?? null,
+  },
+  {
+    key: "scoutCommRadius",
+    label: "Scout Comm Radius",
+    extract: (r) => r.agentParams?.scouts.communicationRadius ?? null,
+  },
+  {
+    key: "coordVision",
+    label: "Coord Vision Radius",
+    extract: (r) => r.agentParams?.coordinators.visionRadius ?? null,
+  },
+  {
+    key: "coordCommRadius",
+    label: "Coord Comm Radius",
+    extract: (r) => r.agentParams?.coordinators.communicationRadius ?? null,
+  },
+  {
+    key: "retrieverVision",
+    label: "Retriever Vision Radius",
+    extract: (r) => r.agentParams?.retrievers.visionRadius ?? null,
+  },
+  {
+    key: "retrieverCommRadius",
+    label: "Retriever Comm Radius",
+    extract: (r) => r.agentParams?.retrievers.communicationRadius ?? null,
+  },
+];
+
+const METRIC_DEFS: {
+  key: MetricKey;
+  label: string;
+  extract: (r: BenchmarkRun) => number | null;
+}[] = [
+  {
+    key: "totalSteps",
+    label: "Total Steps",
+    extract: (r) => r.summary?.totalSteps ?? null,
+  },
+  {
+    key: "efficiency",
+    label: "Efficiency (obj/100 steps)",
+    extract: (r) => r.summary?.efficiency ?? null,
+  },
+  {
+    key: "avgEnergy",
+    label: "Avg Energy",
+    extract: (r) => r.summary?.avgEnergyOverall ?? null,
+  },
+];
+
 // ── Main component ───────────────────────────────────────────────────────────
 
-type ChartType = "retrieval" | "energy" | "activeAgents" | "efficiency";
+type ChartType = "retrieval" | "energy" | "efficiency";
 
 const CHART_DEFS: {
   key: ChartType;
@@ -296,12 +684,6 @@ const CHART_DEFS: {
     title: "Average Agent Energy vs Step",
     yLabel: "Avg Energy",
     extract: (sn) => sn.averageEnergy,
-  },
-  {
-    key: "activeAgents",
-    title: "Active Agents vs Step",
-    yLabel: "Active Agents",
-    extract: (sn) => sn.activeAgents,
   },
   {
     key: "efficiency",
@@ -346,7 +728,12 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
   const [activeChart, setActiveChart] = useState<ChartType>("retrieval");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
+  const [impactParam, setImpactParam] = useState<ParamKey>("totalAgents");
+  const [impactMetric, setImpactMetric] = useState<MetricKey>("totalSteps");
+  const [chartTheme, setChartTheme] = useState<ChartTheme>("dark");
   const chartRef = useRef<HTMLDivElement>(null);
+  const impactChartRef = useRef<HTMLDivElement>(null);
+  const tableRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const toggleRun = useCallback((id: string) => {
@@ -369,6 +756,24 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
       `benchmark-${def.key}-${new Date().toISOString().slice(0, 10)}.png`,
     );
   }, [activeChart]);
+
+  const handleExportImpactChart = useCallback(() => {
+    const svg = impactChartRef.current?.querySelector("svg");
+    if (!svg) return;
+    exportSVGAsPNG(
+      svg,
+      `benchmark-impact-${impactParam}-vs-${impactMetric}-${new Date().toISOString().slice(0, 10)}.png`,
+    );
+  }, [impactParam, impactMetric]);
+
+  const handleExportTable = useCallback(() => {
+    const el = tableRef.current;
+    if (!el) return;
+    exportElementAsPNG(
+      el,
+      `benchmark-table-${new Date().toISOString().slice(0, 10)}.png`,
+    );
+  }, []);
 
   const handleRename = useCallback(
     (id: string) => {
@@ -399,6 +804,33 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
         <span className="text-gray-500">📈</span>
         <span>Benchmark</span>
       </h2>
+
+      {/* ── Chart theme toggle ── */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-[9px] text-gray-500">Export theme:</span>
+        <div className="flex gap-0.5 bg-gray-900/60 p-0.5 rounded-md">
+          <button
+            onClick={() => setChartTheme("dark")}
+            className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors ${
+              chartTheme === "dark"
+                ? "bg-gray-700/80 text-white"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            Dark
+          </button>
+          <button
+            onClick={() => setChartTheme("light")}
+            className={`px-2 py-0.5 rounded text-[9px] font-medium transition-colors ${
+              chartTheme === "light"
+                ? "bg-gray-700/80 text-white"
+                : "text-gray-500 hover:text-gray-300"
+            }`}
+          >
+            Light
+          </button>
+        </div>
+      </div>
 
       {/* ── Recording controls ── */}
       <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
@@ -603,9 +1035,7 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                   ? "Retrieval"
                   : cd.key === "energy"
                     ? "Energy"
-                    : cd.key === "activeAgents"
-                      ? "Agents"
-                      : "Efficiency"}
+                    : "Efficiency"}
               </button>
             ))}
           </div>
@@ -616,6 +1046,7 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
               title={chartDef.title}
               series={chartSeries}
               yLabel={chartDef.yLabel}
+              theme={chartTheme}
             />
           </div>
 
@@ -642,13 +1073,96 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
         </div>
       )}
 
+      {/* ── Parameter Impact scatter ── */}
+      {selectedRuns.length >= 2 && (
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+          <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest">
+            Parameter Impact
+          </div>
+
+          {/* Param / metric selectors */}
+          <div className="flex gap-2">
+            <label className="flex-1 space-y-0.5">
+              <span className="text-[8px] text-gray-500 block">
+                Parameter (X)
+              </span>
+              <select
+                value={impactParam}
+                onChange={(e) => setImpactParam(e.target.value as ParamKey)}
+                className="w-full bg-gray-900/80 border border-gray-700/50 rounded px-1.5 py-0.5 text-[10px] text-gray-300"
+              >
+                {PARAM_DEFS.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex-1 space-y-0.5">
+              <span className="text-[8px] text-gray-500 block">Metric (Y)</span>
+              <select
+                value={impactMetric}
+                onChange={(e) => setImpactMetric(e.target.value as MetricKey)}
+                className="w-full bg-gray-900/80 border border-gray-700/50 rounded px-1.5 py-0.5 text-[10px] text-gray-300"
+              >
+                {METRIC_DEFS.map((m) => (
+                  <option key={m.key} value={m.key}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {/* Scatter chart */}
+          <div ref={impactChartRef}>
+            <SVGScatterChart
+              title={`${PARAM_DEFS.find((p) => p.key === impactParam)!.label} vs ${METRIC_DEFS.find((m) => m.key === impactMetric)!.label}`}
+              points={selectedRuns.reduce<ScatterPoint[]>((acc, run, i) => {
+                const pDef = PARAM_DEFS.find((p) => p.key === impactParam)!;
+                const mDef = METRIC_DEFS.find((m) => m.key === impactMetric)!;
+                const x = pDef.extract(run);
+                const y = mDef.extract(run);
+                if (x != null && y != null)
+                  acc.push({ x, y, label: run.label, color: pickColor(i) });
+                return acc;
+              }, [])}
+              xLabel={PARAM_DEFS.find((p) => p.key === impactParam)!.label}
+              yLabel={METRIC_DEFS.find((m) => m.key === impactMetric)!.label}
+              theme={chartTheme}
+            />
+          </div>
+
+          {/* Export button */}
+          <button
+            onClick={handleExportImpactChart}
+            className="w-full py-1.5 rounded-md font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors flex items-center justify-center gap-1"
+          >
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Export chart as PNG
+          </button>
+        </div>
+      )}
+
       {/* ── Summary table for selected runs ── */}
       {selectedRuns.length > 0 && (
         <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
           <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest">
             Comparison Table
           </div>
-          <div className="overflow-x-auto">
+          <div ref={tableRef} className="overflow-x-auto">
             <table className="w-full text-[10px]">
               <thead>
                 <tr className="text-gray-500 border-b border-gray-700/40">
@@ -721,6 +1235,26 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
               </tbody>
             </table>
           </div>
+          {/* Export table button */}
+          <button
+            onClick={handleExportTable}
+            className="w-full py-1.5 rounded-md font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors flex items-center justify-center gap-1"
+          >
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Export table as PNG
+          </button>
         </div>
       )}
 
