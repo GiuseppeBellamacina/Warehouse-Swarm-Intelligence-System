@@ -1,0 +1,734 @@
+// Benchmark Panel — recording controls, run history, comparison charts, PNG export
+
+import React, { useState, useRef, useCallback } from "react";
+import { BenchmarkRun, BenchmarkSnapshot } from "../hooks/useBenchmark";
+
+// ── Tiny SVG chart renderer (no external dep) ───────────────────────────────
+
+interface ChartSeries {
+  label: string;
+  color: string;
+  data: { x: number; y: number }[];
+}
+
+interface ChartProps {
+  title: string;
+  series: ChartSeries[];
+  yLabel: string;
+  xLabel?: string;
+  width?: number;
+  height?: number;
+}
+
+const CHART_COLORS = [
+  "#3b82f6", // blue
+  "#10b981", // emerald
+  "#f59e0b", // amber
+  "#ef4444", // red
+  "#8b5cf6", // violet
+  "#ec4899", // pink
+  "#06b6d4", // cyan
+  "#f97316", // orange
+];
+
+function pickColor(index: number) {
+  return CHART_COLORS[index % CHART_COLORS.length];
+}
+
+const SVGChart: React.FC<ChartProps> = ({
+  title,
+  series,
+  yLabel,
+  xLabel = "Step",
+  width = 620,
+  height = 320,
+}) => {
+  const pad = { top: 40, right: 20, bottom: 52, left: 58 };
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+
+  // Compute bounds
+  let xMin = Infinity,
+    xMax = -Infinity,
+    yMin = Infinity,
+    yMax = -Infinity;
+  for (const s of series) {
+    for (const d of s.data) {
+      if (d.x < xMin) xMin = d.x;
+      if (d.x > xMax) xMax = d.x;
+      if (d.y < yMin) yMin = d.y;
+      if (d.y > yMax) yMax = d.y;
+    }
+  }
+  if (!isFinite(xMin)) {
+    xMin = 0;
+    xMax = 1;
+    yMin = 0;
+    yMax = 1;
+  }
+  // Add 5% padding on Y
+  const yRange = yMax - yMin || 1;
+  yMin = Math.max(0, yMin - yRange * 0.05);
+  yMax = yMax + yRange * 0.05;
+
+  const sx = (x: number) => pad.left + ((x - xMin) / (xMax - xMin || 1)) * w;
+  const sy = (y: number) => pad.top + h - ((y - yMin) / (yMax - yMin || 1)) * h;
+
+  // Grid lines & ticks (5 each axis)
+  const yTicks: number[] = [];
+  for (let i = 0; i <= 4; i++) yTicks.push(yMin + (yRange * i) / 4);
+  const xTicks: number[] = [];
+  const xRange = xMax - xMin || 1;
+  for (let i = 0; i <= 4; i++) xTicks.push(Math.round(xMin + (xRange * i) / 4));
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox={`0 0 ${width} ${height}`}
+      width={width}
+      height={height}
+      className="w-full h-auto"
+      style={{ background: "#111318", borderRadius: 8 }}
+    >
+      {/* Title */}
+      <text
+        x={width / 2}
+        y={22}
+        textAnchor="middle"
+        fill="#e5e7eb"
+        fontSize={13}
+        fontWeight={700}
+      >
+        {title}
+      </text>
+
+      {/* Y axis label */}
+      <text
+        x={14}
+        y={pad.top + h / 2}
+        textAnchor="middle"
+        fill="#9ca3af"
+        fontSize={10}
+        transform={`rotate(-90, 14, ${pad.top + h / 2})`}
+      >
+        {yLabel}
+      </text>
+
+      {/* X axis label */}
+      <text
+        x={pad.left + w / 2}
+        y={height - 6}
+        textAnchor="middle"
+        fill="#9ca3af"
+        fontSize={10}
+      >
+        {xLabel}
+      </text>
+
+      {/* Grid + tick labels */}
+      {yTicks.map((v, i) => (
+        <g key={`y${i}`}>
+          <line
+            x1={pad.left}
+            x2={pad.left + w}
+            y1={sy(v)}
+            y2={sy(v)}
+            stroke="#374151"
+            strokeWidth={0.5}
+          />
+          <text
+            x={pad.left - 6}
+            y={sy(v) + 3}
+            textAnchor="end"
+            fill="#6b7280"
+            fontSize={9}
+          >
+            {Number.isInteger(v) ? v : v.toFixed(1)}
+          </text>
+        </g>
+      ))}
+      {xTicks.map((v, i) => (
+        <g key={`x${i}`}>
+          <line
+            x1={sx(v)}
+            x2={sx(v)}
+            y1={pad.top}
+            y2={pad.top + h}
+            stroke="#374151"
+            strokeWidth={0.5}
+          />
+          <text
+            x={sx(v)}
+            y={pad.top + h + 14}
+            textAnchor="middle"
+            fill="#6b7280"
+            fontSize={9}
+          >
+            {v}
+          </text>
+        </g>
+      ))}
+
+      {/* Axes */}
+      <line
+        x1={pad.left}
+        x2={pad.left}
+        y1={pad.top}
+        y2={pad.top + h}
+        stroke="#4b5563"
+        strokeWidth={1}
+      />
+      <line
+        x1={pad.left}
+        x2={pad.left + w}
+        y1={pad.top + h}
+        y2={pad.top + h}
+        stroke="#4b5563"
+        strokeWidth={1}
+      />
+
+      {/* Series lines */}
+      {series.map((s, si) => {
+        if (s.data.length < 2) return null;
+        const points = s.data.map((d) => `${sx(d.x)},${sy(d.y)}`).join(" ");
+        return (
+          <polyline
+            key={si}
+            points={points}
+            fill="none"
+            stroke={s.color}
+            strokeWidth={1.5}
+            strokeLinejoin="round"
+          />
+        );
+      })}
+
+      {/* Legend */}
+      {series.length > 0 && (
+        <g>
+          {series.map((s, si) => {
+            const lx = pad.left + 8;
+            const ly = pad.top + 10 + si * 14;
+            return (
+              <g key={si}>
+                <line
+                  x1={lx}
+                  x2={lx + 16}
+                  y1={ly}
+                  y2={ly}
+                  stroke={s.color}
+                  strokeWidth={2}
+                />
+                <text x={lx + 20} y={ly + 3} fill="#d1d5db" fontSize={9}>
+                  {s.label}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+      )}
+    </svg>
+  );
+};
+
+// ── Chart export helper ──────────────────────────────────────────────────────
+
+function exportSVGAsPNG(svgEl: SVGSVGElement, filename: string) {
+  const svgData = new XMLSerializer().serializeToString(svgEl);
+  const svgBlob = new Blob([svgData], {
+    type: "image/svg+xml;charset=utf-8",
+  });
+  const url = URL.createObjectURL(svgBlob);
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    // 2x for retina
+    const scale = 2;
+    canvas.width = svgEl.viewBox.baseVal.width * scale;
+    canvas.height = svgEl.viewBox.baseVal.height * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }, "image/png");
+  };
+  img.src = url;
+}
+
+// ── Helper: downsample to max N points for chart performance ─────────────
+
+function downsample(data: { x: number; y: number }[], maxPoints = 300) {
+  if (data.length <= maxPoints) return data;
+  const step = Math.ceil(data.length / maxPoints);
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i < data.length; i += step) out.push(data[i]);
+  // Always include last point
+  if (out[out.length - 1] !== data[data.length - 1])
+    out.push(data[data.length - 1]);
+  return out;
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
+type ChartType = "retrieval" | "energy" | "activeAgents" | "efficiency";
+
+const CHART_DEFS: {
+  key: ChartType;
+  title: string;
+  yLabel: string;
+  extract: (sn: BenchmarkSnapshot) => number;
+}[] = [
+  {
+    key: "retrieval",
+    title: "Objects Retrieved vs Step",
+    yLabel: "Objects Retrieved",
+    extract: (sn) => sn.objectsRetrieved,
+  },
+  {
+    key: "energy",
+    title: "Average Agent Energy vs Step",
+    yLabel: "Avg Energy",
+    extract: (sn) => sn.averageEnergy,
+  },
+  {
+    key: "activeAgents",
+    title: "Active Agents vs Step",
+    yLabel: "Active Agents",
+    extract: (sn) => sn.activeAgents,
+  },
+  {
+    key: "efficiency",
+    title: "Retrieval Efficiency vs Step",
+    yLabel: "Obj / 100 steps",
+    extract: (sn) => (sn.step > 0 ? (sn.objectsRetrieved / sn.step) * 100 : 0),
+  },
+];
+
+interface BenchmarkPanelProps {
+  runs: BenchmarkRun[];
+  recording: boolean;
+  onStartRecording: () => void;
+  onStopRecording: () => void;
+  onCancelRecording: () => void;
+  onDeleteRun: (id: string) => void;
+  onClearAll: () => void;
+  onRenameRun: (id: string, label: string) => void;
+  onExportJSON: () => void;
+  onImportJSON: (file: File) => void;
+  /** Is the simulation loaded (so we can start recording)? */
+  isLoaded: boolean;
+  isRunning: boolean;
+}
+
+export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
+  runs,
+  recording,
+  onStartRecording,
+  onStopRecording,
+  onCancelRecording,
+  onDeleteRun,
+  onClearAll,
+  onRenameRun,
+  onExportJSON,
+  onImportJSON,
+  isLoaded,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  isRunning: _isRunning,
+}) => {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [activeChart, setActiveChart] = useState<ChartType>("retrieval");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const chartRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const toggleRun = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectedRuns = runs.filter((r) => selectedIds.has(r.id));
+
+  const handleExportChart = useCallback(() => {
+    const svg = chartRef.current?.querySelector("svg");
+    if (!svg) return;
+    const def = CHART_DEFS.find((c) => c.key === activeChart)!;
+    exportSVGAsPNG(
+      svg,
+      `benchmark-${def.key}-${new Date().toISOString().slice(0, 10)}.png`,
+    );
+  }, [activeChart]);
+
+  const handleRename = useCallback(
+    (id: string) => {
+      if (editLabel.trim()) onRenameRun(id, editLabel.trim());
+      setEditingId(null);
+    },
+    [editLabel, onRenameRun],
+  );
+
+  // Build chart series from selected runs
+  const chartDef = CHART_DEFS.find((c) => c.key === activeChart)!;
+  const chartSeries: ChartSeries[] = selectedRuns.map((run, i) => ({
+    label: run.label,
+    color: pickColor(i),
+    data: downsample(
+      run.snapshots.map((sn) => ({
+        x: sn.step,
+        y: chartDef.extract(sn),
+      })),
+    ),
+  }));
+
+  const canRecord = isLoaded && !recording;
+
+  return (
+    <div className="p-3 space-y-3 overflow-y-auto h-full text-xs">
+      <h2 className="text-sm font-bold tracking-wide uppercase text-gray-300 flex items-center gap-1.5">
+        <span className="text-gray-500">📈</span>
+        <span>Benchmark</span>
+      </h2>
+
+      {/* ── Recording controls ── */}
+      <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+        <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest">
+          Recording
+        </div>
+        {recording ? (
+          <div className="flex gap-1.5">
+            <button
+              onClick={onStopRecording}
+              className="flex-1 py-1.5 rounded-md font-semibold bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white transition-colors flex items-center justify-center gap-1"
+            >
+              <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+              Stop &amp; Save
+            </button>
+            <button
+              onClick={onCancelRecording}
+              className="px-3 py-1.5 rounded-md font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+            >
+              Discard
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={onStartRecording}
+            disabled={!canRecord}
+            className="w-full py-1.5 rounded-md font-semibold transition-colors
+              bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white
+              disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed
+              flex items-center justify-center gap-1.5"
+          >
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+              <circle cx="10" cy="10" r="6" />
+            </svg>
+            Start Recording
+          </button>
+        )}
+        {!isLoaded && !recording && (
+          <p className="text-[10px] text-gray-600 text-center">
+            Load a config to enable recording
+          </p>
+        )}
+        {recording && (
+          <p className="text-[10px] text-amber-400/80 text-center">
+            Recording in progress — run the simulation to collect data
+          </p>
+        )}
+      </div>
+
+      {/* ── Run history ── */}
+      <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest">
+            Saved Runs ({runs.length})
+          </div>
+          <div className="flex gap-1">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-700 hover:bg-gray-600 text-gray-400 transition-colors"
+              title="Import JSON"
+            >
+              ↑ Import
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onImportJSON(f);
+                e.target.value = "";
+              }}
+            />
+            {runs.length > 0 && (
+              <>
+                <button
+                  onClick={onExportJSON}
+                  className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-700 hover:bg-gray-600 text-gray-400 transition-colors"
+                  title="Export all runs as JSON"
+                >
+                  ↓ Export
+                </button>
+                <button
+                  onClick={onClearAll}
+                  className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-red-900/60 hover:bg-red-800/60 text-red-400 transition-colors"
+                  title="Delete all runs"
+                >
+                  ✕ Clear
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {runs.length === 0 ? (
+          <p className="text-gray-600 text-center py-2 text-[10px]">
+            No runs recorded yet
+          </p>
+        ) : (
+          <div className="space-y-1 max-h-48 overflow-y-auto">
+            {runs.map((run) => {
+              const selected = selectedIds.has(run.id);
+              const color = selected
+                ? pickColor([...selectedIds].indexOf(run.id))
+                : undefined;
+              return (
+                <div
+                  key={run.id}
+                  className={`flex items-center gap-1.5 p-1.5 rounded-md border transition-colors cursor-pointer ${
+                    selected
+                      ? "bg-gray-700/60 border-gray-600/60"
+                      : "bg-gray-800/30 border-gray-800/40 hover:border-gray-700/50"
+                  }`}
+                  onClick={() => toggleRun(run.id)}
+                >
+                  {/* Color indicator */}
+                  <div
+                    className="w-2.5 h-2.5 rounded-full flex-shrink-0 border"
+                    style={{
+                      backgroundColor: selected ? color : "transparent",
+                      borderColor: selected ? color : "#4b5563",
+                    }}
+                  />
+
+                  {/* Label / edit */}
+                  <div className="flex-1 min-w-0">
+                    {editingId === run.id ? (
+                      <input
+                        autoFocus
+                        value={editLabel}
+                        onChange={(e) => setEditLabel(e.target.value)}
+                        onBlur={() => handleRename(run.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRename(run.id);
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        className="w-full bg-gray-900 border border-gray-600 rounded px-1 py-0.5 text-[10px] text-gray-200 outline-none"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <div className="truncate text-[10px] font-medium text-gray-300">
+                        {run.label}
+                      </div>
+                    )}
+                    <div className="text-[9px] text-gray-600 truncate">
+                      {run.configName} · {run.summary?.totalSteps ?? 0} steps ·{" "}
+                      {run.summary?.completionPct.toFixed(0) ?? 0}%
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingId(run.id);
+                      setEditLabel(run.label);
+                    }}
+                    className="text-gray-600 hover:text-gray-400 p-0.5"
+                    title="Rename"
+                  >
+                    ✎
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteRun(run.id);
+                      setSelectedIds((prev) => {
+                        const next = new Set(prev);
+                        next.delete(run.id);
+                        return next;
+                      });
+                    }}
+                    className="text-gray-600 hover:text-red-400 p-0.5"
+                    title="Delete"
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── Comparison chart ── */}
+      {selectedRuns.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+          {/* Chart type tabs */}
+          <div className="flex gap-0.5 bg-gray-900/60 p-0.5 rounded-md">
+            {CHART_DEFS.map((cd) => (
+              <button
+                key={cd.key}
+                onClick={() => setActiveChart(cd.key)}
+                className={`flex-1 py-1 px-1 rounded text-[9px] font-medium transition-colors ${
+                  activeChart === cd.key
+                    ? "bg-gray-700/80 text-white"
+                    : "text-gray-500 hover:text-gray-300"
+                }`}
+              >
+                {cd.key === "retrieval"
+                  ? "Retrieval"
+                  : cd.key === "energy"
+                    ? "Energy"
+                    : cd.key === "activeAgents"
+                      ? "Agents"
+                      : "Efficiency"}
+              </button>
+            ))}
+          </div>
+
+          {/* Chart */}
+          <div ref={chartRef}>
+            <SVGChart
+              title={chartDef.title}
+              series={chartSeries}
+              yLabel={chartDef.yLabel}
+            />
+          </div>
+
+          {/* Export chart button */}
+          <button
+            onClick={handleExportChart}
+            className="w-full py-1.5 rounded-md font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors flex items-center justify-center gap-1"
+          >
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Export chart as PNG
+          </button>
+        </div>
+      )}
+
+      {/* ── Summary table for selected runs ── */}
+      {selectedRuns.length > 0 && (
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+          <div className="text-[9px] font-medium text-gray-500 uppercase tracking-widest">
+            Comparison Table
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[10px]">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-700/40">
+                  <th className="text-left py-1 pr-2 font-medium">Run</th>
+                  <th className="text-right py-1 px-1 font-medium">Steps</th>
+                  <th className="text-right py-1 px-1 font-medium">
+                    Retrieved
+                  </th>
+                  <th className="text-right py-1 px-1 font-medium">
+                    Completion
+                  </th>
+                  <th className="text-right py-1 px-1 font-medium">
+                    Efficiency
+                  </th>
+                  <th className="text-right py-1 px-1 font-medium">
+                    Avg Energy
+                  </th>
+                  <th className="text-right py-1 px-1 font-medium">Config</th>
+                  <th className="text-right py-1 pl-1 font-medium">Agents</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedRuns.map((run, i) => {
+                  const s = run.summary;
+                  const totalAgents =
+                    run.agents.scouts +
+                    run.agents.coordinators +
+                    run.agents.retrievers;
+                  return (
+                    <tr
+                      key={run.id}
+                      className="border-b border-gray-800/30 text-gray-300"
+                    >
+                      <td className="py-1 pr-2">
+                        <div className="flex items-center gap-1">
+                          <span
+                            className="w-2 h-2 rounded-full inline-block"
+                            style={{ backgroundColor: pickColor(i) }}
+                          />
+                          <span className="truncate max-w-[80px]">
+                            {run.label}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="text-right py-1 px-1 font-mono">
+                        {s?.totalSteps ?? "—"}
+                      </td>
+                      <td className="text-right py-1 px-1 font-mono">
+                        {s ? `${s.objectsRetrieved}/${s.totalObjects}` : "—"}
+                      </td>
+                      <td className="text-right py-1 px-1 font-mono">
+                        {s ? `${s.completionPct.toFixed(1)}%` : "—"}
+                      </td>
+                      <td className="text-right py-1 px-1 font-mono">
+                        {s ? s.efficiency.toFixed(2) : "—"}
+                      </td>
+                      <td className="text-right py-1 px-1 font-mono">
+                        {s ? s.avgEnergyOverall.toFixed(0) : "—"}
+                      </td>
+                      <td className="text-right py-1 px-1 text-gray-500">
+                        {run.configName}
+                      </td>
+                      <td className="text-right py-1 pl-1 text-gray-500">
+                        {totalAgents} ({run.agents.scouts}S/
+                        {run.agents.coordinators}C/{run.agents.retrievers}R)
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {selectedRuns.length === 0 && runs.length > 0 && (
+        <p className="text-gray-600 text-center text-[10px] py-2">
+          Select runs above to compare charts &amp; data
+        </p>
+      )}
+    </div>
+  );
+};

@@ -624,8 +624,7 @@ class CoordinatorAgent(BaseAgent):
         pending = [
             pos
             for pos in self.known_objects
-            if pos not in self.objects_being_collected
-            and pos not in self.assigned_tasks.values()
+            if pos not in self.objects_being_collected and pos not in self.assigned_tasks.values()
         ]
         has_work = bool(pending)
 
@@ -702,10 +701,9 @@ class CoordinatorAgent(BaseAgent):
             for dy in range(-scan, scan + 1):
                 nx, ny = my_pos[0] + dx, my_pos[1] + dy
                 if 0 <= nx < self.model.grid.width and 0 <= ny < self.model.grid.height:
-                    if (
-                        self.model.grid.get_cell_type(nx, ny) not in _WH_TYPES
-                        and self.model.grid.is_walkable(nx, ny)
-                    ):
+                    if self.model.grid.get_cell_type(
+                        nx, ny
+                    ) not in _WH_TYPES and self.model.grid.is_walkable(nx, ny):
                         candidates.append((nx, ny))
         if candidates:
             self._explore_target = _rng.choice(candidates)
