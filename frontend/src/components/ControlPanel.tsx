@@ -43,6 +43,7 @@ interface AgentOverrideFields {
 interface Overrides {
   simulationSeed: number | null;
   simulationMaxSteps: number;
+  mapKnown: boolean;
   scouts: AgentOverrideFields;
   coordinators: AgentOverrideFields;
   retrievers: AgentOverrideFields;
@@ -58,6 +59,7 @@ function extractOverrides(
   return {
     simulationSeed: config.metadata?.seed ?? 42,
     simulationMaxSteps: config.metadata?.max_steps ?? 500,
+    mapKnown: def.map_known ?? false,
     scouts: {
       count: def.scouts.count,
       vision_radius: def.scouts.vision_radius,
@@ -414,6 +416,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       scout_behavior: overrides.scoutBehavior,
       coordinator_behavior: overrides.coordinatorBehavior,
       retriever_behavior: overrides.retrieverBehavior,
+      map_known: overrides.mapKnown,
     };
     onLoad(scenario, agents);
   };
@@ -556,6 +559,13 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   value={overrides.simulationMaxSteps}
                   onChange={(v) => setOvr({ simulationMaxSteps: v })}
                   min={1}
+                  disabled={isRunning}
+                />
+                <Toggle
+                  label="Map known"
+                  tip="All agents start with full terrain & warehouse knowledge. Only object locations remain hidden."
+                  value={overrides.mapKnown}
+                  onChange={(v) => setOvr({ mapKnown: v })}
                   disabled={isRunning}
                 />
               </div>

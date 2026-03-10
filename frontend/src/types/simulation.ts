@@ -28,6 +28,8 @@ export interface Agent {
   path: Position[];
   /** Row-major flat array (0=unknown, 1=explored) — same size as grid width×height */
   explored?: number[];
+  /** Row-major flat array (0=not scanned, 1=scanned by vision) — used when map_known is true */
+  object_explored?: number[];
   /** Objects this agent knows about */
   known_objects?: Position[];
   /** Warehouse cells this agent knows about */
@@ -89,6 +91,10 @@ export interface SimulationState {
   metrics: Metrics;
   /** Row-major flat array (0=unexplored, 1=explored by at least one agent) */
   global_explored?: number[];
+  /** Row-major flat array (0=not scanned, 1=scanned) — global union of vision_explored */
+  global_object_explored?: number[];
+  /** Whether agents started with full map knowledge */
+  map_known?: boolean;
   status?: {
     running: boolean;
     paused: boolean;
@@ -210,6 +216,7 @@ export interface SimulationAgentsConfig {
   scout_behavior: ScoutBehaviorParams;
   coordinator_behavior: CoordinatorBehaviorParams;
   retriever_behavior: RetrieverBehaviorParams;
+  map_known?: boolean;
 }
 
 /**

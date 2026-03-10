@@ -104,6 +104,8 @@ class BaseAgent(Agent):
         grid_width = model.grid.width
         grid_height = model.grid.height
         self.local_map = np.zeros((grid_height, grid_width), dtype=np.int8)
+        # Cells actually seen via vision (for object-scan fog when map is pre-known)
+        self.vision_explored = np.zeros((grid_height, grid_width), dtype=np.uint8)
 
         # Known object locations (position -> value)
         self.known_objects: Dict[Tuple, float] = {}
@@ -242,6 +244,7 @@ class BaseAgent(Agent):
         for x, y, cell_type in visible_cells:
             if 0 <= y < self.local_map.shape[0] and 0 <= x < self.local_map.shape[1]:
                 self.local_map[y, x] = cell_type
+                self.vision_explored[y, x] = 1
 
                 # Track discovered objects
                 if cell_type == CellType.OBJECT:
@@ -259,7 +262,9 @@ class BaseAgent(Agent):
                     elif self.known_objects_cleared.get(pos, -1) < self.model.current_step:
                         self.known_objects_cleared[pos] = self.model.current_step
 
-                # Track discovered warehouses (entrance cells are navigation targets)
+                # Track discovered warehouses — when any warehouse-related
+                # cell is spotted, flood-fill to reveal the entire connected
+                # warehouse cluster (all blue/green/red cells).
                 if (
                     cell_type
                     in (
@@ -269,7 +274,12 @@ class BaseAgent(Agent):
                     )
                     and (x, y) not in self.known_warehouses
                 ):
-                    self.known_warehouses.append((x, y))
+                    wh_cells = self.model.grid.flood_fill_warehouse(x, y)
+                    for wx, wy, wt in wh_cells:
+                        if (wx, wy) not in self.known_warehouses:
+                            self.known_warehouses.append((wx, wy))
+                        if 0 <= wy < self.local_map.shape[0] and 0 <= wx < self.local_map.shape[1]:
+                            self.local_map[wy, wx] = wt
 
     def get_closest_warehouse(self) -> Optional[Tuple[int, int]]:
         """
@@ -577,7 +587,9 @@ class BaseAgent(Agent):
                 continue
             # Prevent diagonal corner-cutting
             if dx != 0 and dy != 0:
-                if not self.model.grid.is_walkable(my_pos[0] + dx, my_pos[1]) or not self.model.grid.is_walkable(my_pos[0], my_pos[1] + dy):
+                if not self.model.grid.is_walkable(
+                    my_pos[0] + dx, my_pos[1]
+                ) or not self.model.grid.is_walkable(my_pos[0], my_pos[1] + dy):
                     continue
             if avoid_warehouse and nc in _wh:
                 continue
@@ -853,9 +865,7 @@ class BaseAgent(Agent):
                         # ── Fallback: ClearWay + individual sidestep ─────
                         if not moved:
                             if blocking_agent is not None and self.stuck_counter >= 1:
-                                self._send_clear_way_request(
-                                    next_pos, blocking_agent.unique_id
-                                )
+                                self._send_clear_way_request(next_pos, blocking_agent.unique_id)
 
                             if self.stuck_counter >= 2:
                                 side = self._try_sidestep(
@@ -866,9 +876,7 @@ class BaseAgent(Agent):
                                 )
                                 if side is not None:
                                     self.model.grid.move_agent(self, side)
-                                    self.consume_energy(
-                                        self.energy_consumption["move"]
-                                    )
+                                    self.consume_energy(self.energy_consumption["move"])
                                     self.path = []  # replan from new position
                                     moved = True
 
@@ -1008,7 +1016,9 @@ class BaseAgent(Agent):
                 continue
             # Prevent diagonal corner-cutting
             if dx != 0 and dy != 0:
-                if not self.model.grid.is_walkable(current[0] + dx, current[1]) or not self.model.grid.is_walkable(current[0], current[1] + dy):
+                if not self.model.grid.is_walkable(
+                    current[0] + dx, current[1]
+                ) or not self.model.grid.is_walkable(current[0], current[1] + dy):
                     continue
             if np_ in occupied:
                 continue
@@ -1040,9 +1050,7 @@ class BaseAgent(Agent):
     # Cooperative jam resolution
     # ------------------------------------------------------------------
 
-    def _is_valid_cell_for_negotiation(
-        self, agent: "BaseAgent", cell: Tuple[int, int]
-    ) -> bool:
+    def _is_valid_cell_for_negotiation(self, agent: "BaseAgent", cell: Tuple[int, int]) -> bool:
         """Check if *cell* is a valid negotiation target for *agent*.
 
         Respects warehouse rules:
@@ -1104,10 +1112,7 @@ class BaseAgent(Agent):
         b_desired = None
         if hasattr(blocking_agent, "path") and blocking_agent.path:
             b_desired = blocking_agent.path[0]
-        elif (
-            hasattr(blocking_agent, "target_position")
-            and blocking_agent.target_position
-        ):
+        elif hasattr(blocking_agent, "target_position") and blocking_agent.target_position:
             t = blocking_agent.target_position
             dx = 0 if t[0] == b_pos[0] else (1 if t[0] > b_pos[0] else -1)
             dy = 0 if t[1] == b_pos[1] else (1 if t[1] > b_pos[1] else -1)
@@ -1120,10 +1125,9 @@ class BaseAgent(Agent):
         dx = b_pos[0] - my_pos[0]
         dy = b_pos[1] - my_pos[1]
         if abs(dx) == 1 and abs(dy) == 1:
-            if (
-                not self.model.grid.is_walkable(my_pos[0] + dx, my_pos[1])
-                or not self.model.grid.is_walkable(my_pos[0], my_pos[1] + dy)
-            ):
+            if not self.model.grid.is_walkable(
+                my_pos[0] + dx, my_pos[1]
+            ) or not self.model.grid.is_walkable(my_pos[0], my_pos[1] + dy):
                 return False
 
         # ── Warehouse-rule validation ────────────────────────────────────
@@ -1148,9 +1152,7 @@ class BaseAgent(Agent):
         print(f"{self.tag} SWAP: {my_pos} <-> {b_pos} with {blocking_agent.tag}")
         return True
 
-    def _cooperative_unstick(
-        self, my_pos: Tuple[int, int], target: Tuple[int, int]
-    ) -> bool:
+    def _cooperative_unstick(self, my_pos: Tuple[int, int], target: Tuple[int, int]) -> bool:
         """Cooperative jam resolution for 2+ agents stuck near each other.
 
         Gathers all agents within Manhattan distance ≤ 2, sorts them by
@@ -1198,9 +1200,7 @@ class BaseAgent(Agent):
             ap = pos_to_tuple(agent.pos)
             if hasattr(agent, "path") and agent.path:
                 desires[agent.unique_id] = agent.path[0]
-            elif (
-                hasattr(agent, "target_position") and agent.target_position
-            ):
+            elif hasattr(agent, "target_position") and agent.target_position:
                 t = agent.target_position
                 ddx = 0 if t[0] == ap[0] else (1 if t[0] > ap[0] else -1)
                 ddy = 0 if t[1] == ap[1] else (1 if t[1] > ap[1] else -1)
@@ -1227,10 +1227,9 @@ class BaseAgent(Agent):
                     ddy = b_pos[1] - a_pos[1]
                     corner_ok = True
                     if abs(ddx) == 1 and abs(ddy) == 1:
-                        if (
-                            not self.model.grid.is_walkable(a_pos[0] + ddx, a_pos[1])
-                            or not self.model.grid.is_walkable(a_pos[0], a_pos[1] + ddy)
-                        ):
+                        if not self.model.grid.is_walkable(
+                            a_pos[0] + ddx, a_pos[1]
+                        ) or not self.model.grid.is_walkable(a_pos[0], a_pos[1] + ddy):
                             corner_ok = False
                     if (
                         corner_ok
@@ -1291,8 +1290,14 @@ class BaseAgent(Agent):
                 best_score = float("inf")
                 best_cell = None
                 for dx, dy in [
-                    (1, 0), (-1, 0), (0, 1), (0, -1),
-                    (1, 1), (1, -1), (-1, 1), (-1, -1),
+                    (1, 0),
+                    (-1, 0),
+                    (0, 1),
+                    (0, -1),
+                    (1, 1),
+                    (1, -1),
+                    (-1, 1),
+                    (-1, -1),
                 ]:
                     np_ = (ap[0] + dx, ap[1] + dy)
                     if np_ in reserved:
@@ -1301,14 +1306,14 @@ class BaseAgent(Agent):
                         continue
                     # Prevent diagonal corner-cutting
                     if dx != 0 and dy != 0:
-                        if not self.model.grid.is_walkable(ap[0] + dx, ap[1]) or not self.model.grid.is_walkable(ap[0], ap[1] + dy):
+                        if not self.model.grid.is_walkable(
+                            ap[0] + dx, ap[1]
+                        ) or not self.model.grid.is_walkable(ap[0], ap[1] + dy):
                             continue
                     if not self._is_valid_cell_for_negotiation(agent, np_):
                         continue
                     if agent_target:
-                        score = abs(np_[0] - agent_target[0]) + abs(
-                            np_[1] - agent_target[1]
-                        )
+                        score = abs(np_[0] - agent_target[0]) + abs(np_[1] - agent_target[1])
                     else:
                         score = 0
                     if score < best_score:
@@ -1338,9 +1343,7 @@ class BaseAgent(Agent):
             agent.wait_counter = 0
             if agent.unique_id == self.unique_id:
                 moved_self = True
-            print(
-                f"{agent.tag} NEGOTIATE: {from_pos} → {to_pos}"
-            )
+            print(f"{agent.tag} NEGOTIATE: {from_pos} → {to_pos}")
 
         return moved_self
 

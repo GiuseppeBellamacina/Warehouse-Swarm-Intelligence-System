@@ -62,6 +62,7 @@ class WarehouseModel(Model):
         self.running = True
         self.current_step = 0
         self.max_steps = config.simulation.max_steps
+        self.map_known = False  # set True by simulation_manager if pre-knowledge enabled
 
         # Warehouse info
         self.warehouse_position = (config.warehouse.position.x, config.warehouse.position.y)
@@ -194,6 +195,7 @@ class WarehouseModel(Model):
         model.running = True
         model.current_step = 0
         model.max_steps = meta.max_steps
+        model.map_known = False
 
         model.warehouse_entrances = []
         model.warehouse_exits = []
@@ -767,9 +769,11 @@ class WarehouseModel(Model):
             Dictionary with agents, objects, and metrics
         """
         agents_data = []
+        is_map_known = getattr(self, "map_known", False)
         # Build global explored mask (union of all agents' local maps).
         # local_map uses 0 for UNKNOWN; any non-zero value means explored.
         global_explored: Optional[np.ndarray] = None
+        global_object_explored: Optional[np.ndarray] = None
         for agent in self.agents:
             lm = getattr(agent, "local_map", None)
             if lm is not None:
@@ -777,6 +781,12 @@ class WarehouseModel(Model):
                     global_explored = (lm != 0).astype(np.uint8)
                 else:
                     global_explored |= (lm != 0).astype(np.uint8)
+            ve = getattr(agent, "vision_explored", None)
+            if ve is not None:
+                if global_object_explored is None:
+                    global_object_explored = ve.copy()
+                else:
+                    global_object_explored |= ve
 
         for agent in self.agents:
             if agent.pos:
@@ -791,6 +801,13 @@ class WarehouseModel(Model):
                 explored_flat: Optional[list] = None
                 if local_map_raw is not None:
                     explored_flat = (local_map_raw != 0).astype(np.uint8).flatten().tolist()
+
+                # Per-agent object-scan mask (vision only, for map_known mode)
+                vision_flat: Optional[list] = None
+                if is_map_known:
+                    ve = getattr(agent, "vision_explored", None)
+                    if ve is not None:
+                        vision_flat = ve.flatten().tolist()
 
                 # Known objects for this agent
                 agent_known_objects = [
@@ -822,6 +839,7 @@ class WarehouseModel(Model):
                         else []
                     ),
                     "explored": explored_flat,
+                    "object_explored": vision_flat,
                     "known_objects": agent_known_objects,
                     "known_warehouses": agent_known_warehouses,
                 }
@@ -843,6 +861,11 @@ class WarehouseModel(Model):
             "global_explored": (
                 global_explored.flatten().tolist() if global_explored is not None else None
             ),
+            "global_object_explored": (
+                global_object_explored.flatten().tolist()
+                if is_map_known and global_object_explored is not None
+                else None
+            ),
             "metrics": {
                 "objects_retrieved": self.objects_retrieved,
                 "total_objects": self.total_objects,
@@ -852,4 +875,5 @@ class WarehouseModel(Model):
                 "average_energy": float(avg_energy),
                 "active_agents": len([a for a in self.agents if getattr(a, "energy", 0) > 0]),
             },
+            "map_known": getattr(self, "map_known", False),
         }

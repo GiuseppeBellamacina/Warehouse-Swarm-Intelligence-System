@@ -408,9 +408,49 @@ class SimulationManager:
         print(f"  - {len(self.model.retrievers)} retrievers")
         print(f"  - {self.model.total_objects} objects to retrieve (max_steps={meta.max_steps})")
 
+        # Pre-knowledge: reveal full map (terrain + warehouses) to every agent
+        if agents_config.map_known:
+            self._apply_map_knowledge()
+
         # Snapshot RNG state so that step() can isolate itself from external
         # async consumers (WebSocket, Telegram notifier, etc.)
         self.model.snapshot_rng()
+
+    def _apply_map_knowledge(self) -> None:
+        """Pre-fill every agent's local_map with full terrain (except objects)
+        and populate known_warehouses with all warehouse cells."""
+        if not self.model:
+            return
+        grid = self.model.grid
+        w, h = grid.width, grid.height
+
+        # Build the terrain mask once: copy cell_types, replacing OBJECT with FREE
+        terrain = grid.cell_types.copy()  # shape (w, h), indexed [x, y]
+        terrain[terrain == CellType.OBJECT] = CellType.FREE
+
+        # Collect all warehouse cells
+        _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+        wh_cells = [(x, y) for x in range(w) for y in range(h) if CellType(terrain[x, y]) in _WH]
+
+        from backend.agents.base_agent import BaseAgent
+
+        for agent in self.model.agents:
+            if not isinstance(agent, BaseAgent):
+                continue
+            lm = getattr(agent, "local_map", None)
+            if lm is None:
+                continue
+            # local_map is indexed [y, x]; terrain is [x, y] → transpose
+            lm[:] = terrain.T
+            # Populate known_warehouses (avoid duplicates)
+            existing = set(agent.known_warehouses)
+            for wc in wh_cells:
+                if wc not in existing:
+                    agent.known_warehouses.append(wc)
+
+        # Store flag on the model so get_state_dict can forward it to the frontend
+        self.model.map_known = True
+        print(f"  Map pre-knowledge applied to {len(self.model.agents)} agents")
 
     async def load_from_grid(
         self,

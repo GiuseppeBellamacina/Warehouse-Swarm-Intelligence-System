@@ -277,9 +277,50 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       });
 
       // ── Fog-of-war overlay ──
-      // Heavy dark overlay on unexplored cells + subtle crosshatch pattern.
-      // Explored cells get a faint bright tint so the contrast is unmistakable.
-      if (fogMask) {
+      // Two modes:
+      // 1. Normal: heavy dark fog on unexplored cells.
+      // 2. map_known: terrain is always visible. Light scan-fog shows
+      //    where agents haven't yet looked for objects.
+      const mapKnown = !!state.map_known;
+
+      if (mapKnown) {
+        // In map_known mode, use the object-scan mask instead
+        const scanMask: number[] | undefined = selectedAgent
+          ? selectedAgent.object_explored
+          : state.global_object_explored;
+
+        const isScanned = (x: number, y: number): boolean => {
+          if (!scanMask) return true;
+          return scanMask[y * gridWidth + x] === 1;
+        };
+
+        if (scanMask) {
+          for (let gy = 0; gy < gridHeight; gy++) {
+            for (let gx = 0; gx < gridWidth; gx++) {
+              const px = gx * cellWidth;
+              const py = gy * cellHeight;
+
+              if (!isScanned(gx, gy)) {
+                // Not yet scanned — subtle amber tint + dot pattern
+                ctx.fillStyle = "rgba(180, 140, 60, 0.18)";
+                ctx.fillRect(px, py, cellWidth, cellHeight);
+
+                // Small central dot to suggest "unscanned"
+                ctx.fillStyle = "rgba(250, 200, 50, 0.15)";
+                ctx.beginPath();
+                ctx.arc(
+                  px + cellWidth / 2,
+                  py + cellHeight / 2,
+                  Math.min(cellWidth, cellHeight) * 0.12,
+                  0,
+                  2 * Math.PI,
+                );
+                ctx.fill();
+              }
+            }
+          }
+        }
+      } else if (fogMask) {
         const fogAlpha = selectedAgent ? 0.82 : 0.65;
 
         for (let gy = 0; gy < gridHeight; gy++) {

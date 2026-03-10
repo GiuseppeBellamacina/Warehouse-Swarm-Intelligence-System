@@ -362,3 +362,8 @@ class SimulationAgentsConfig(BaseModel):
         default_factory=CoordinatorBehaviorParams
     )
     retriever_behavior: RetrieverBehaviorParams = Field(default_factory=RetrieverBehaviorParams)
+
+    map_known: bool = Field(
+        default=False,
+        description="When True, all agents start with full map knowledge (terrain + warehouses). Only object locations remain hidden.",
+    )
