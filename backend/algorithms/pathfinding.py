@@ -73,6 +73,11 @@ class AStarPathfinder:
 
             if not self.grid.is_walkable(nx, ny):
                 continue
+            # Prevent diagonal corner-cutting: both adjacent cardinal
+            # cells must be walkable for the agent to squeeze through.
+            if dx != 0 and dy != 0:
+                if not self.grid.is_walkable(x + dx, y) or not self.grid.is_walkable(x, y + dy):
+                    continue
             if forbidden_pos and (nx, ny) in forbidden_pos:
                 continue
             neighbors.append(((nx, ny), cost))

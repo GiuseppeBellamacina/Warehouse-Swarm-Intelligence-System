@@ -137,6 +137,8 @@ class BaseAgent(Agent):
         self.unreachable_targets: dict[Tuple[int, int], int] = (
             {}
         )  # Track unreachable targets {position: step}
+        # Cells yielded via ClearWay — avoid routing back for a few steps
+        self._yield_cooldown: dict[Tuple[int, int], int] = {}
 
         # Optional A* pathfinder — set by subclasses that support it (e.g. RetrieverAgent)
         self.pathfinder: Optional["AStarPathfinder"] = None
@@ -573,6 +575,10 @@ class BaseAgent(Agent):
             nc = self.model.grid.get_cell_type(*np_)
             if nc == CellType.OBSTACLE:
                 continue
+            # Prevent diagonal corner-cutting
+            if dx != 0 and dy != 0:
+                if not self.model.grid.is_walkable(my_pos[0] + dx, my_pos[1]) or not self.model.grid.is_walkable(my_pos[0], my_pos[1] + dy):
+                    continue
             if avoid_warehouse and nc in _wh:
                 continue
             if not self.model.grid.is_cell_empty(np_):
@@ -654,6 +660,8 @@ class BaseAgent(Agent):
 
         if self._try_move_off_cell(avoid_warehouse=avoid_wh, away_from=sender_pos):
             self.path = []  # force A* replan so we don't route back
+            # Cooldown: avoid routing back through yielded cell for 3 steps
+            self._yield_cooldown[my_pos] = self.model.current_step + 3
             return  # successfully moved — done
 
         # Could not move; try to forward the chain if budget allows
@@ -761,6 +769,13 @@ class BaseAgent(Agent):
             if agent.unique_id != self.unique_id and agent.pos:
                 other_agent_positions.add(pos_to_tuple(agent.pos))
 
+        # Add yield-cooldown cells so A* penalises recently-yielded positions
+        cs = self.model.current_step
+        expired = [p for p, exp in self._yield_cooldown.items() if cs >= exp]
+        for p in expired:
+            del self._yield_cooldown[p]
+        other_agent_positions |= set(self._yield_cooldown.keys())
+
         # Try to use A* pathfinding if agent has it
         if self.pathfinder is not None:
             # Recompute path if:
@@ -819,11 +834,19 @@ class BaseAgent(Agent):
                         # move_towards() when moved==False, so we must NOT
                         # increment it here again (that would double-count).
 
+                        # ── Head-on corridor swap ────────────────────────
+                        # If the blocker is heading toward us, swap positions
+                        # immediately to resolve the deadlock without
+                        # oscillation.
+                        if blocking_agent is not None and isinstance(blocking_agent, BaseAgent):
+                            if self._try_corridor_swap(pos_tuple, blocking_agent):
+                                moved = True
+
                         # ── Cooperative negotiation ──────────────────────
                         # Gather all agents in the jam cluster and negotiate
                         # non-conflicting moves based on priority (more cargo
                         # first, warehouse-bound second, lower ID last).
-                        if self.stuck_counter >= 1:
+                        if not moved and self.stuck_counter >= 1:
                             if self._cooperative_unstick(pos_tuple, target):
                                 moved = True
 
@@ -879,10 +902,15 @@ class BaseAgent(Agent):
             dx = 0 if target_x == current_x else (1 if target_x > current_x else -1)
             dy = 0 if target_y == current_y else (1 if target_y > current_y else -1)
 
-            # Try diagonal move first
+            # Try diagonal move first (only if not corner-cutting)
             if dx != 0 and dy != 0:
                 new_pos = (current_x + dx, current_y + dy)
-                if self.model.grid.is_walkable(*new_pos) and self._check_collision(new_pos):
+                if (
+                    self.model.grid.is_walkable(*new_pos)
+                    and self.model.grid.is_walkable(current_x + dx, current_y)
+                    and self.model.grid.is_walkable(current_x, current_y + dy)
+                    and self._check_collision(new_pos)
+                ):
                     self.model.grid.move_agent(self, new_pos)
                     self.consume_energy(self.energy_consumption["move"])
                     moved = True
@@ -978,6 +1006,10 @@ class BaseAgent(Agent):
                 continue
             if not self.model.grid.is_walkable(*np_):
                 continue
+            # Prevent diagonal corner-cutting
+            if dx != 0 and dy != 0:
+                if not self.model.grid.is_walkable(current[0] + dx, current[1]) or not self.model.grid.is_walkable(current[0], current[1] + dy):
+                    continue
             if np_ in occupied:
                 continue
             ct = self.model.grid.get_cell_type(*np_)
@@ -1046,6 +1078,76 @@ class BaseAgent(Agent):
                 return False
         return True
 
+    # ── Corridor swap ─────────────────────────────────────────────────────
+
+    def _try_corridor_swap(
+        self,
+        my_pos: Tuple[int, int],
+        blocking_agent: "BaseAgent",
+    ) -> bool:
+        """Swap positions with *blocking_agent* when both agents face each
+        other (head-on deadlock).
+
+        A swap is performed only when:
+        1. The blocker's desired direction points back toward *us*.
+        2. Both resulting positions satisfy warehouse negotiation rules.
+        3. The move does not cut through obstacle corners (diagonal case).
+
+        Returns True if the swap was executed.
+        """
+        if blocking_agent is None or blocking_agent.pos is None:
+            return False
+
+        b_pos = pos_to_tuple(blocking_agent.pos)
+
+        # ── Does the blocker want to come our way? ───────────────────────
+        b_desired = None
+        if hasattr(blocking_agent, "path") and blocking_agent.path:
+            b_desired = blocking_agent.path[0]
+        elif (
+            hasattr(blocking_agent, "target_position")
+            and blocking_agent.target_position
+        ):
+            t = blocking_agent.target_position
+            dx = 0 if t[0] == b_pos[0] else (1 if t[0] > b_pos[0] else -1)
+            dy = 0 if t[1] == b_pos[1] else (1 if t[1] > b_pos[1] else -1)
+            b_desired = (b_pos[0] + dx, b_pos[1] + dy)
+
+        if b_desired != my_pos:
+            return False
+
+        # ── Diagonal corner-cutting guard ────────────────────────────────
+        dx = b_pos[0] - my_pos[0]
+        dy = b_pos[1] - my_pos[1]
+        if abs(dx) == 1 and abs(dy) == 1:
+            if (
+                not self.model.grid.is_walkable(my_pos[0] + dx, my_pos[1])
+                or not self.model.grid.is_walkable(my_pos[0], my_pos[1] + dy)
+            ):
+                return False
+
+        # ── Warehouse-rule validation ────────────────────────────────────
+        if not self._is_valid_cell_for_negotiation(self, b_pos):
+            return False
+        if not self._is_valid_cell_for_negotiation(blocking_agent, my_pos):
+            return False
+
+        # ── Execute atomic swap ──────────────────────────────────────────
+        self.model.grid.swap_agents(self, blocking_agent)
+
+        self.path = []
+        self.stuck_counter = 0
+        self.wait_counter = 0
+        blocking_agent.path = []
+        blocking_agent.stuck_counter = 0
+        blocking_agent.wait_counter = 0
+
+        self.consume_energy(self.energy_consumption["move"])
+        blocking_agent.consume_energy(blocking_agent.energy_consumption["move"])
+
+        print(f"{self.tag} SWAP: {my_pos} <-> {b_pos} with {blocking_agent.tag}")
+        return True
+
     def _cooperative_unstick(
         self, my_pos: Tuple[int, int], target: Tuple[int, int]
     ) -> bool:
@@ -1067,6 +1169,8 @@ class BaseAgent(Agent):
         # ── 1. Gather the jam cluster ────────────────────────────────────
         cluster: List["BaseAgent"] = []
         for agent in self.model.agents:
+            if not isinstance(agent, BaseAgent):
+                continue
             if agent.pos is None or agent.energy <= 0:
                 continue
             ap = pos_to_tuple(agent.pos)
@@ -1086,7 +1190,79 @@ class BaseAgent(Agent):
             )
         )
 
-        # ── 3. Plan non-conflicting moves ────────────────────────────────
+        # ── 3. Detect and resolve head-on pairs via swap ─────────────────
+        swapped: set = set()  # agent unique_ids already swapped this round
+        moved_self = False
+        desires: dict = {}
+        for agent in cluster:
+            ap = pos_to_tuple(agent.pos)
+            if hasattr(agent, "path") and agent.path:
+                desires[agent.unique_id] = agent.path[0]
+            elif (
+                hasattr(agent, "target_position") and agent.target_position
+            ):
+                t = agent.target_position
+                ddx = 0 if t[0] == ap[0] else (1 if t[0] > ap[0] else -1)
+                ddy = 0 if t[1] == ap[1] else (1 if t[1] > ap[1] else -1)
+                desires[agent.unique_id] = (ap[0] + ddx, ap[1] + ddy)
+
+        for i, a in enumerate(cluster):
+            if a.unique_id in swapped:
+                continue
+            a_pos = pos_to_tuple(a.pos)
+            a_want = desires.get(a.unique_id)
+            if a_want is None:
+                continue
+            for j in range(i + 1, len(cluster)):
+                b = cluster[j]
+                if b.unique_id in swapped:
+                    continue
+                b_pos = pos_to_tuple(b.pos)
+                b_want = desires.get(b.unique_id)
+                if b_want is None:
+                    continue
+                if a_want == b_pos and b_want == a_pos:
+                    # Validate swap
+                    ddx = b_pos[0] - a_pos[0]
+                    ddy = b_pos[1] - a_pos[1]
+                    corner_ok = True
+                    if abs(ddx) == 1 and abs(ddy) == 1:
+                        if (
+                            not self.model.grid.is_walkable(a_pos[0] + ddx, a_pos[1])
+                            or not self.model.grid.is_walkable(a_pos[0], a_pos[1] + ddy)
+                        ):
+                            corner_ok = False
+                    if (
+                        corner_ok
+                        and self._is_valid_cell_for_negotiation(a, b_pos)
+                        and self._is_valid_cell_for_negotiation(b, a_pos)
+                    ):
+                        self.model.grid.swap_agents(a, b)
+                        a.path = []
+                        a.stuck_counter = 0
+                        a.wait_counter = 0
+                        b.path = []
+                        b.stuck_counter = 0
+                        b.wait_counter = 0
+                        a.consume_energy(a.energy_consumption["move"])
+                        b.consume_energy(b.energy_consumption["move"])
+                        swapped.add(a.unique_id)
+                        swapped.add(b.unique_id)
+                        print(f"{a.tag} NEGOTIATE-SWAP: {a_pos} <-> {b_pos} with {b.tag}")
+                        if a.unique_id == self.unique_id or b.unique_id == self.unique_id:
+                            moved_self = True
+                        break
+
+        # If this agent was already swapped, we're done
+        if self.unique_id in swapped:
+            return moved_self
+
+        # Remove swapped agents from cluster for free-cell planning
+        cluster = [a for a in cluster if a.unique_id not in swapped]
+        if len(cluster) < 2:
+            return moved_self
+
+        # ── 4. Plan non-conflicting moves ────────────────────────────────
         reserved: set = set()  # cells claimed for next step
         plan: List[Tuple["BaseAgent", Tuple[int, int], Tuple[int, int]]] = []
 
@@ -1123,6 +1299,10 @@ class BaseAgent(Agent):
                         continue
                     if not self.model.grid.is_cell_empty(np_):
                         continue
+                    # Prevent diagonal corner-cutting
+                    if dx != 0 and dy != 0:
+                        if not self.model.grid.is_walkable(ap[0] + dx, ap[1]) or not self.model.grid.is_walkable(ap[0], ap[1] + dy):
+                            continue
                     if not self._is_valid_cell_for_negotiation(agent, np_):
                         continue
                     if agent_target:
@@ -1146,7 +1326,7 @@ class BaseAgent(Agent):
         if not plan:
             return False
 
-        # ── 4. Execute (all targets are currently-free → no deps) ────────
+        # ── 5. Execute (all targets are currently-free → no deps) ────────
         moved_self = False
         for agent, from_pos, to_pos in plan:
             if not self.model.grid.is_cell_empty(to_pos):
