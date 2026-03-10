@@ -232,8 +232,8 @@ class MetricsCollector:
                 elif "recharg" in state_name:
                     state_counts["recharging"] += 1
 
-        # Communication metrics (would need to be tracked by comm_manager)
-        messages_sent = 0  # TODO: track in CommunicationManager
+        # Communication metrics
+        messages_sent = getattr(model.comm_manager, "messages_sent", 0)
 
         step_metrics = StepMetrics(
             step=model.current_step,
@@ -315,7 +315,22 @@ class MetricsCollector:
             self.metrics.to_json(filepath)
             return filepath
         elif format == "csv":
-            # TODO: Export to CSV
-            raise NotImplementedError("CSV export not yet implemented")
+            import csv
+
+            filepath = output_dir / f"metrics_{self.metrics.simulation_id}.csv"
+            if not self.metrics.step_metrics:
+                # Write an empty file with just the header
+                with open(filepath, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(StepMetrics.__dataclass_fields__.keys())
+                return filepath
+
+            header = list(StepMetrics.__dataclass_fields__.keys())
+            with open(filepath, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                for sm in self.metrics.step_metrics:
+                    writer.writerow([getattr(sm, h) for h in header])
+            return filepath
         else:
             raise ValueError(f"Unsupported format: {format}")

@@ -590,8 +590,6 @@ class SimulationManager:
         if not self.model:
             return
 
-        update_interval = 1.0 / self.update_rate
-
         while self.is_running and self.model.running:
             if not self.is_paused:
                 # Step simulation
@@ -634,8 +632,8 @@ class SimulationManager:
                     )
                     break
 
-            # Wait for next update
-            await asyncio.sleep(update_interval)
+            # Wait for next update (re-read rate each iteration so speed changes apply immediately)
+            await asyncio.sleep(1.0 / self.update_rate)
 
     def pause_simulation(self) -> None:
         """Pause the simulation"""
