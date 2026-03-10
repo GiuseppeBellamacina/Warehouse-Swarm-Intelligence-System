@@ -100,6 +100,13 @@ export const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ state }) => {
         />
       </div>
 
+      {/* Messages sent */}
+      <StatCard
+        label="Messages Sent"
+        value={metrics.messages_sent ?? 0}
+        accent="text-cyan-400"
+      />
+
       {/* Retrieval progress */}
       <StatCard
         label="Objects Retrieved"

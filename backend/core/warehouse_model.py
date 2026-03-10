@@ -874,6 +874,7 @@ class WarehouseModel(Model):
                 ),
                 "average_energy": float(avg_energy),
                 "active_agents": len([a for a in self.agents if getattr(a, "energy", 0) > 0]),
+                "messages_sent": getattr(self.comm_manager, "messages_sent", 0),
             },
             "map_known": getattr(self, "map_known", False),
         }

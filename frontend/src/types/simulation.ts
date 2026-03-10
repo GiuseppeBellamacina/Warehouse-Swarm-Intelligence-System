@@ -81,6 +81,7 @@ export interface Metrics {
   retrieval_progress: number;
   average_energy: number;
   active_agents: number;
+  messages_sent: number;
 }
 
 export interface SimulationState {

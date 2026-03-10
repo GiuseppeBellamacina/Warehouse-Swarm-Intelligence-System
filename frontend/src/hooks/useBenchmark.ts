@@ -12,6 +12,7 @@ export interface BenchmarkSnapshot {
   retrievalProgress: number;
   averageEnergy: number;
   activeAgents: number;
+  messagesSent: number;
 }
 
 export interface BenchmarkAgentParams {
@@ -68,6 +69,8 @@ export interface BenchmarkRunSummary {
   firstRetrievalStep: number | null;
   /** step at which last object was retrieved (or last recorded step) */
   lastRetrievalStep: number | null;
+  /** total messages sent during the run */
+  totalMessagesSent: number;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -98,6 +101,7 @@ function computeSummary(snapshots: BenchmarkSnapshot[]): BenchmarkRunSummary {
       efficiency: 0,
       firstRetrievalStep: null,
       lastRetrievalStep: null,
+      totalMessagesSent: 0,
     };
   }
   const last = snapshots[snapshots.length - 1];
@@ -125,6 +129,7 @@ function computeSummary(snapshots: BenchmarkSnapshot[]): BenchmarkRunSummary {
     efficiency: last.step > 0 ? (last.objectsRetrieved / last.step) * 100 : 0,
     firstRetrievalStep,
     lastRetrievalStep,
+    totalMessagesSent: last.messagesSent,
   };
 }
 
@@ -194,6 +199,7 @@ export const useBenchmark = () => {
       retrievalProgress: state.metrics.retrieval_progress,
       averageEnergy: state.metrics.average_energy,
       activeAgents: state.metrics.active_agents,
+      messagesSent: state.metrics.messages_sent ?? 0,
     };
     // Avoid duplicate steps
     const last = run.snapshots[run.snapshots.length - 1];
