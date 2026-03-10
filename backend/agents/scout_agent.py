@@ -331,13 +331,23 @@ class ScoutAgent(BaseAgent):
         for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 200]:
             del self.unreachable_targets[pos]
 
+        # When map_known, use vision_explored as the "unexplored" mask so
+        # that cells not yet visually scanned still appear as frontiers.
+        _unexp_mask = None
+        if getattr(self.model, "map_known", False):
+            _unexp_mask = self.vision_explored == 0  # True where NOT scanned
+
         frontiers = FrontierExplorer.find_frontiers(
-            self.local_map, min_cluster_size=self._MIN_FRONTIER_CLUSTER_SIZE
+            self.local_map,
+            min_cluster_size=self._MIN_FRONTIER_CLUSTER_SIZE,
+            unexplored_mask=_unexp_mask,
         )
         # If the high threshold filtered everything out, retry with minimum=1
         # so the scout still has *something* to explore.
         if not frontiers:
-            frontiers = FrontierExplorer.find_frontiers(self.local_map, min_cluster_size=1)
+            frontiers = FrontierExplorer.find_frontiers(
+                self.local_map, min_cluster_size=1, unexplored_mask=_unexp_mask
+            )
 
         # Filter blacklisted / stale frontiers and recently-reached targets.
         # Skipping recently-reached targets prevents immediate oscillation back
@@ -445,7 +455,11 @@ class ScoutAgent(BaseAgent):
         )
 
         # Find all explored cells (local_map != UNKNOWN) that are stale.
+        # When map_known, also include cells never visually scanned (vision_explored==0)
+        # as they are immediately stale regardless of _coverage_step.
         stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
+        if getattr(self.model, "map_known", False):
+            stale_mask |= (self.local_map != 0) & (self.vision_explored == 0)
         stale_ys, stale_xs = np.where(stale_mask)
 
         if len(stale_ys) == 0:
@@ -514,21 +528,30 @@ class ScoutAgent(BaseAgent):
     def _pick_unexplored_target(self, my_pos: Tuple[int, int]) -> None:
         """Navigate towards a random UNKNOWN boundary cell via A* when no frontier found.
         Uses numpy vectorisation instead of Python loops.
+        When map_known, uses vision_explored==0 instead of local_map==0.
         """
-        # Boolean mask: UNKNOWN cells (value 0)
-        unknown_mask = self.local_map == 0
+        # Boolean mask: cells considered "unknown" for exploration purposes
+        if getattr(self.model, "map_known", False):
+            unknown_mask = self.vision_explored == 0
+        else:
+            unknown_mask = self.local_map == 0
         if not np.any(unknown_mask):
             self.target_position = None
             self.state = AgentState.EXPLORING
             return
 
-        # Pad and check 4-neighbours to find boundary UNKNOWN cells
-        # (UNKNOWN cells adjacent to at least one explored cell)
-        padded = np.pad(self.local_map, 1, mode="constant", constant_values=0)
+        # Pad and check 4-neighbours to find boundary cells
+        # (unknown cells adjacent to at least one explored/scanned cell)
+        explored_mask = ~unknown_mask
+        padded_explored = np.pad(explored_mask.astype(np.int8), 1, mode="constant", constant_values=0)
         has_explored_neighbour = np.zeros_like(unknown_mask)
         for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             has_explored_neighbour |= (
-                padded[1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx] != 0
+                padded_explored[
+                    1 + dy : padded_explored.shape[0] - 1 + dy,
+                    1 + dx : padded_explored.shape[1] - 1 + dx,
+                ]
+                > 0
             )
 
         boundary_mask = unknown_mask & has_explored_neighbour
@@ -631,9 +654,12 @@ class ScoutAgent(BaseAgent):
                 if self.target_position:
                     self.move_towards(self.target_position)
                 else:
-                    # Last resort: move toward the centroid of all UNKNOWN cells
-                    # in the local map — purely directional, no randomness.
-                    unknown_ys, unknown_xs = np.where(self.local_map == 0)
+                    # Last resort: move toward the centroid of all unscanned cells
+                    # — purely directional, no randomness.
+                    if getattr(self.model, "map_known", False):
+                        unknown_ys, unknown_xs = np.where(self.vision_explored == 0)
+                    else:
+                        unknown_ys, unknown_xs = np.where(self.local_map == 0)
                     if len(unknown_xs) > 0:
                         cx = int(np.mean(unknown_xs))
                         cy = int(np.mean(unknown_ys))
