@@ -109,6 +109,7 @@ class RetrieverAgent(BaseAgent):
         self._wh_step: Optional[str] = None
         self._wh_station: Optional[Dict[str, Any]] = None
         self._wh_approach_steps: int = 0  # steps spent in "approach" phase
+        self._wh_exit_stuck: int = 0  # steps spent trying to reach exit cell
 
         # Pending events to report to coordinator
         self.pending_events: List[str] = []
@@ -216,11 +217,10 @@ class RetrieverAgent(BaseAgent):
                         )
 
             elif isinstance(message, RetrieverEventMessage):
-                # React to "object_spotted" broadcasts from PEER retrievers that are
-                # full and cannot collect the cargo themselves.  Add the object to
-                # known_objects so P4 (or P3b opportunistic) can self-assign to it
-                # in the next decide phase.
-                if message.event_type != "object_spotted":
+                # React to "object_spotted" and "cargo_dropped" broadcasts from
+                # PEER retrievers.  Add the object to known_objects so P4 (or P3b
+                # opportunistic) can self-assign to it in the next decide phase.
+                if message.event_type not in ("object_spotted", "cargo_dropped"):
                     continue
                 peer_id = message.sender_id
                 if peer_id == self.unique_id:
@@ -572,6 +572,7 @@ class RetrieverAgent(BaseAgent):
         self._wh_station = station
         self._wh_step = "approach"
         self._wh_approach_steps = 0
+        self._wh_exit_stuck = 0
         self.target_position = station["entrance"]
 
         if purpose == "deliver":
@@ -693,6 +694,113 @@ class RetrieverAgent(BaseAgent):
             self.state = AgentState.EXPLORING
 
     # ------------------------------------------------------------------
+    # Energy depletion: drop cargo
+    # ------------------------------------------------------------------
+
+    def step(self) -> None:
+        """Override base step to drop cargo when energy is depleted."""
+        if self.energy <= 0:
+            if self.carrying_objects > 0:
+                self._drop_cargo()
+            return
+
+        super().step()
+
+    def _find_drop_cells(self, count: int) -> List[Tuple[int, int]]:
+        """Find *count* valid cells to drop objects near the agent.
+
+        Rules:
+        - Must be walkable and FREE (no obstacles, warehouse cells, or
+          existing objects).
+        - Starts from the agent's own cell, then spirals outward.
+        """
+        pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        candidates: List[Tuple[int, int]] = []
+
+        # Check own cell first
+        ct = self.model.grid.get_cell_type(*pos)
+        if ct == CellType.FREE and pos not in self.model.grid.objects:
+            candidates.append(pos)
+
+        # Spiral outward in rings of increasing radius
+        radius = 1
+        while len(candidates) < count and radius <= 10:
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if abs(dx) != radius and abs(dy) != radius:
+                        continue  # only perimeter of ring
+                    nx, ny = pos[0] + dx, pos[1] + dy
+                    if not self.model.grid.is_walkable(nx, ny):
+                        continue
+                    cell_t = self.model.grid.get_cell_type(nx, ny)
+                    if cell_t != CellType.FREE:
+                        continue
+                    if (nx, ny) in self.model.grid.objects:
+                        continue
+                    candidates.append((nx, ny))
+                    if len(candidates) >= count:
+                        break
+                if len(candidates) >= count:
+                    break
+            radius += 1
+
+        return candidates[:count]
+
+    def _drop_cargo(self) -> None:
+        """Drop all carried objects on valid nearby cells and broadcast to
+        nearby agents so they can claim the dropped cargo."""
+        if self.carrying_objects <= 0:
+            return
+
+        drop_cells = self._find_drop_cells(self.carrying_objects)
+        dropped_positions: List[Tuple[int, int]] = []
+
+        for cell in drop_cells:
+            # Place object back on the grid
+            self.model.grid.place_object(*cell)
+            # Remove from retrieved_objects to keep bookkeeping consistent
+            self.model.grid.retrieved_objects.discard(cell)
+            # Add to our own knowledge so it propagates via MapDataMessage
+            self.known_objects[cell] = 1.0
+            self.known_objects_step[cell] = self.model.current_step
+            dropped_positions.append(cell)
+            self.carrying_objects -= 1
+
+        # Reset move cost
+        self.energy_consumption["move"] = 0.6
+
+        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+        print(
+            f"{self.tag} CARGO DROP: energy depleted, "
+            f"dropped {len(dropped_positions)} objects at {dropped_positions}"
+        )
+
+        # Broadcast dropped-object positions to all nearby agents
+        nearby = self.get_nearby_agents(self.communication_radius)
+        target_ids = [
+            a.unique_id
+            for a in nearby
+            if a.unique_id != self.unique_id
+        ]
+
+        if target_ids:
+            for obj_pos in dropped_positions:
+                drop_msg = RetrieverEventMessage(
+                    sender_id=self.unique_id,
+                    timestamp=self.model.current_step,
+                    retriever_id=self.unique_id,
+                    event_type="cargo_dropped",
+                    position=my_pos,
+                    object_position=obj_pos,
+                    carrying_count=0,
+                )
+                self.model.comm_manager.send_message(drop_msg, target_ids)
+            print(
+                f"{self.tag} CARGO DROP: notified agents {target_ids} "
+                f"about {len(dropped_positions)} dropped objects"
+            )
+
+    # ------------------------------------------------------------------
     # Act
     # ------------------------------------------------------------------
 
@@ -782,6 +890,7 @@ class RetrieverAgent(BaseAgent):
                         f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
                     )
                     self._wh_step = "exit"
+                    self._wh_exit_stuck = 0
                     exit_cell = station["exit"]
                     self.target_position = exit_cell
                     if my_pos != exit_cell:
@@ -863,6 +972,7 @@ class RetrieverAgent(BaseAgent):
                         self.move_towards(queue_cell)
                 else:
                     self._wh_step = "exit"
+                    self._wh_exit_stuck = 0
                     self.target_position = station["exit"]
                     # Move toward exit immediately
                     if my_pos != station["exit"]:
@@ -888,6 +998,7 @@ class RetrieverAgent(BaseAgent):
                 if self.energy >= self.max_energy * 0.90:
                     print(f"{self.tag} RECHARGED: heading to exit")
                     self._wh_step = "exit"
+                    self._wh_exit_stuck = 0
                     self.target_position = station["exit"]
                     self.state = AgentState.RECHARGING
                     # Move toward exit immediately
@@ -910,6 +1021,7 @@ class RetrieverAgent(BaseAgent):
                 print(f"{self.tag} EXIT: exited warehouse")
                 self._wh_step = None
                 self._wh_station = None
+                self._wh_exit_stuck = 0
                 self.pending_events.append("idle")
                 # If there are pending tasks, head there immediately instead of
                 # exploring a random cell (which caused the "wander first" bug)
@@ -931,6 +1043,24 @@ class RetrieverAgent(BaseAgent):
                 if self.target_position and my_pos == exit_cell:
                     self.move_towards(self.target_position)
             else:
+                # Ask blocker on exit cell to move (mirrors entrance logic)
+                blocker = self._get_agent_at_pos(exit_cell)
+                if blocker is not None:
+                    self._send_clear_way_request(exit_cell, blocker)
+
+                self._wh_exit_stuck += 1
+
+                # If stuck heading to exit for several steps, try leaving
+                # through the entrance instead (it is also walkable from inside)
+                if self._wh_exit_stuck >= 4:
+                    entrance = station["entrance"]
+                    if entrance != exit_cell:
+                        blocker_ent = self._get_agent_at_pos(entrance)
+                        if blocker_ent is None or self._wh_exit_stuck >= 6:
+                            if blocker_ent is not None:
+                                self._send_clear_way_request(entrance, blocker_ent)
+                            self.move_towards(entrance)
+                            return
                 self.move_towards(exit_cell)
 
     # ------------------------------------------------------------------

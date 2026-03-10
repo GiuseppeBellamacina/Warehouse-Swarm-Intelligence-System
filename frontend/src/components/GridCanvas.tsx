@@ -32,6 +32,7 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
   const targetPosRef = useRef<Map<number, AgentPos>>(new Map());
   const animStartRef = useRef<number>(0);
   const rafRef = useRef<number>(0);
+  const lastStepRef = useRef<number>(-1);
 
   // Auto-size: observe container and update canvas dimensions
   useEffect(() => {
@@ -52,18 +53,23 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
   const { w: width, h: height } = size;
 
   // When state changes, snapshot current interpolated positions as "prev"
-  // and set new targets.
+  // and set new targets. On reset (step goes backward) snap immediately.
   useEffect(() => {
     if (!state) return;
     const now = performance.now();
     const prev = prevPosRef.current;
     const target = targetPosRef.current;
+    const jumped = state.step <= lastStepRef.current && lastStepRef.current > 0;
+    lastStepRef.current = state.step;
 
-    // For each agent, the previous position is wherever it was heading
-    // (or its current position if new).
     for (const agent of state.agents) {
-      const old = target.get(agent.id);
-      prev.set(agent.id, old ?? { x: agent.x, y: agent.y });
+      if (jumped) {
+        // Reset / timeline jump: snap directly, no interpolation
+        prev.set(agent.id, { x: agent.x, y: agent.y });
+      } else {
+        const old = target.get(agent.id);
+        prev.set(agent.id, old ?? { x: agent.x, y: agent.y });
+      }
       target.set(agent.id, { x: agent.x, y: agent.y });
     }
     animStartRef.current = now;

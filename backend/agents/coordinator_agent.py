@@ -204,8 +204,8 @@ class CoordinatorAgent(BaseAgent):
                 elif event == "busy":
                     self.retriever_states[rid] = "busy"
 
-                elif event == "object_spotted":
-                    # Retriever saw an object — treat as scout report
+                elif event in ("object_spotted", "cargo_dropped"):
+                    # Retriever saw an object or dropped cargo — register
                     obj_pos = message.object_position
                     if obj_pos:
                         if (
@@ -217,9 +217,10 @@ class CoordinatorAgent(BaseAgent):
                                 self.known_objects[obj_pos] = 1.0
                                 self.known_objects_step[obj_pos] = cs
                             self._spotted_by[obj_pos] = rid
+                            label = "SPOTTED" if event == "object_spotted" else "CARGO_DROP"
                             print(
-                                f"{self.tag} SPOTTED: "
-                                f"{agent_tag('retriever', rid)} saw object at {obj_pos}"
+                                f"{self.tag} {label}: "
+                                f"{agent_tag('retriever', rid)} {event} at {obj_pos}"
                             )
 
             elif isinstance(message, ObjectLocationMessage):
