@@ -15,6 +15,8 @@ from pydantic import BaseModel
 from backend.api.session_registry import session_registry
 from backend.api.simulation_manager import SimulationManager
 from backend.api.telegram_notifier import (
+    notify_backend_shutdown,
+    notify_backend_start,
     notify_simulation_start,
     notify_simulation_stopped,
 )
@@ -32,7 +34,9 @@ configs_path = project_root / "configs"
 async def lifespan(_app: FastAPI):
     """Start background cleanup of idle sessions on startup."""
     asyncio.create_task(session_registry.cleanup_loop())
+    asyncio.create_task(notify_backend_start())
     yield
+    await notify_backend_shutdown()
 
 
 # FastAPI app
@@ -239,11 +243,7 @@ async def start_simulation(request: Request):
     if mgr.is_running:
         raise HTTPException(status_code=400, detail="Simulation is already running")
 
-    print("[DEBUG] Starting simulation loop...")
-    mgr.simulation_task = asyncio.create_task(mgr.start_simulation(ws_manager))
-    print("[DEBUG] Simulation loop task created")
-
-    # Fire-and-forget Telegram notification
+    # Gather info for logging and Telegram notification
     config_name: Optional[str] = getattr(mgr.config, "name", None)
     agent_count: Optional[int] = len(mgr.model.agents) if mgr.model and mgr.model.agents else None
     forwarded_for = request.headers.get("x-forwarded-for")
@@ -253,12 +253,35 @@ async def start_simulation(request: Request):
         else (request.client.host if request.client else None)
     )
     user_agent = request.headers.get("user-agent")
+    _scouts = len(mgr.model.scouts) if mgr.model else None
+    _coords = len(mgr.model.coordinators) if mgr.model else None
+    _retrs = len(mgr.model.retrievers) if mgr.model else None
+    _grid_size = (
+        mgr.model.grid.width if mgr.model and mgr.model.grid else None
+    )
+    _total_obj = mgr.model.total_objects if mgr.model else None
+    _map_known = getattr(mgr.model, "map_known", False) if mgr.model else False
+
+    print("[DEBUG] Starting simulation loop...")
+    print(f"  User IP: {user_ip}  UA: {(user_agent or '')[:80]}")
+    print(f"  Config: {config_name}  Grid: {_grid_size}×{_grid_size}  Objects: {_total_obj}")
+    print(f"  Agents: {agent_count} ({_scouts}S {_coords}C {_retrs}R)  map_known={_map_known}")
+    mgr.simulation_task = asyncio.create_task(mgr.start_simulation(ws_manager))
+    print("[DEBUG] Simulation loop task created")
+
+    # Fire-and-forget Telegram notification
     asyncio.create_task(
         notify_simulation_start(
             config_name=config_name,
             agent_count=agent_count,
             user_ip=user_ip,
             user_agent=user_agent,
+            scouts=_scouts,
+            coordinators=_coords,
+            retrievers=_retrs,
+            grid_size=_grid_size,
+            total_objects=_total_obj,
+            map_known=_map_known,
         )
     )
 
