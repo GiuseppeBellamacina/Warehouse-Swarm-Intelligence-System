@@ -396,12 +396,15 @@ class ScoutAgent(BaseAgent):
                 # When ONLY nearby frontiers remain, skip them and jump directly to
                 # stale-coverage patrol.  This avoids the A→B→A oscillation between
                 # a handful of adjacent residual clusters.
+                # In map_known mode, DON'T skip nearby frontiers — they sit at the
+                # boundary of unscanned territory and should be explored directly.
                 if not far_frontiers:
-                    if self._STALE_COVERAGE_PATROL:
-                        self._pick_stale_coverage_target(my_pos)
-                        if self.target_position is not None:
-                            return  # heading to a stale area
-                    # No stale area either — fall through and let nearby frontiers run
+                    if not getattr(self.model, "map_known", False):
+                        if self._STALE_COVERAGE_PATROL:
+                            self._pick_stale_coverage_target(my_pos)
+                            if self.target_position is not None:
+                                return  # heading to a stale area
+                    # Fall through and use nearby frontiers
                     frontiers_to_use = frontiers_to_use  # keep as-is (already near-only)
                 else:
                     frontiers_to_use = far_frontiers
@@ -455,11 +458,19 @@ class ScoutAgent(BaseAgent):
         )
 
         # Find all explored cells (local_map != UNKNOWN) that are stale.
-        # When map_known, also include cells never visually scanned (vision_explored==0)
-        # as they are immediately stale regardless of _coverage_step.
-        stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
-        if getattr(self.model, "map_known", False):
-            stale_mask |= (self.local_map != 0) & (self.vision_explored == 0)
+        # When map_known, unscanned cells (vision_explored==0) take ABSOLUTE
+        # priority — the scout must scan all terrain before re-patrolling.
+        is_map_known = getattr(self.model, "map_known", False)
+        if is_map_known:
+            unseen_mask = (self.local_map != 0) & (self.vision_explored == 0)
+            if np.any(unseen_mask):
+                # Only target never-scanned cells; skip stale re-patrol
+                stale_mask = unseen_mask
+            else:
+                # All cells scanned — normal stale coverage patrol
+                stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
+        else:
+            stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
         stale_ys, stale_xs = np.where(stale_mask)
 
         if len(stale_ys) == 0:
