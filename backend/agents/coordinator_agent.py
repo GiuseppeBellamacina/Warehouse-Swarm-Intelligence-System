@@ -661,7 +661,13 @@ class CoordinatorAgent(BaseAgent):
         # When no work pending → genuine exploration, NO centroid bias.
         # When work pending but near centroid → biased toward centroid.
         if self._SMART_EXPLORE:
-            unknown_mask = self.local_map == 0
+            # In map_known mode, local_map is pre-filled so local_map==0 is
+            # always empty.  Use vision_explored==0 to find cells not yet
+            # visually scanned — objects can only be in unseen areas.
+            if getattr(self.model, "map_known", False):
+                unknown_mask = self.vision_explored == 0
+            else:
+                unknown_mask = self.local_map == 0
             if _np.any(unknown_mask):
                 padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
                 has_explored = _np.zeros_like(unknown_mask)
