@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useSimulation } from "./hooks/useSimulation";
 import { useBenchmark } from "./hooks/useBenchmark";
+import { useStepHistory } from "./hooks/useStepHistory";
 import { GridScenarioConfig, SimulationAgentsConfig } from "./types/simulation";
 import { GridCanvas } from "./components/GridCanvas";
 import { ControlPanel } from "./components/ControlPanel";
@@ -10,6 +11,7 @@ import { MetricsDisplay } from "./components/MetricsDisplay";
 import { BenchmarkPanel } from "./components/BenchmarkPanel";
 import { MapEditor } from "./components/MapEditor";
 import { AgentList } from "./components/AgentList";
+import { TimelineSlider } from "./components/TimelineSlider";
 import "./index.css";
 
 type ViewMode = "simulation" | "editor";
@@ -98,6 +100,27 @@ function App() {
   const [mobileTab, setMobileTab] = useState<MobileTab>("dashboard");
   const [metricsPanelView, setMetricsPanelView] =
     useState<MetricsPanelView>("metrics");
+
+  // ── Step history (timeline scrubbing) ──
+  const stepHistory = useStepHistory();
+
+  // Record every live tick into history
+  useEffect(() => {
+    if (state) stepHistory.recordTick(state);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
+
+  // The state to display: historical snapshot or live
+  const displayState =
+    stepHistory.viewStep !== null
+      ? (stepHistory.getViewState() ?? state)
+      : state;
+
+  // Wrap resetSimulation to also clear step history
+  const wrappedResetSimulation = useCallback(async () => {
+    stepHistory.clear();
+    return resetSimulation();
+  }, [resetSimulation, stepHistory]);
 
   // Capture last-loaded agents config for benchmark snapshot
   const lastAgentsConfigRef = useRef<SimulationAgentsConfig | null>(null);
@@ -445,9 +468,9 @@ function App() {
                 {/* Grid area — takes remaining space */}
                 {viewMode === "simulation" ? (
                   <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-1 min-h-0 backdrop-blur-sm">
-                    {state && state.grid ? (
+                    {displayState && displayState.grid ? (
                       <GridCanvas
-                        state={state}
+                        state={displayState}
                         selectedAgentId={selectedAgentId}
                       />
                     ) : (
@@ -483,25 +506,36 @@ function App() {
                   </div>
                 )}
 
+                {/* ── Timeline slider ── */}
+                <TimelineSlider
+                  minStep={stepHistory.minStep}
+                  maxStep={stepHistory.maxStep}
+                  count={stepHistory.count}
+                  viewStep={stepHistory.viewStep}
+                  onChangeStep={stepHistory.setViewStep}
+                  liveStep={state?.step ?? 0}
+                  isRunning={isRunning}
+                />
+
                 {/* ── Key metrics strip ── */}
-                {state && state.metrics && (
+                {displayState && displayState.metrics && (
                   <div className="flex-shrink-0 flex gap-1">
                     {[
                       {
                         label: "Step",
-                        value: String(state.step),
+                        value: String(displayState.step),
                         color: "text-blue-400",
                       },
                       {
                         label: "Retrieved",
-                        value: `${state.metrics.objects_retrieved}/${state.metrics.total_objects}`,
+                        value: `${displayState.metrics.objects_retrieved}/${displayState.metrics.total_objects}`,
                         color: "text-emerald-400",
                       },
                       {
                         label: "Progress",
-                        value: `${(state.metrics.retrieval_progress * 100).toFixed(0)}%`,
+                        value: `${(displayState.metrics.retrieval_progress * 100).toFixed(0)}%`,
                         color:
-                          state.metrics.retrieval_progress > 0.5
+                          displayState.metrics.retrieval_progress > 0.5
                             ? "text-emerald-400"
                             : "text-yellow-400",
                       },
@@ -613,7 +647,7 @@ function App() {
                   )}
                   {!isRunning && isLoaded && (
                     <button
-                      onClick={resetSimulation}
+                      onClick={wrappedResetSimulation}
                       className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-colors ${
                         isStopped
                           ? "bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white"
@@ -642,9 +676,11 @@ function App() {
 
             {mobileTab === "agents" && (
               <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm m-1.5">
-                {state && state.agents && state.agents.length > 0 ? (
+                {displayState &&
+                displayState.agents &&
+                displayState.agents.length > 0 ? (
                   <AgentList
-                    agents={state.agents}
+                    agents={displayState.agents}
                     selectedAgentId={selectedAgentId}
                     onSelectAgent={setSelectedAgentId}
                   />
@@ -663,7 +699,7 @@ function App() {
 
             {mobileTab === "metrics" && (
               <div className="flex-1 overflow-y-auto bg-gray-900/70 border border-gray-800/60 rounded-xl backdrop-blur-sm m-1.5">
-                <MetricsDisplay state={state} />
+                <MetricsDisplay state={displayState} />
               </div>
             )}
 
@@ -680,7 +716,7 @@ function App() {
                   onPause={pauseSimulation}
                   onResume={resumeSimulation}
                   onStop={stopSimulation}
-                  onReset={resetSimulation}
+                  onReset={wrappedResetSimulation}
                   onSpeedChange={setSimulationSpeed}
                 />
               </div>
@@ -768,9 +804,11 @@ function App() {
             style={{ width: agentsW }}
           >
             <div className="flex-1 overflow-y-auto">
-              {state && state.agents && state.agents.length > 0 ? (
+              {displayState &&
+              displayState.agents &&
+              displayState.agents.length > 0 ? (
                 <AgentList
-                  agents={state.agents}
+                  agents={displayState.agents}
                   selectedAgentId={selectedAgentId}
                   onSelectAgent={setSelectedAgentId}
                 />
@@ -811,8 +849,11 @@ function App() {
             {/* Content */}
             {viewMode === "simulation" ? (
               <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-2 min-h-0 backdrop-blur-sm">
-                {state && state.grid ? (
-                  <GridCanvas state={state} selectedAgentId={selectedAgentId} />
+                {displayState && displayState.grid ? (
+                  <GridCanvas
+                    state={displayState}
+                    selectedAgentId={selectedAgentId}
+                  />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-center gap-2">
                     <svg
@@ -845,6 +886,17 @@ function App() {
                 />
               </div>
             )}
+
+            {/* ── Timeline slider ── */}
+            <TimelineSlider
+              minStep={stepHistory.minStep}
+              maxStep={stepHistory.maxStep}
+              count={stepHistory.count}
+              viewStep={stepHistory.viewStep}
+              onChangeStep={stepHistory.setViewStep}
+              liveStep={state?.step ?? 0}
+              isRunning={isRunning}
+            />
           </div>
 
           <DragHandle onDrag={(dx) => setMetricsW((w) => clamp(w - dx))} />
@@ -872,7 +924,7 @@ function App() {
             </div>
             <div className="flex-1 overflow-y-auto">
               {metricsPanelView === "metrics" ? (
-                <MetricsDisplay state={state} />
+                <MetricsDisplay state={displayState} />
               ) : (
                 <BenchmarkPanel
                   runs={benchmark.runs}
@@ -912,7 +964,7 @@ function App() {
                 onPause={pauseSimulation}
                 onResume={resumeSimulation}
                 onStop={stopSimulation}
-                onReset={resetSimulation}
+                onReset={wrappedResetSimulation}
                 onSpeedChange={setSimulationSpeed}
               />
             </div>
