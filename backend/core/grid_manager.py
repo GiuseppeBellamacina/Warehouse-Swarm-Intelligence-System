@@ -239,6 +239,40 @@ class GridManager(MultiGrid):
 
         return visible
 
+    _WH_TYPES = frozenset(
+        {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+    )
+
+    def flood_fill_warehouse(self, start_x: int, start_y: int) -> List[Tuple[int, int, CellType]]:
+        """Return all warehouse cells (WAREHOUSE, ENTRANCE, EXIT) connected
+        to *(start_x, start_y)* via 4-directional adjacency.
+
+        If the starting cell is not a warehouse-type cell the result is empty.
+        """
+        ct = self.get_cell_type(start_x, start_y)
+        if ct not in self._WH_TYPES:
+            return []
+
+        visited: Set[Tuple[int, int]] = set()
+        stack = [(start_x, start_y)]
+        result: List[Tuple[int, int, CellType]] = []
+
+        while stack:
+            cx, cy = stack.pop()
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+            cell = self.get_cell_type(cx, cy)
+            if cell not in self._WH_TYPES:
+                continue
+            result.append((cx, cy, cell))
+            for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < self.width and 0 <= ny < self.height and (nx, ny) not in visited:
+                    stack.append((nx, ny))
+
+        return result
+
     def get_nearest_object(self, x: int, y: int) -> Optional[Tuple[int, int, float]]:
         """
         Find the nearest unretrieved object
