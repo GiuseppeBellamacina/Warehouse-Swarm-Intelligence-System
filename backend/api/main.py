@@ -256,9 +256,7 @@ async def start_simulation(request: Request):
     _scouts = len(mgr.model.scouts) if mgr.model else None
     _coords = len(mgr.model.coordinators) if mgr.model else None
     _retrs = len(mgr.model.retrievers) if mgr.model else None
-    _grid_size = (
-        mgr.model.grid.width if mgr.model and mgr.model.grid else None
-    )
+    _grid_size = mgr.model.grid.width if mgr.model and mgr.model.grid else None
     _total_obj = mgr.model.total_objects if mgr.model else None
     _map_known = getattr(mgr.model, "map_known", False) if mgr.model else False
 

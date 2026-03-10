@@ -316,6 +316,7 @@ function exportTableAsPNG(
     "Completion",
     "Efficiency",
     "Avg Energy",
+    "Messages",
     "Agents",
   ];
   const rows = runs.map((run) => {
@@ -329,6 +330,7 @@ function exportTableAsPNG(
       s ? `${s.completionPct.toFixed(1)}%` : "—",
       s ? s.efficiency.toFixed(2) : "—",
       s ? s.avgEnergyOverall.toFixed(0) : "—",
+      s ? (s.totalMessagesSent?.toString() ?? "0") : "—",
       `${total} (${run.agents.scouts}S/${run.agents.coordinators}C/${run.agents.retrievers}R)`,
     ];
   });
@@ -661,7 +663,7 @@ type ParamKey =
   | "retrieverVision"
   | "retrieverCommRadius";
 
-type MetricKey = "totalSteps" | "efficiency" | "avgEnergy";
+type MetricKey = "totalSteps" | "efficiency" | "avgEnergy" | "messages";
 
 const PARAM_DEFS: {
   key: ParamKey;
@@ -737,11 +739,16 @@ const METRIC_DEFS: {
     label: "Avg Energy",
     extract: (r) => r.summary?.avgEnergyOverall ?? null,
   },
+  {
+    key: "messages",
+    label: "Messages Sent",
+    extract: (r) => r.summary?.totalMessagesSent ?? null,
+  },
 ];
 
 // ── Main component ───────────────────────────────────────────────────────────
 
-type ChartType = "retrieval" | "energy" | "efficiency";
+type ChartType = "retrieval" | "energy" | "efficiency" | "messages";
 
 const CHART_DEFS: {
   key: ChartType;
@@ -766,6 +773,12 @@ const CHART_DEFS: {
     title: "Retrieval Efficiency vs Step",
     yLabel: "Obj / 100 steps",
     extract: (sn) => (sn.step > 0 ? (sn.objectsRetrieved / sn.step) * 100 : 0),
+  },
+  {
+    key: "messages",
+    title: "Messages Sent vs Step",
+    yLabel: "Messages",
+    extract: (sn) => sn.messagesSent,
   },
 ];
 
@@ -1213,7 +1226,9 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                   ? "Retrieval"
                   : cd.key === "energy"
                     ? "Energy"
-                    : "Efficiency"}
+                    : cd.key === "messages"
+                      ? "Messages"
+                      : "Efficiency"}
               </button>
             ))}
           </div>
@@ -1427,6 +1442,7 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                   <th className="text-right py-1 px-1 font-medium">
                     Avg Energy
                   </th>
+                  <th className="text-right py-1 px-1 font-medium">Messages</th>
                   <th className="text-right py-1 pl-1 font-medium">Agents</th>
                 </tr>
               </thead>
@@ -1467,6 +1483,9 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                       </td>
                       <td className="text-right py-1 px-1 font-mono">
                         {s ? s.avgEnergyOverall.toFixed(0) : "—"}
+                      </td>
+                      <td className="text-right py-1 px-1 font-mono">
+                        {s ? (s.totalMessagesSent?.toString() ?? "0") : "—"}
                       </td>
                       <td className="text-right py-1 pl-1 text-gray-500">
                         {totalAgents} ({run.agents.scouts}S/

@@ -543,7 +543,9 @@ class ScoutAgent(BaseAgent):
         # Pad and check 4-neighbours to find boundary cells
         # (unknown cells adjacent to at least one explored/scanned cell)
         explored_mask = ~unknown_mask
-        padded_explored = np.pad(explored_mask.astype(np.int8), 1, mode="constant", constant_values=0)
+        padded_explored = np.pad(
+            explored_mask.astype(np.int8), 1, mode="constant", constant_values=0
+        )
         has_explored_neighbour = np.zeros_like(unknown_mask)
         for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
             has_explored_neighbour |= (
