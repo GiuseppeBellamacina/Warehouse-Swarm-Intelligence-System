@@ -17,11 +17,13 @@ interface AgentPos {
 interface GridCanvasProps {
   state: SimulationState;
   selectedAgentId?: number | null;
+  onSelectAgent?: (agentId: number | null) => void;
 }
 
 export const GridCanvas: React.FC<GridCanvasProps> = ({
   state,
   selectedAgentId = null,
+  onSelectAgent,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -93,6 +95,38 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       };
     },
     [state],
+  );
+
+  // Click handler: convert pixel coords to grid coords and find nearest agent
+  const handleCanvasClick = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!onSelectAgent || !state || !state.grid) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const px = (e.clientX - rect.left) * scaleX;
+      const py = (e.clientY - rect.top) * scaleY;
+      const cellWidth = width / state.grid.width;
+      const cellHeight = height / state.grid.height;
+      const now = performance.now();
+      let bestId: number | null = null;
+      let bestDist = Infinity;
+      for (const agent of state.agents) {
+        const lp = getLerpPos(agent.id, now);
+        const ax = (lp.x + 0.5) * cellWidth;
+        const ay = (lp.y + 0.5) * cellHeight;
+        const dist = Math.sqrt((px - ax) ** 2 + (py - ay) ** 2);
+        const hitRadius = Math.min(cellWidth, cellHeight) * 0.7;
+        if (dist < hitRadius && dist < bestDist) {
+          bestDist = dist;
+          bestId = agent.id;
+        }
+      }
+      onSelectAgent(bestId === selectedAgentId ? null : bestId);
+    },
+    [onSelectAgent, state, width, height, selectedAgentId, getLerpPos],
   );
 
   // ── Main draw function (extracted so it can be called from rAF loop) ──
@@ -589,7 +623,11 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         width={width}
         height={height}
         className="border border-gray-800/60 rounded-xl shadow-2xl shadow-black/30"
-        style={{ backgroundColor: "#0c0e14" }}
+        style={{
+          backgroundColor: "#0c0e14",
+          cursor: onSelectAgent ? "pointer" : undefined,
+        }}
+        onClick={handleCanvasClick}
       />
     </div>
   );

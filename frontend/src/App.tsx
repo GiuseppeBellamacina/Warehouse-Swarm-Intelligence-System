@@ -472,6 +472,7 @@ function App() {
                       <GridCanvas
                         state={displayState}
                         selectedAgentId={selectedAgentId}
+                        onSelectAgent={setSelectedAgentId}
                       />
                     ) : (
                       <div className="flex flex-col items-center justify-center text-center gap-2">
@@ -853,6 +854,7 @@ function App() {
                   <GridCanvas
                     state={displayState}
                     selectedAgentId={selectedAgentId}
+                    onSelectAgent={setSelectedAgentId}
                   />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-center gap-2">
