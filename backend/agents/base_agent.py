@@ -307,7 +307,7 @@ class BaseAgent(Agent):
 
         return min(
             candidates,
-            key=lambda wh: abs(wh[0] - pos_tuple[0]) + abs(wh[1] - pos_tuple[1]),
+            key=lambda wh: self.model._path_distance(pos_tuple, wh),
         )
 
     def get_nearby_agents(self, radius: Optional[float] = None) -> List[Agent]:

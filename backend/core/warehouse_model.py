@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from backend.agents.base_agent import BaseAgent
+from backend.algorithms.pathfinding import AStarPathfinder
 from backend.config.schemas import GridScenarioConfig, ScenarioConfig
 from backend.core.communication import CommunicationManager, CoordinationSystem
 from backend.core.framework import DataCollector, Model
@@ -53,6 +54,7 @@ class WarehouseModel(Model):
         self.grid = GridManager(
             config.simulation.grid_width, config.simulation.grid_height, torus=False
         )
+        self.pathfinder = AStarPathfinder(self.grid)
 
         # Communication and coordination
         self.comm_manager = CommunicationManager()
@@ -189,6 +191,7 @@ class WarehouseModel(Model):
         model._np_rng_state = None
 
         model.grid = GridManager(size, size, torus=False)
+        model.pathfinder = AStarPathfinder(model.grid)
         model.comm_manager = CommunicationManager()
         model.coordination = CoordinationSystem()
 
@@ -404,6 +407,16 @@ class WarehouseModel(Model):
                 }
             )
 
+    def _path_distance(self, a: Tuple[int, int], b: Tuple[int, int]) -> float:
+        """Return A* path length from *a* to *b*, or a large fallback if unreachable."""
+        if a == b:
+            return 0.0
+        path = self.pathfinder.find_path(a, b)
+        if path is not None:
+            return float(len(path) - 1)
+        # Unreachable — return Manhattan + heavy penalty so it's still comparable
+        return float(abs(a[0] - b[0]) + abs(a[1] - b[1])) + 500.0
+
     def get_nearest_warehouse_to(self, pos: Tuple[int, int]) -> dict:
         """
         Return the nearest warehouse station dict to *pos*.
@@ -414,7 +427,7 @@ class WarehouseModel(Model):
         if self.warehouse_stations:
             return min(
                 self.warehouse_stations,
-                key=lambda s: (abs(s["entrance"][0] - pos[0]) + abs(s["entrance"][1] - pos[1])),
+                key=lambda s: self._path_distance(pos, s["entrance"]),
             )
         # Fallback for configs without explicit entrances
         wp = self.warehouse_position
@@ -472,7 +485,7 @@ class WarehouseModel(Model):
         Select the best warehouse station for an agent at *pos*.
 
         Scoring (lower is better):
-          score = Manhattan-distance(pos, entrance)
+          score = A*-path-distance(pos, entrance)
                 + congestion_penalty * num_agents_heading_there
                 + energy_penalty  (large constant when station is likely unreachable)
 
@@ -516,12 +529,15 @@ class WarehouseModel(Model):
                 if ent:
                     heading_count[ent] = heading_count.get(ent, 0) + 1
 
+        # Pre-compute actual A* path distances (avoids repeated pathfinding)
+        path_dist: Dict[Tuple[int, int], float] = {}
+        for s in candidates:
+            path_dist[s["entrance"]] = self._path_distance(pos, s["entrance"])
+
         def score(s: dict) -> float:
             ent = s["entrance"]
-            dist = abs(ent[0] - pos[0]) + abs(ent[1] - pos[1])
+            dist = path_dist[ent]
             congestion = heading_count.get(ent, 0)
-            # Penalise stations that the agent likely cannot reach with remaining energy.
-            # We use a 1.4× detour factor over Manhattan distance as a conservative buffer.
             energy_penalty = 200.0 if dist * 1.4 > agent_energy else 0.0
             return dist + congestion_penalty * congestion + energy_penalty
 
