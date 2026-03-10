@@ -262,6 +262,22 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
       });
     }
 
+    // Draw objects (global truth) — drawn before known_objects so markers overlay correctly
+    state.objects.forEach((obj) => {
+      if (!obj.retrieved) {
+        ctx.fillStyle = "#facc15";
+        ctx.beginPath();
+        ctx.arc(
+          (obj.x + 0.5) * cellWidth,
+          (obj.y + 0.5) * cellHeight,
+          Math.min(cellWidth, cellHeight) * 0.3,
+          0,
+          2 * Math.PI,
+        );
+        ctx.fill();
+      }
+    });
+
     // ── Per-agent known objects (when an agent is selected) ──
     if (selectedAgent && selectedAgent.known_objects) {
       selectedAgent.known_objects.forEach((obj) => {
@@ -353,22 +369,6 @@ export const GridCanvas: React.FC<GridCanvasProps> = ({
         });
       }
     }
-
-    // Draw objects
-    state.objects.forEach((obj) => {
-      if (!obj.retrieved) {
-        ctx.fillStyle = "#facc15";
-        ctx.beginPath();
-        ctx.arc(
-          (obj.x + 0.5) * cellWidth,
-          (obj.y + 0.5) * cellHeight,
-          Math.min(cellWidth, cellHeight) * 0.3,
-          0,
-          2 * Math.PI,
-        );
-        ctx.fill();
-      }
-    });
 
     // Draw agents
     state.agents.forEach((agent) => {

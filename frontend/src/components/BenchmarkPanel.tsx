@@ -1055,7 +1055,7 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
               className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-700 hover:bg-gray-600 text-gray-400 transition-colors"
               title="Import JSON"
             >
-              ↑ Import
+              ↓ Import
             </button>
             <input
               ref={fileInputRef}
@@ -1075,7 +1075,7 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                   className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-700 hover:bg-gray-600 text-gray-400 transition-colors"
                   title="Export all runs as JSON"
                 >
-                  ↓ Export
+                  ↑ Export
                 </button>
                 <button
                   onClick={onClearAll}
