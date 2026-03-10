@@ -303,6 +303,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [behaviorOpen, setBehaviorOpen] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [speed, setSpeed] = useState(1.0);
+  const [dirty, setDirty] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Sub-section toggle states for behavior tuning
@@ -347,6 +348,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         const cfg: GridScenarioConfig = await res.json();
         setRawConfig(cfg);
         setOverrides(extractOverrides(cfg, defaultsRef.current!));
+        setDirty(false);
       } catch {
         /* ignore */
       } finally {
@@ -365,39 +367,54 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       const cfg: GridScenarioConfig = JSON.parse(text);
       setRawConfig(cfg);
       setOverrides(extractOverrides(cfg, defaultsRef.current));
+      setDirty(false);
       setConfigName(""); // deselect dropdown
     } catch {
       alert("Invalid JSON file");
     }
   };
 
-  // Helpers to patch individual override slices
-  const setOvr = (patch: Partial<Overrides>) =>
+  // Helpers to patch individual override slices (mark dirty on every change)
+  const setOvr = (patch: Partial<Overrides>) => {
     setOverrides((p) => (p ? { ...p, ...patch } : p));
-  const setScouts = (patch: Partial<AgentOverrideFields>) =>
+    setDirty(true);
+  };
+  const setScouts = (patch: Partial<AgentOverrideFields>) => {
     setOverrides((p) => (p ? { ...p, scouts: { ...p.scouts, ...patch } } : p));
-  const setCoords = (patch: Partial<AgentOverrideFields>) =>
+    setDirty(true);
+  };
+  const setCoords = (patch: Partial<AgentOverrideFields>) => {
     setOverrides((p) =>
       p ? { ...p, coordinators: { ...p.coordinators, ...patch } } : p,
     );
-  const setRetrs = (patch: Partial<AgentOverrideFields>) =>
+    setDirty(true);
+  };
+  const setRetrs = (patch: Partial<AgentOverrideFields>) => {
     setOverrides((p) =>
       p ? { ...p, retrievers: { ...p.retrievers, ...patch } } : p,
     );
-  const setScoutBeh = (patch: Partial<ScoutBehaviorParams>) =>
+    setDirty(true);
+  };
+  const setScoutBeh = (patch: Partial<ScoutBehaviorParams>) => {
     setOverrides((p) =>
       p ? { ...p, scoutBehavior: { ...p.scoutBehavior, ...patch } } : p,
     );
-  const setCoordBeh = (patch: Partial<CoordinatorBehaviorParams>) =>
+    setDirty(true);
+  };
+  const setCoordBeh = (patch: Partial<CoordinatorBehaviorParams>) => {
     setOverrides((p) =>
       p
         ? { ...p, coordinatorBehavior: { ...p.coordinatorBehavior, ...patch } }
         : p,
     );
-  const setRetrBeh = (patch: Partial<RetrieverBehaviorParams>) =>
+    setDirty(true);
+  };
+  const setRetrBeh = (patch: Partial<RetrieverBehaviorParams>) => {
     setOverrides((p) =>
       p ? { ...p, retrieverBehavior: { ...p.retrieverBehavior, ...patch } } : p,
     );
+    setDirty(true);
+  };
 
   const handleLoad = () => {
     if (!rawConfig || !overrides) return;
@@ -419,6 +436,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       map_known: overrides.mapKnown,
     };
     onLoad(scenario, agents);
+    setDirty(false);
   };
 
   function ovToRole(f: AgentOverrideFields): AgentRoleParams {
@@ -433,9 +451,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   }
 
   const handleSpeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value);
-    setSpeed(v);
-    onSpeedChange(v);
+    const sv = parseFloat(e.target.value);
+    const actual = Math.round(Math.pow(10, sv) * 10) / 10;
+    setSpeed(actual);
+    onSpeedChange(actual);
   };
 
   const canLoad =
@@ -1183,16 +1202,27 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
       {/* ── Load button ── */}
       {rawConfig && (
-        <button
-          onClick={handleLoad}
-          disabled={!canLoad}
-          className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600
-                     disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed
-                     py-2.5 rounded-lg font-semibold text-sm transition-all shadow-md
-                     shadow-blue-900/30 hover:shadow-blue-800/40"
-        >
-          {isFetching ? "Fetching…" : "Preview / Load"}
-        </button>
+        <div className="space-y-1.5">
+          <button
+            onClick={handleLoad}
+            disabled={!canLoad}
+            className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all shadow-md ${
+              dirty && canLoad
+                ? "bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 shadow-amber-900/30 hover:shadow-amber-800/40 animate-pulse"
+                : "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 shadow-blue-900/30 hover:shadow-blue-800/40"
+            } disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed`}
+          >
+            {isFetching ? "Fetching…" : dirty ? "⚠ Apply Changes" : "Preview / Load"}
+          </button>
+          {dirty && (
+            <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/40 rounded-md px-2 py-1.5">
+              <span className="text-amber-400 text-sm leading-none">⚠</span>
+              <span className="text-[10px] text-amber-300/80 leading-snug">
+                Settings changed — press <strong>Apply Changes</strong> to update the simulation
+              </span>
+            </div>
+          )}
+        </div>
       )}
 
       {/* ── Simulation Controls ── */}
@@ -1265,10 +1295,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         </div>
         <input
           type="range"
-          min="0.1"
-          max="10"
-          step="0.1"
-          value={speed}
+          min="-1"
+          max="1"
+          step="0.01"
+          value={Math.log10(Math.max(speed, 0.1))}
           onChange={handleSpeedChange}
           disabled={!connected}
           className="w-full h-1.5 bg-gray-700 rounded-full appearance-none cursor-pointer disabled:opacity-40
@@ -1280,6 +1310,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         />
         <div className="flex justify-between text-[10px] text-gray-600">
           <span>0.1×</span>
+          <span className="-translate-x-1/2 ml-[50%]">1×</span>
           <span>10×</span>
         </div>
       </Card>
