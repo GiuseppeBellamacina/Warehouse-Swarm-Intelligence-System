@@ -46,14 +46,29 @@ async def notify_simulation_start(
     agent_count: Optional[int] = None,
     user_ip: Optional[str] = None,
     user_agent: Optional[str] = None,
+    scouts: Optional[int] = None,
+    coordinators: Optional[int] = None,
+    retrievers: Optional[int] = None,
+    grid_size: Optional[int] = None,
+    total_objects: Optional[int] = None,
+    map_known: bool = False,
 ) -> None:
     """Notify when a user starts the simulation."""
     lines = ["\u25b6\ufe0f Warehouse Swarm \u2014 simulazione avviata"]
 
     if config_name:
         lines.append(f"Config: {config_name}")
+    if grid_size is not None:
+        lines.append(f"Griglia: {grid_size}\u00d7{grid_size}")
+    if total_objects is not None:
+        lines.append(f"Oggetti: {total_objects}")
     if agent_count is not None:
-        lines.append(f"Agenti: {agent_count}")
+        parts = [f"{agent_count} agenti"]
+        if scouts is not None and coordinators is not None and retrievers is not None:
+            parts.append(f"({scouts}S {coordinators}C {retrievers}R)")
+        lines.append("Agenti: " + " ".join(parts))
+    if map_known:
+        lines.append("Modalit\u00e0: mappa pre-nota")
     if user_ip:
         lines.append(f"IP: {user_ip}")
     if user_agent:
@@ -105,3 +120,22 @@ async def notify_simulation_stopped(
         lines.append(f"Oggetti: {objects_retrieved}/{total_objects}")
 
     await _send("\n".join(lines))
+
+
+async def notify_backend_start() -> None:
+    """Notify when the FastAPI backend process starts."""
+    import platform
+    import sys
+
+    lines = [
+        "\U0001f7e2 Warehouse Swarm \u2014 backend avviato",
+        f"Host: {platform.node()}",
+        f"Python: {sys.version.split()[0]}",
+        f"OS: {platform.system()} {platform.release()}",
+    ]
+    await _send("\n".join(lines))
+
+
+async def notify_backend_shutdown() -> None:
+    """Notify when the FastAPI backend process is shutting down."""
+    await _send("\U0001f534 Warehouse Swarm \u2014 backend spento")
