@@ -348,6 +348,8 @@ class ScoutAgent(BaseAgent):
                 continue  # skip until TTL expires (purged at top of step_decide)
             if frontier_pos in self._recent_targets:
                 continue  # visited too recently
+            if not self.model.grid.is_walkable(*frontier_pos):
+                continue  # centroid landed on an obstacle — skip
             valid_frontiers.append((frontier_pos, cluster_size))
 
         # Anti-clustering: prefer frontiers far from other scouts

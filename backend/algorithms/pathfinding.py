@@ -111,6 +111,7 @@ class AStarPathfinder:
                     if self.grid.get_cell_type(x, y) in forbidden_types:
                         forbidden_pos.add((x, y))
             forbidden_pos.discard(goal)  # goal is always reachable
+            forbidden_pos.discard(start)  # start must be expandable
 
         # Priority queue: (f_score, counter, position)
         counter = 0

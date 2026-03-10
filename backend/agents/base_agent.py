@@ -546,12 +546,18 @@ class BaseAgent(Agent):
             f"asking agent {recipient_id} to vacate {cell} (depth={chain_depth})"
         )
 
-    def _try_move_off_cell(self, avoid_warehouse: bool = False) -> bool:
+    def _try_move_off_cell(
+        self, avoid_warehouse: bool = False, away_from: Optional[Tuple[int, int]] = None
+    ) -> bool:
         """
         Try to step off the current cell to any adjacent free non-obstacle cell.
 
         When ``avoid_warehouse`` is True (e.g. when standing on an entrance/exit),
         warehouse cells are also excluded so we don't immediately re-block a door.
+
+        When ``away_from`` is provided, candidate cells are sorted so that cells
+        farther from ``away_from`` are tried first.  This avoids oscillation by
+        preferring the direction that keeps the agent out of the requester's path.
 
         Returns True if the agent managed to move.
         """
@@ -559,6 +565,7 @@ class BaseAgent(Agent):
             return False
         my_pos = pos_to_tuple(self.pos)
         _wh = (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
+        candidates: List[Tuple[int, Tuple[int, int]]] = []  # (sort_key, cell)
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
             np_ = (my_pos[0] + dx, my_pos[1] + dy)
             if not (0 <= np_[0] < self.model.grid.width and 0 <= np_[1] < self.model.grid.height):
@@ -568,11 +575,20 @@ class BaseAgent(Agent):
                 continue
             if avoid_warehouse and nc in _wh:
                 continue
-            if self.model.grid.is_cell_empty(np_):
-                self.model.grid.move_agent(self, np_)
-                self.consume_energy(self.energy_consumption["move"])
-                print(f"{self.tag} CLEARWAY: " f"moved off {my_pos} → {np_}")
-                return True
+            if not self.model.grid.is_cell_empty(np_):
+                continue
+            if away_from is not None:
+                # Higher distance from away_from → tried first (negate for sort)
+                dist = abs(np_[0] - away_from[0]) + abs(np_[1] - away_from[1])
+                candidates.append((-dist, np_))
+            else:
+                candidates.append((0, np_))
+        candidates.sort()  # lowest key first → farthest from away_from first
+        for _, np_ in candidates:
+            self.model.grid.move_agent(self, np_)
+            self.consume_energy(self.energy_consumption["move"])
+            print(f"{self.tag} CLEARWAY: moved off {my_pos} → {np_}")
+            return True
         return False
 
     def _try_move_off_entrance_exit(self) -> bool:
@@ -585,6 +601,15 @@ class BaseAgent(Agent):
         - If we are on the requested cell, attempt to move off it.
         - If we cannot move and chain_depth < MAX, forward the request to
           whoever is blocking *our* preferred escape path.
+
+        Warehouse rules:
+        - Agents NOT in a warehouse sequence never step onto any warehouse
+          cell (entrance, exit, or interior).  The warehouse is not
+          maneuvering space for agents that don't need it.
+        - Agents inside a warehouse sequence can move within interior cells
+          but still avoid door cells.
+        - Escape direction is biased away from the sender so the receiver
+          doesn't land right back in the requester's path.
         """
         if not self.pos:
             return
@@ -593,16 +618,42 @@ class BaseAgent(Agent):
             return  # message delivered to wrong agent or we already moved
 
         cell_type = self.model.grid.get_cell_type(*my_pos)
-        # On a warehouse door, avoid stepping onto another door; for plain cells
-        # any free adjacent non-obstacle cell is acceptable.
-        avoid_wh = cell_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
+
+        # Determine whether warehouse cells should be avoided.
+        # An agent NOT currently in a warehouse navigation sequence must
+        # NEVER step onto any warehouse cell — the warehouse is not a
+        # shortcut or maneuvering space for external agents.
+        in_wh_sequence = (
+            getattr(self, "_wh_step", None) is not None
+            or getattr(self, "_scout_wh_step", None) is not None
+            or getattr(self, "_coord_wh_step", None) is not None
+        )
+        if in_wh_sequence:
+            # Inside warehouse: avoid doors to not block entrance/exit,
+            # but interior cells are OK.
+            _DOOR = (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
+            avoid_wh = cell_type in _DOOR or any(
+                self.model.grid.get_cell_type(my_pos[0] + dx, my_pos[1] + dy) in _DOOR
+                for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                if 0 <= my_pos[0] + dx < self.model.grid.width
+                and 0 <= my_pos[1] + dy < self.model.grid.height
+            )
+        else:
+            # Outside warehouse: avoid ALL warehouse cells unconditionally.
+            avoid_wh = True
+
+        # Determine escape direction: move away from the sender so the
+        # receiver doesn't land back in the requester's path.
+        sender = next((a for a in self.model.agents if a.unique_id == message.sender_id), None)
+        sender_pos = pos_to_tuple(sender.pos) if sender and sender.pos else None
 
         print(
             f"{self.tag} CLEARWAY: "
             f"received request to vacate {my_pos} (depth={message.chain_depth})"
         )
 
-        if self._try_move_off_cell(avoid_warehouse=avoid_wh):
+        if self._try_move_off_cell(avoid_warehouse=avoid_wh, away_from=sender_pos):
+            self.path = []  # force A* replan so we don't route back
             return  # successfully moved — done
 
         # Could not move; try to forward the chain if budget allows
@@ -650,10 +701,17 @@ class BaseAgent(Agent):
 
         # Determine whether warehouse doors may be used as transit nodes.
         #
-        # Rules (prevent EXIT→ENTRANCE shortcuts and ENTRANCE→EXIT shortcuts):
+        # Rules enforce strict door directionality:
+        # - Entrance is ONLY for entering, exit is ONLY for exiting.
+        # - Even an agent inside the warehouse must not path out through the
+        #   entrance when heading to the exit (or vice versa).
         #
-        #  1. Agent is already INSIDE a warehouse cell (any WH type):
-        #     → no restrictions — agent must be able to exit via any door.
+        #  1. Agent is INSIDE a warehouse cell and heading to EXIT:
+        #     → forbid ENTRANCE as transit (prevents going backwards out the
+        #       entrance and around the outside to re-enter at exit).
+        #
+        #  1b. Agent is INSIDE a warehouse cell heading to interior/entrance:
+        #     → forbid EXIT as transit.
         #
         #  2. Agent is OUTSIDE and heading to an ENTRANCE (or internal WH cell):
         #     → forbid EXIT cells as transit (block the wrong-door shortcut).
@@ -669,8 +727,16 @@ class BaseAgent(Agent):
         _DOOR_TYPES = {CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
         _WH_TYPES = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
         if my_type in _WH_TYPES:
-            # Case 1: inside warehouse — no restrictions so agent can always exit
-            forbidden_types = None
+            # Case 1: inside warehouse — enforce strict door directionality
+            if target_type == CellType.WAREHOUSE_EXIT:
+                # Heading to exit → entrance is NOT a valid transit node
+                forbidden_types = {CellType.WAREHOUSE_ENTRANCE}
+            elif target_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE):
+                # Heading to entrance/interior → exit is NOT a valid transit node
+                forbidden_types = {CellType.WAREHOUSE_EXIT}
+            else:
+                # Heading outside from inside → allow exit as the way out
+                forbidden_types = {CellType.WAREHOUSE_ENTRANCE}
         elif target_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE):
             # Case 2: approaching via entrance — only block exit-cell shortcuts
             forbidden_types = {CellType.WAREHOUSE_EXIT}
@@ -753,22 +819,35 @@ class BaseAgent(Agent):
                         # move_towards() when moved==False, so we must NOT
                         # increment it here again (that would double-count).
 
-                        # Ask the blocker to step aside early
-                        if blocking_agent is not None and self.stuck_counter >= 1:
-                            self._send_clear_way_request(next_pos, blocking_agent.unique_id)
-
-                        # After the first collision, try stepping to an adjacent
-                        # free cell to route around the blocker instead of
-                        # waiting passively.
+                        # ── Cooperative negotiation ──────────────────────
+                        # Gather all agents in the jam cluster and negotiate
+                        # non-conflicting moves based on priority (more cargo
+                        # first, warehouse-bound second, lower ID last).
                         if self.stuck_counter >= 1:
-                            side = self._try_sidestep(
-                                pos_tuple, next_pos, target, other_agent_positions
-                            )
-                            if side is not None:
-                                self.model.grid.move_agent(self, side)
-                                self.consume_energy(self.energy_consumption["move"])
-                                self.path = []  # replan from new position
+                            if self._cooperative_unstick(pos_tuple, target):
                                 moved = True
+
+                        # ── Fallback: ClearWay + individual sidestep ─────
+                        if not moved:
+                            if blocking_agent is not None and self.stuck_counter >= 1:
+                                self._send_clear_way_request(
+                                    next_pos, blocking_agent.unique_id
+                                )
+
+                            if self.stuck_counter >= 2:
+                                side = self._try_sidestep(
+                                    pos_tuple,
+                                    next_pos,
+                                    target,
+                                    other_agent_positions,
+                                )
+                                if side is not None:
+                                    self.model.grid.move_agent(self, side)
+                                    self.consume_energy(
+                                        self.energy_consumption["move"]
+                                    )
+                                    self.path = []  # replan from new position
+                                    moved = True
 
                         if not moved:
                             if self.stuck_counter <= 2:
@@ -881,14 +960,14 @@ class BaseAgent(Agent):
         """Try to step to an adjacent cell to route around a blocker.
 
         Picks the neighbour that is walkable, unoccupied, not the blocked cell,
-        and closest (Manhattan) to the target.  Avoids warehouse doors when
-        the agent is outside and not heading into a warehouse.
+        and closest (Manhattan) to the target.  When the agent is outside the
+        warehouse, ALL warehouse cells (entrance, exit, and interior) are avoided
+        so the warehouse is never used as maneuvering space.
         """
-        _DOOR_TYPES = {CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
         _WH_TYPES = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
         my_type = self.model.grid.get_cell_type(*current)
-        target_type = self.model.grid.get_cell_type(*target)
-        avoid_doors = my_type not in _WH_TYPES and target_type not in _WH_TYPES
+        # Agents outside the warehouse avoid ALL warehouse cells, not just doors.
+        avoid_wh = my_type not in _WH_TYPES
 
         candidates: List[Tuple[Tuple[int, int], int]] = []
         for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]:
@@ -902,7 +981,7 @@ class BaseAgent(Agent):
             if np_ in occupied:
                 continue
             ct = self.model.grid.get_cell_type(*np_)
-            if avoid_doors and ct in _DOOR_TYPES:
+            if avoid_wh and ct in _WH_TYPES:
                 continue
             dist = abs(target[0] - np_[0]) + abs(target[1] - np_[1])
             candidates.append((np_, dist))
@@ -924,6 +1003,166 @@ class BaseAgent(Agent):
         """
         # With single-agent-per-cell grid, simply check if cell is empty
         return self.model.grid.is_cell_empty(new_pos)
+
+    # ------------------------------------------------------------------
+    # Cooperative jam resolution
+    # ------------------------------------------------------------------
+
+    def _is_valid_cell_for_negotiation(
+        self, agent: "BaseAgent", cell: Tuple[int, int]
+    ) -> bool:
+        """Check if *cell* is a valid negotiation target for *agent*.
+
+        Respects warehouse rules:
+        - Agent NOT in a warehouse sequence: never step onto any WH cell.
+        - Agent IN a warehouse sequence: interior cells OK; door cells only
+          if they are the agent's current target (so an exit-phase agent can
+          step onto the exit, but not onto the entrance).
+        """
+        x, y = cell
+        if not (0 <= x < self.model.grid.width and 0 <= y < self.model.grid.height):
+            return False
+        if not self.model.grid.is_walkable(x, y):
+            return False
+
+        ct = self.model.grid.get_cell_type(x, y)
+        in_wh = (
+            getattr(agent, "_wh_step", None) is not None
+            or getattr(agent, "_scout_wh_step", None) is not None
+            or getattr(agent, "_coord_wh_step", None) is not None
+        )
+
+        _WH = (CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
+        _DOOR = (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT)
+
+        if not in_wh:
+            # Outside warehouse: never step onto any warehouse cell
+            if ct in _WH:
+                return False
+        else:
+            # Inside warehouse: doors only if they are the target
+            agent_target = getattr(agent, "target_position", None)
+            if ct in _DOOR and cell != agent_target:
+                return False
+        return True
+
+    def _cooperative_unstick(
+        self, my_pos: Tuple[int, int], target: Tuple[int, int]
+    ) -> bool:
+        """Cooperative jam resolution for 2+ agents stuck near each other.
+
+        Gathers all agents within Manhattan distance ≤ 2, sorts them by
+        priority, then lets each agent — highest priority first — pick the
+        best *currently-free* adjacent cell that moves it closer to its own
+        target without conflicting with cells already reserved by
+        higher-priority agents.  All moves execute immediately.
+
+        Priority (highest → lowest):
+          1. More ``carrying_objects``  (heavier loads delivered first)
+          2. In warehouse sequence      (deliver/recharge/exit in progress)
+          3. Lower ``unique_id``        (deterministic tie-breaker)
+
+        Returns True if *this* agent moved as a result of the negotiation.
+        """
+        # ── 1. Gather the jam cluster ────────────────────────────────────
+        cluster: List["BaseAgent"] = []
+        for agent in self.model.agents:
+            if agent.pos is None or agent.energy <= 0:
+                continue
+            ap = pos_to_tuple(agent.pos)
+            dist = abs(ap[0] - my_pos[0]) + abs(ap[1] - my_pos[1])
+            if dist <= 2:
+                cluster.append(agent)
+
+        if len(cluster) < 2:
+            return False
+
+        # ── 2. Sort by priority ──────────────────────────────────────────
+        cluster.sort(
+            key=lambda a: (
+                -getattr(a, "carrying_objects", 0),
+                -(1 if getattr(a, "_wh_step", None) is not None else 0),
+                a.unique_id,
+            )
+        )
+
+        # ── 3. Plan non-conflicting moves ────────────────────────────────
+        reserved: set = set()  # cells claimed for next step
+        plan: List[Tuple["BaseAgent", Tuple[int, int], Tuple[int, int]]] = []
+
+        for agent in cluster:
+            ap = pos_to_tuple(agent.pos)
+            agent_target = getattr(agent, "target_position", None)
+
+            # Desired next cell from cached path
+            desired = None
+            if hasattr(agent, "path") and agent.path:
+                desired = agent.path[0]
+
+            chosen = None
+
+            # Try desired cell if it's currently free and not reserved
+            if (
+                desired is not None
+                and desired not in reserved
+                and self.model.grid.is_cell_empty(desired)
+                and self._is_valid_cell_for_negotiation(agent, desired)
+            ):
+                chosen = desired
+
+            # Otherwise pick the best free adjacent cell toward own target
+            if chosen is None:
+                best_score = float("inf")
+                best_cell = None
+                for dx, dy in [
+                    (1, 0), (-1, 0), (0, 1), (0, -1),
+                    (1, 1), (1, -1), (-1, 1), (-1, -1),
+                ]:
+                    np_ = (ap[0] + dx, ap[1] + dy)
+                    if np_ in reserved:
+                        continue
+                    if not self.model.grid.is_cell_empty(np_):
+                        continue
+                    if not self._is_valid_cell_for_negotiation(agent, np_):
+                        continue
+                    if agent_target:
+                        score = abs(np_[0] - agent_target[0]) + abs(
+                            np_[1] - agent_target[1]
+                        )
+                    else:
+                        score = 0
+                    if score < best_score:
+                        best_score = score
+                        best_cell = np_
+                chosen = best_cell
+
+            if chosen is not None and chosen != ap:
+                reserved.add(chosen)
+                plan.append((agent, ap, chosen))
+            else:
+                # Agent stays put — reserve current position
+                reserved.add(ap)
+
+        if not plan:
+            return False
+
+        # ── 4. Execute (all targets are currently-free → no deps) ────────
+        moved_self = False
+        for agent, from_pos, to_pos in plan:
+            if not self.model.grid.is_cell_empty(to_pos):
+                continue  # safety: cell already taken by earlier move
+            self.model.grid.move_agent(agent, to_pos)
+            agent.consume_energy(agent.energy_consumption["move"])
+            agent.path = []  # force recompute from new position
+            agent.stuck_counter = 0
+            agent.wait_counter = 0
+            if agent.unique_id == self.unique_id:
+                moved_self = True
+            print(
+                f"{agent.tag} NEGOTIATE: {from_pos} → {to_pos}"
+            )
+
+        return moved_self
 
     def step_sense(self) -> None:
         """Stage 0: Perceive environment (everyone always does this)"""
