@@ -159,6 +159,8 @@ class CommunicationManager:
         self.agent_mailboxes: Dict[int, List[Message]] = {}
         # Object claiming system: object_pos -> (claimer_id, timestamp, energy)
         self.claimed_objects: Dict[Tuple[int, int], Tuple[int, int, float]] = {}
+        # Running total of individual message deliveries (one per recipient)
+        self.messages_sent: int = 0
 
     def send_message(self, message: Message, recipients: List[int]) -> None:
         """
@@ -172,6 +174,7 @@ class CommunicationManager:
             if recipient_id not in self.agent_mailboxes:
                 self.agent_mailboxes[recipient_id] = []
             self.agent_mailboxes[recipient_id].append(message)
+        self.messages_sent += len(recipients)
 
     def broadcast_in_radius(
         self,
