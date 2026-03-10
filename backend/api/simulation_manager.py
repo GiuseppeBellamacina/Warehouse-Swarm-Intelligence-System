@@ -45,7 +45,7 @@ class SimulationManager:
         self._grid_config: Optional[GridScenarioConfig] = None
         self._agents_config: Optional[SimulationAgentsConfig] = None
         self.simulation_task: Optional[asyncio.Task] = None
-        self.update_rate = 30  # Updates per second
+        self.update_rate = 18  # Updates per second (1x speed)
         self.occupied_spawn_positions: Set[Tuple[int, int]] = set()
         self._sim_start_time: Optional[float] = None  # monotonic clock at sim start
         self.session_id: str = "default"  # owning session
@@ -653,8 +653,8 @@ class SimulationManager:
         """
         # Clamp speed between 0.1 and 10.0
         speed = max(0.1, min(10.0, speed))
-        # Base rate is 30 updates per second at 1.0 speed
-        self.update_rate = 30 * speed
+        # Base rate is 18 updates per second at 1.0 speed
+        self.update_rate = 18 * speed
         print(f"Simulation speed set to {speed}x (update_rate: {self.update_rate:.1f} Hz)")
 
     def get_simulation_state(self) -> dict:
