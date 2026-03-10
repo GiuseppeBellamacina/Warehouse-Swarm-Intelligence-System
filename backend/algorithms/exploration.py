@@ -20,7 +20,9 @@ class FrontierExplorer:
 
     @staticmethod
     def find_frontiers(
-        local_map: np.ndarray, min_cluster_size: int = 3
+        local_map: np.ndarray,
+        min_cluster_size: int = 3,
+        unexplored_mask: Optional[np.ndarray] = None,
     ) -> List[Tuple[Tuple[int, int], int]]:
         """
         Find frontier clusters in the local map (vectorised with numpy).
@@ -32,10 +34,22 @@ class FrontierExplorer:
         Args:
             local_map: Agent's local exploration map
             min_cluster_size: Minimum size for a frontier cluster
+            unexplored_mask: Optional boolean mask (True = unexplored). When
+                provided, this overrides the default ``local_map == 0`` check
+                for determining which cells are "unknown".  Useful when the
+                terrain is pre-known but objects still need visual scanning.
 
         Returns:
             List of (centroid_position, cluster_size) tuples
         """
+        if unexplored_mask is not None:
+            # Use caller-supplied mask: "unexplored" = True in the mask
+            unexp = unexplored_mask.astype(np.int8)  # 1 = unexplored
+            padded_unexp = np.pad(unexp, 1, mode="constant", constant_values=1)
+        else:
+            unexp = None
+            padded_unexp = None
+
         # Pad with UNKNOWN (0) so boundary cells have correct neighbours
         padded = np.pad(local_map, 1, mode="constant", constant_values=0)
 
@@ -46,9 +60,19 @@ class FrontierExplorer:
         # Check all 8 shifts on the padded array (offset +1 due to padding)
         has_unknown_neighbour = np.zeros_like(is_free)
         for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-            has_unknown_neighbour |= (
-                padded[1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx] == 0
-            )
+            if padded_unexp is not None:
+                has_unknown_neighbour |= (
+                    padded_unexp[
+                        1 + dy : padded_unexp.shape[0] - 1 + dy,
+                        1 + dx : padded_unexp.shape[1] - 1 + dx,
+                    ]
+                    > 0
+                )
+            else:
+                has_unknown_neighbour |= (
+                    padded[1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx]
+                    == 0
+                )
 
         frontier_map = is_free & has_unknown_neighbour
 

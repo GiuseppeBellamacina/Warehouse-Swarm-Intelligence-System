@@ -1212,13 +1212,18 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 : "bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 shadow-blue-900/30 hover:shadow-blue-800/40"
             } disabled:from-gray-700 disabled:to-gray-700 disabled:cursor-not-allowed`}
           >
-            {isFetching ? "Fetching…" : dirty ? "⚠ Apply Changes" : "Preview / Load"}
+            {isFetching
+              ? "Fetching…"
+              : dirty
+                ? "⚠ Apply Changes"
+                : "Preview / Load"}
           </button>
           {dirty && (
             <div className="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/40 rounded-md px-2 py-1.5">
               <span className="text-amber-400 text-sm leading-none">⚠</span>
               <span className="text-[10px] text-amber-300/80 leading-snug">
-                Settings changed — press <strong>Apply Changes</strong> to update the simulation
+                Settings changed — press <strong>Apply Changes</strong> to
+                update the simulation
               </span>
             </div>
           )}
@@ -1308,9 +1313,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                      [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full
                      [&::-moz-range-thumb]:bg-blue-400 [&::-moz-range-thumb]:border-0"
         />
-        <div className="flex justify-between text-[10px] text-gray-600">
+        <div className="relative flex justify-between text-[10px] text-gray-600">
           <span>0.1×</span>
-          <span className="-translate-x-1/2 ml-[50%]">1×</span>
+          <span className="absolute left-1/2 -translate-x-1/2">1×</span>
           <span>10×</span>
         </div>
       </Card>
