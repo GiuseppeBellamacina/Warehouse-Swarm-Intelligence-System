@@ -109,7 +109,8 @@ class RetrieverAgent(BaseAgent):
         self._wh_step: Optional[str] = None
         self._wh_station: Optional[Dict[str, Any]] = None
         self._wh_approach_steps: int = 0  # steps spent in "approach" phase
-        self._wh_exit_stuck: int = 0  # steps spent trying to reach exit cell
+        self._wh_exit_stuck: int = 0  # steps truly stuck (position unchanged)
+        self._wh_exit_last_pos: Optional[Tuple[int, int]] = None
 
         # Pending events to report to coordinator
         self.pending_events: List[str] = []
@@ -651,7 +652,12 @@ class RetrieverAgent(BaseAgent):
                         else:
                             best_idx = int(_np.argmin(dists))
                         target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
-                        if self.model.grid.is_walkable(*target):
+                        tgt_ct = self.model.grid.get_cell_type(*target)
+                        if self.model.grid.is_walkable(*target) and tgt_ct not in (
+                            CellType.WAREHOUSE,
+                            CellType.WAREHOUSE_ENTRANCE,
+                            CellType.WAREHOUSE_EXIT,
+                        ):
                             self._explore_target = target
                             self.target_position = target
                             self.path = []
@@ -777,11 +783,7 @@ class RetrieverAgent(BaseAgent):
 
         # Broadcast dropped-object positions to all nearby agents
         nearby = self.get_nearby_agents(self.communication_radius)
-        target_ids = [
-            a.unique_id
-            for a in nearby
-            if a.unique_id != self.unique_id
-        ]
+        target_ids = [a.unique_id for a in nearby if a.unique_id != self.unique_id]
 
         if target_ids:
             for obj_pos in dropped_positions:
@@ -807,6 +809,23 @@ class RetrieverAgent(BaseAgent):
     def step_act(self) -> None:
         if self.energy <= 0:
             return
+
+        # ── Door-unblocking ──────────────────────────────────────────────
+        # If the retriever is sitting on a warehouse entrance/exit and is NOT
+        # in a warehouse sub-sequence, move off immediately so it doesn't jam
+        # the door for other agents.  Move AWAY from the warehouse interior
+        # to avoid oscillating back toward the door.
+        if self._wh_step is None and self.pos:
+            _pos = pos_to_tuple(self.pos)
+            _ct = self.model.grid.get_cell_type(*_pos)
+            if _ct in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT):
+                # Use the warehouse station as reference for the "away_from"
+                # direction so the agent moves OUTSIDE.
+                nearest_wh = self.model.get_nearest_warehouse_to(_pos)
+                wh_center = nearest_wh.get("deposit_cell", nearest_wh.get("entrance", _pos))
+                if self._try_move_off_cell(avoid_warehouse=True, away_from=wh_center):
+                    self.path = []
+                    return
 
         # OPTION 1b: Peer broadcast runs FIRST so newly_spotted_objects is still
         # populated before _send_status_to_coordinators() clears it.
@@ -865,14 +884,12 @@ class RetrieverAgent(BaseAgent):
         if self._wh_step == "approach":
             entrance = station["entrance"]
             cell_type = self.model.grid.get_cell_type(*my_pos)
-            # Transition once the agent is ON the entrance OR inside (any WH cell).
-            # Note: WAREHOUSE_ENTRANCE is NOT interior — we specifically check for that
-            # case so the agent also moves off the entrance in the same step.
+            # Transition once the agent is ON the entrance OR inside (interior).
+            # WAREHOUSE_EXIT is NOT accepted: agents enter ONLY through the entrance.
             at_or_inside = (
                 my_pos == entrance
                 or cell_type == CellType.WAREHOUSE
                 or cell_type == CellType.WAREHOUSE_ENTRANCE
-                or cell_type == CellType.WAREHOUSE_EXIT
             )
             if at_or_inside:
                 self._wh_approach_steps = 0
@@ -1011,7 +1028,8 @@ class RetrieverAgent(BaseAgent):
         elif self._wh_step == "exit":
             exit_cell = station["exit"]
             cell_type = self.model.grid.get_cell_type(*my_pos)
-            # Finish when on the exit cell OR when already outside (not inside WH)
+            # Finish when on the exit cell or already outside (not inside WH).
+            # Agents MUST exit through the exit cell — never through the entrance.
             left_wh = my_pos == exit_cell or cell_type not in (
                 CellType.WAREHOUSE,
                 CellType.WAREHOUSE_ENTRANCE,
@@ -1019,9 +1037,16 @@ class RetrieverAgent(BaseAgent):
             )
             if left_wh:
                 print(f"{self.tag} EXIT: exited warehouse")
+                # Save station ref before clearing — needed for move-off below
+                exit_entrance = station.get("entrance") if station else None
                 self._wh_step = None
                 self._wh_station = None
                 self._wh_exit_stuck = 0
+                self._wh_exit_last_pos = None
+                # Clear stale target/path BEFORE any branch sets a new one,
+                # so the retriever never routes back to the exit cell.
+                self.target_position = None
+                self.path = []
                 self.pending_events.append("idle")
                 # If there are pending tasks, head there immediately instead of
                 # exploring a random cell (which caused the "wander first" bug)
@@ -1039,28 +1064,33 @@ class RetrieverAgent(BaseAgent):
                 else:
                     self.state = AgentState.EXPLORING
                     self._update_explore_target()
-                # Move off the exit cell immediately so it doesn't block
-                if self.target_position and my_pos == exit_cell:
-                    self.move_towards(self.target_position)
+                # Move off the door cell immediately so it doesn't block.
+                # Prefer stepping AWAY from the warehouse interior so we
+                # don't oscillate back toward the entrance.
+                if my_pos == exit_cell:
+                    self._try_move_off_cell(avoid_warehouse=True, away_from=exit_entrance)
+                    self.path = []
             else:
-                # Ask blocker on exit cell to move (mirrors entrance logic)
+                # Track truly stuck steps (position unchanged)
+                if my_pos == self._wh_exit_last_pos:
+                    self._wh_exit_stuck += 1
+                else:
+                    self._wh_exit_stuck = 0
+                self._wh_exit_last_pos = my_pos
+
+                # Ask blocker on exit cell to move (advance notice)
                 blocker = self._get_agent_at_pos(exit_cell)
                 if blocker is not None:
                     self._send_clear_way_request(exit_cell, blocker)
 
-                self._wh_exit_stuck += 1
+                # When stuck for several steps, use cooperative negotiation
+                # to resolve the jam — all nearby agents negotiate
+                # non-conflicting moves based on cargo priority.
+                if self._wh_exit_stuck >= 3:
+                    self.path = []  # force replan
+                    if self._cooperative_unstick(my_pos, exit_cell):
+                        return  # negotiation moved us
 
-                # If stuck heading to exit for several steps, try leaving
-                # through the entrance instead (it is also walkable from inside)
-                if self._wh_exit_stuck >= 4:
-                    entrance = station["entrance"]
-                    if entrance != exit_cell:
-                        blocker_ent = self._get_agent_at_pos(entrance)
-                        if blocker_ent is None or self._wh_exit_stuck >= 6:
-                            if blocker_ent is not None:
-                                self._send_clear_way_request(entrance, blocker_ent)
-                            self.move_towards(entrance)
-                            return
                 self.move_towards(exit_cell)
 
     # ------------------------------------------------------------------
