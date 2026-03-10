@@ -579,10 +579,9 @@ class ScoutAgent(BaseAgent):
             self._execute_scout_recharge_step()
             return
 
-        # OPTION 3: Move based on state (scouts move 2× per step when speed > 1)
-        moves_per_step = 2 if self.speed > 1.0 else 1
-
-        for _ in range(moves_per_step):
+        # OPTION 3: Move based on state (one move per step to prevent
+        #           visual teleportation / jumping over other agents)
+        for _ in range(1):
             if self.energy <= 0:
                 break
 

@@ -135,6 +135,21 @@ class MultiGrid:
         """Move an agent to a new position"""
         self.place_agent(agent, pos)
 
+    def swap_agents(self, agent_a: Agent, agent_b: Agent) -> None:
+        """Atomically swap positions of two agents on the grid."""
+        pos_a = agent_a.pos
+        pos_b = agent_b.pos
+        if pos_a is None or pos_b is None:
+            return
+        # Clear both cells
+        self.grid[pos_a[0]][pos_a[1]] = None
+        self.grid[pos_b[0]][pos_b[1]] = None
+        # Place at swapped positions
+        self.grid[pos_a[0]][pos_a[1]] = agent_b
+        self.grid[pos_b[0]][pos_b[1]] = agent_a
+        agent_a.pos = pos_b
+        agent_b.pos = pos_a
+
     def get_cell_list_contents(self, cell_list: List[Tuple[int, int]]) -> List[Agent]:
         """
         Get all agents in the specified cells
