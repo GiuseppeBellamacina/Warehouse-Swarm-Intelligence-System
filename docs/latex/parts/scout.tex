@@ -33,16 +33,98 @@ La priorit\`a dello Scout \`e deterministica e segue questa sequenza:
           \texttt{ObjectSpottedMessage} indirizzati ai Coordinator vicini.
 \end{enumerate}
 
+\section{Selezione delle Frontiere}
+
+\subsection{Funzione di Utilit\`a con Distanza Sub-lineare}
+
+La funzione di utilit\`a per la selezione delle frontiere utilizza una distanza con
+esponente sub-lineare:
+
+$$U(f) = \frac{\text{cluster\_size}}{d(f)^{0.4} + 1} - 0{,}5 \cdot n_{\text{agenti}}(f)$$
+
+L'uso di $d^{0.4}$ anzich\'e $d$ lineare impedisce che cluster piccoli ma vicini
+prevalgano sistematicamente su cluster grandi e distanti. Senza questa correzione,
+un cluster di 3~celle a distanza~2 vincerebbe contro un cluster di 50~celle a
+distanza~25, portando a una copertura frammentata.
+
+\subsection{Blocco del Target (Target Lock)}
+
+Quando una frontiera viene selezionata, lo Scout imposta un \textit{target lock}
+per un numero configurabile di passi (\texttt{\_TARGET\_LOCK\_DURATION}). Durante
+questo periodo, la rivalutazione completa delle frontiere \`e sospesa anche se ne
+compaiono di nuove. Il lock viene rilasciato anticipatamente se il target \`e
+raggiunto, se il rilevatore di stallo si attiva, o se la durata scade. Questo
+meccanismo previene cambi di direzione erratici quando lo Scout entra in zone con
+molti cluster di frontiera adiacenti.
+
+\subsection{Blacklist dei Target Recenti}
+
+Dopo aver raggiunto una frontiera, la sua posizione viene inserita in una blacklist
+per \texttt{\_RECENT\_TARGET\_TTL} passi (default 200). Ci\`o previene l'oscillazione
+immediata tra cluster appena esplorati: senza la blacklist, un cluster marginalmente
+non coperto verrebbe continuamente riselezionato prima di essere completamente
+scansionato.
+
+\subsection{Preferenza per Frontiere Lontane}
+
+Quando abilitata (\texttt{\_FAR\_FRONTIER\_ENABLED}), la selezione preferisce frontiere
+che richiedono uno spostamento superiore a $2\times$ il raggio di visione (distanza minima
+configurabile, default 8~celle). Questo spinge lo Scout verso territorio genuinamente
+inesplorato, evitando di micro-esplorare artefatti di confine tra cluster adiacenti gi\`a
+parzialmente coperti. Se non esistono frontiere lontane, si ricade sulle frontiere
+disponibili. In modalit\`a \texttt{map\_known}, questa euristica viene disattivata:
+le frontiere vicine al confine tra zone scansionate e non scansionate sono le pi\`u
+rilevanti.
+
 \section{Anti-Clustering}
 
 L'anti-clustering \`e implementato in due livelli. Il primo \`e un filtro hard: le frontiere
-che si trovano a meno di 8 celle da un altro Scout (visibile nel raggio di comunicazione) vengono
-escluse completamente dall'insieme dei candidati. Il secondo \`e una penalizzazione soft nella
-funzione di utilit\`a:
+che si trovano a meno di \texttt{\_ANTI\_CLUSTER\_DIST} celle (default 8) da un altro Scout
+(visibile nel raggio di comunicazione) vengono escluse completamente dall'insieme dei candidati.
+Il secondo \`e una penalizzazione soft nella funzione di utilit\`a:
 
-$$U(f) = \frac{\text{cluster\_size}}{d(f) + 1} - 0{,}5 \cdot n_{\text{agenti}}(f)$$
+$$U(f) = \frac{\text{cluster\_size}}{d(f)^{0.4} + 1} - 0{,}5 \cdot n_{\text{agenti}}(f)$$
 
 dove $n_{\text{agenti}}(f)$ \`e il numero di agenti entro 10 celle dalla frontiera $f$.
 Se il filtro hard elimina tutte le frontiere (caso raro, ad esempio con molti Scout su
 una griglia piccola), si ricade sull'insieme completo applicando solo la penalizzazione soft.
 Il risultato pratico \`e una divisione organica del territorio senza alcuna coordinazione esplicita.
+
+\section{Pattugliamento Ciclico (Stale Coverage)}
+
+Ogni Scout mantiene una matrice privata \texttt{\_coverage\_step} che registra il
+passo del modello in cui ciascuna cella \`e stata l'ultima volta nel raggio di visione.
+Questa matrice non viene mai trasmessa.
+
+Quando non esistono frontiere inesplorate, lo Scout entra in modalit\`a di
+\textit{stale coverage patrol}: le celle non visitate per un numero configurabile di
+passi (\texttt{\_RESCAN\_AGE}) diventano candidati per la ri-esplorazione.
+La selezione combina et\`a e prossimit\`a:
+
+$$\text{score}(c) = \frac{\text{age}(c)}{d(c) + 1}$$
+
+I primi 50 candidati per punteggio vengono valutati; il primo raggiungibile (cella
+walkable) viene selezionato come target. In modalit\`a \texttt{map\_known}, le celle
+con \texttt{vision\_explored == 0} hanno priorit\`a assoluta rispetto al
+ri-pattugliamento di celle gi\`a scansionate.
+
+\section{Relay Passivo e Ricerca del Coordinator}
+
+Quando lo Scout ha oggetti scoperti da consegnare, valuta se la catena di relay
+passivo (via \texttt{MapDataMessage} trasmesso ad agenti vicini) \`e sufficiente.
+Se il contatto con un qualsiasi agente \`e avvenuto di recente
+(\texttt{\_last\_agent\_contact\_step}), lo Scout presume che le informazioni stiano
+gi\`a propagandosi e continua a esplorare anzich\'e cercare attivamente il Coordinator.
+
+Se il contatto \`e stale, lo Scout si dirige verso l'ultima posizione nota del
+Coordinator. All'arrivo, se il Coordinator non \`e presente, esegue una
+\textit{wide scan} fino a $4\times$ il raggio di comunicazione per localizzarlo
+senza navigazione cieca.
+
+\section{Finestra di Rilevamento Stallo Raddoppiata}
+
+A differenza degli altri agenti (che usano uno storico di 15 posizioni), lo Scout
+utilizza \texttt{max\_history\_length = 30}. Poich\'e gli Scout si muovono a
+$2\times$ la velocit\`a degli altri agenti, 15~posizioni coprono solo $\sim$7
+passi reali. Il raddoppio garantisce che la finestra di rilevamento loop copra
+$\sim$15 passi effettivi, evitando falsi positivi.

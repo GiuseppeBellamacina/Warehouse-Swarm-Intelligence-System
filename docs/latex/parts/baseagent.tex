@@ -14,6 +14,36 @@ il raggio, simulando la visibilit\`a lineare degli agenti fisici. Gli oggetti ne
 visione vengono aggiunti alla lista \texttt{known\_objects}; le celle magazzino vengono
 aggiunte a \texttt{known\_warehouses}.
 
+\subsection{Vision Explored}
+
+Oltre alla mappa locale, ogni agente mantiene una matrice separata
+\texttt{vision\_explored} di dimensione \texttt{grid\_height $\times$ grid\_width},
+inizializzata a zero. Una cella viene marcata a~1 esclusivamente quando entra nel
+cono di visione diretto dell'agente (ray casting), indipendentemente dalle informazioni
+ricevute via \texttt{MapDataMessage}. Questa distinzione \`e fondamentale nella
+modalit\`a \texttt{map\_known}: quando la topologia della griglia \`e pre-caricata,
+\texttt{local\_map} non contiene celle \texttt{UNKNOWN} e la ricerca di frontiere
+classica fallisce. In questo caso tutti gli agenti usano
+\texttt{vision\_explored == 0} come maschera di inesplorato, trattando le celle
+non ancora scansionate visivamente come frontiere da esplorare. Ci\`o garantisce che
+gli oggetti sparsi sulla griglia vengano effettivamente individuati, anche se la
+topologia \`e gi\`a nota.
+
+\subsection{Tombstone per Oggetti Stale}
+
+Quando un agente scansiona direttamente una cella che in precedenza conteneva un oggetto e
+la trova vuota (oggetto già raccolto), registra un \textit{tombstone} in
+\texttt{known\_objects\_cleared} con il passo corrente. Qualsiasi messaggio ricevuto in
+seguito che affermi la presenza dell'oggetto in quella cella viene rifiutato se il suo
+timestamp \`e anteriore al tombstone. Questo impedisce la re-inserzione di oggetti fantasma
+nella mappa condivisa.
+
+Inoltre, prima di trasmettere un \texttt{MapDataMessage}, l'agente esegue uno
+\textit{scrubbing} preventivo: ogni cella con tipo \texttt{OBJECT} che non corrisponde
+a un oggetto realmente presente sulla griglia viene declassata a \texttt{FREE} nel
+messaggio e nella propria mappa locale. Questo interrompe la catena di ritrasmissione
+di informazioni obsolete attraverso lo sciame.
+
 \section{Integrazione della Mappa Condivisa}
 
 Alla ricezione di un \texttt{MapDataMessage}, l'agente aggiorna le celle della propria
@@ -33,6 +63,35 @@ profondità massima: se la catena di spostamenti non si risolve, l'agente inizia
 rilascia il messaggio e lascia che A* trovi una via alternativa al passo successivo.
 Il meccanismo riduce significativamente i blocchi in corridoi stretti senza richiedere
 alcuna struttura di prenotazione globale.
+
+\subsection{Yield Cooldown}
+
+Dopo aver ceduto una cella in risposta a un \texttt{ClearWayMessage}, l'agente registra
+la posizione ceduta in un dizionario \texttt{\_yield\_cooldown} con un timer di 3~passi.
+Durante questo periodo, il pathfinder A* penalizza fortemente il passaggio attraverso
+quella cella, impedendo all'agente di tornare immediatamente sulla posizione appena
+liberata. Senza questo meccanismo, l'agente cederebbe la cella e nel passo successivo
+vi si dirigerebbe di nuovo, causando un'oscillazione infinita con il richiedente.
+
+\section{Navigazione nei Magazzini: Direzionalit\`a delle Porte}
+
+La navigazione A* applica un sistema di \textit{forbidden types} contestuale per garantire
+la direzionalit\`a delle porte del magazzino:
+
+\begin{itemize}
+    \item Un agente \textbf{all'interno} del magazzino che si dirige verso l'uscita
+          proibisce le celle \texttt{ENTRANCE} come nodi intermedi, impedendo che il
+          percorso passi dalla porta di ingresso.
+    \item Un agente \textbf{all'esterno} che si dirige verso l'ingresso proibisce le
+          celle \texttt{EXIT} come nodi intermedi, impedendo scorciatoie attraverso
+          l'uscita.
+    \item Un agente in navigazione esterna generica proibisce \textbf{tutte} le celle
+          porta (sia ingresso che uscita) come nodi intermedi, evitando che il percorso
+          attraversi i magazzini come scorciatoia.
+\end{itemize}
+
+La cella obiettivo \`e sempre esclusa dal set di proibizioni, garantendo che l'agente possa
+effettivamente raggiungere un ingresso o un'uscita quando \`e la sua destinazione.
 
 \section{Rilevamento dello Stallo}
 

@@ -1,0 +1,72 @@
+\chapter{Comunicazione Distribuita}
+
+La comunicazione tra agenti avviene tramite un bus condiviso gestito dal
+\texttt{CommunicationManager}, un componente centralizzato a livello di modello
+che simula trasmissioni locali a raggio limitato. Ogni agente comunica solo con
+i vicini entro il proprio \texttt{communication\_radius}: non esiste alcun canale
+globale.
+
+\section{Messaggi e Wrapper Timestamped}
+
+Tutti i messaggi scambiati ereditano da \texttt{Message} e contengono un campo
+\texttt{step} che registra il passo di simulazione in cui sono stati generati.
+Quando un agente riceve dati duplicati da fonti diverse (ad~esempio la posizione
+dello stesso Retriever riportata da due Coordinator), viene applicata la regola
+\textit{newest wins}: solo l'informazione con \texttt{step} pi\`u recente viene
+mantenuta. Questo evita che dati stale sovrascrivano informazioni aggiornate
+durante la propagazione multi-hop.
+
+I principali tipi di messaggio sono:
+
+\begin{itemize}
+    \item \texttt{MapDataMessage}: Contiene la sottomatrice della mappa esplorata,
+          i \texttt{known\_objects}, le posizioni dei Retriever e gli oggetti reclamati.
+          Scambiato periodicamente tra tutti i tipi di agente.
+    \item \texttt{TaskAssignment}: Compito assegnato dal Coordinator a un Retriever
+          specifico, contenente la posizione dell'oggetto.
+    \item \texttt{TaskStatusMessage}: Diffuso dai Retriever ai vicini, contiene la
+          \texttt{task\_queue} corrente e la posizione dell'agente. Permette ai peer
+          di rimuovere task duplicati dalla propria coda.
+    \item \texttt{RetrieverEventMessage}: Messaggio peer-to-peer tra Retriever con
+          eventi \texttt{object\_spotted} e \texttt{cargo\_dropped}, usato per
+          propagare la scoperta di oggetti e il rilascio di carico.
+\end{itemize}
+
+\section{Oggetti Reclamati e Protocollo di Takeover}
+
+Il dizionario globale \texttt{claimed\_objects} nel \texttt{CommunicationManager}
+associa ogni posizione di oggetto reclamato a una tupla
+$(\text{agent\_id}, \text{step})$. La funzione \texttt{try\_claim\_object} implementa
+un protocollo atomico con quattro condizioni di successo (in ordine):
+
+\begin{enumerate}
+    \item L'oggetto non \`e mai stato reclamato.
+    \item L'oggetto \`e gi\`a reclamato dallo stesso agente (idempotenza).
+    \item Il claim esistente \`e pi\`u vecchio di \texttt{\_STALE\_CLAIM\_AGE} passi
+          (default~50), ed \`e quindi considerato scaduto.
+    \item Il richiedente ha energia superiore a $1{,}5\times$ quella del detentore
+          corrente (preemption energetica).
+\end{enumerate}
+
+Se nessuna condizione \`e soddisfatta, il claim viene rifiutato. Il meccanismo di
+stale claim takeover impedisce che un agente bloccato o fuori energia monopolizzi
+un oggetto indefinitamente, mentre la preemption energetica favorisce l'agente
+con maggiore autonomia residua.
+
+\section{Contatore dei Messaggi}
+
+Il \texttt{CommunicationManager} mantiene un contatore \texttt{messages\_sent}
+incrementato per ogni destinatario effettivo di un messaggio. Se un agente invia
+un messaggio e questo raggiunge $n$~agenti nel raggio di comunicazione, il contatore
+viene incrementato di~$n$. Questo valore viene esposto nelle metriche di simulazione
+e nel benchmark per misurare il costo comunicativo dello sciame.
+
+\section{Metriche di Efficienza Energetica}
+
+Le metriche del sistema includono il rapporto di efficienza energetica:
+
+$$\eta = \frac{n_{\text{delivered}}}{E_{\text{total\_consumed}}}$$
+
+dove $n_{\text{delivered}}$ \`e il numero di oggetti consegnati e $E_{\text{total\_consumed}}$
+\`e l'energia totale consumata da tutti gli agenti. Un valore pi\`u alto indica un uso
+pi\`u efficiente dell'energia per unit\`a di lavoro utile.
