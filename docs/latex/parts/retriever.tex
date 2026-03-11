@@ -10,10 +10,10 @@ Il ciclo decisionale del Retriever \`e una gerarchia di priorit\`a decrescenti, 
 in sequenza ad ogni passo della fase \texttt{STAGE\_DECIDE}:
 
 \begin{enumerate}
-    \item \textbf{P1 — Consegna}: Se trasporta almeno un oggetto, si dirige al magazzino
-          tramite la sequenza di consegna. Questa priorit\`a non \`e mai interrotta da
-          nuovi compiti assegnati: il Retriever completa sempre la consegna prima di
-          iniziare il prossimo recupero.
+    \item \textbf{P1 — Consegna}: Se trasporta almeno un oggetto e la capacit\`a \`e
+          esaurita (oppure la coda \`e vuota), si dirige al magazzino tramite la sequenza
+          di consegna. In caso di capacit\`a piena, tutti i claim residui nella coda
+          vengono rilasciati immediatamente, rendendoli disponibili per i peer.
     \item \textbf{P2 — Ricarica d'emergenza}: Se l'energia scende sotto la soglia critica
           e non sta gi\`a consegnando, il Retriever interrompe qualsiasi operazione e si
           dirige al magazzino per ricaricarsi. La soglia \`e dinamica: se il magazzino
@@ -21,6 +21,14 @@ in sequenza ad ogni passo della fase \texttt{STAGE\_DECIDE}:
           unit\`a di energia, garantendo sempre un margine di sicurezza.
     \item \textbf{P3 — Esecuzione compiti assegnati}: Se ha una coda di compiti assegnati
           dal Coordinator, preleva il prossimo oggetto dalla coda e si dirige verso di esso.
+          La coda viene riordinata per distanza Manhattan dalla posizione corrente ad ogni
+          passo (\texttt{\_TASK\_QUEUE\_REORDER}), garantendo che il task pi\`u vicino sia
+          sempre il primo.
+    \item \textbf{P3b — Pickup opportunistico}: Dopo aver selezionato il task primario, il
+          Retriever scansiona \texttt{known\_objects} alla ricerca di oggetti non reclamati
+          entro il raggio di visione. Se la capacit\`a residua lo consente, reclama
+          atomicamente fino a \texttt{spare\_capacity} oggetti aggiuntivi. Questo massimizza
+          il fattore di utilizzo del carico durante il transito verso il task primario.
     \item \textbf{P4 — Auto-assegnazione (modalit\`a hive-mind)}: In assenza di compiti
           assegnati, il Retriever scansiona l'intero \texttt{known\_objects} accumulato
           (non solo le celle visibili) e si auto-assegna l'oggetto pi\`u conveniente
@@ -29,8 +37,40 @@ in sequenza ad ogni passo della fase \texttt{STAGE\_DECIDE}:
           le mappe ricevute dagli altri agenti.
     \item \textbf{P5 — Mini-esplorazione}: Se non ha n\'e compiti n\'e oggetti noti,
           il Retriever esegue una breve frontier-based exploration locale per scoprire oggetti
-          nell'area circostante.
+          nell'area circostante. In modalit\`a \texttt{map\_known} usa
+          \texttt{vision\_explored == 0} per identificare celle non scansionate, con
+          anti-clustering rispetto ai Coordinator vicini.
 \end{enumerate}
+
+\section{Auto-Assegnazione con Quattro Livelli di Sicurezza}
+
+La funzione \texttt{\_try\_self\_assign\_visible} \`e protetta da quattro filtri
+in cascata per prevenire doppie assegnazioni:
+
+\begin{enumerate}
+    \item \textbf{Verifica sulla griglia}: Se l'oggetto non \`e pi\`u presente in
+          \texttt{model.grid.objects}, viene scartato.
+    \item \textbf{Et\`a del claim globale}: Se un altro agente ha un claim fresco
+          (meno di \texttt{\_STALE\_CLAIM\_AGE} passi, default~50) sull'oggetto,
+          viene saltato.
+    \item \textbf{Controllo code peer}: Se l'oggetto appare nella \texttt{task\_queue}
+          di un Retriever nelle vicinanze, viene saltato.
+    \item \textbf{Claim atomico}: \texttt{CommunicationManager.try\_claim\_object}
+          garantisce first-come-first-served a livello globale.
+\end{enumerate}
+
+I claim pi\`u vecchi di \texttt{\_STALE\_CLAIM\_AGE} passi sono considerati scaduti e
+possono essere acquisiti da un altro Retriever. Questo meccanismo di \textit{stale claim
+takeover} previene che un Retriever fuori energia o bloccato impedisca indefinitamente il
+recupero di un oggetto.
+
+\section{Cancellazione Reattiva dei Task}
+
+Alla ricezione di un \texttt{MapDataMessage}, il Retriever verifica immediatamente
+se gli oggetti nella propria coda sono ancora presenti sulla griglia. Se un oggetto
+risulta assente (già raccolto da un peer), il task viene rimosso e il claim rilasciato
+senza attendere la riassegnazione da parte del Coordinator. Questo riduce i passi
+sprecati verso oggetti fantasma.
 
 \section{Sequenza di Consegna al Magazzino}
 
@@ -62,17 +102,40 @@ La funzione \texttt{get\_best\_warehouse\_for} seleziona la stazione di deposito
 ottimale tra tutte quelle note all'agente. Il punteggio per ogni stazione combina tre fattori:
 
 \begin{itemize}
-    \item \textbf{Distanza}: La distanza euclidea dalla posizione corrente del Retriever.
-    \item \textbf{Capacit\`a}: Le stazioni con pi\`u Retriever gi\`a in coda vengono
-          penalizzate per distribuire il carico.
+    \item \textbf{Distanza effettiva A*}: La distanza viene calcolata tramite il pathfinder
+          A*, che tiene conto degli ostacoli reali sulla griglia. L'uso della distanza
+          Manhattan causerebbe errori significativi in mappe con corridoi e barriere: un
+          magazzino ``vicino'' in linea d'aria pu\`o richiedere un percorso effettivo
+          doppio o triplo a causa degli ostacoli. Se il percorso non esiste, viene applicata
+          una penalizzazione di $+500$ sulla distanza Manhattan come fallback.
+    \item \textbf{Congestione}: Il numero di Retriever già diretti verso ciascun magazzino
+          viene conteggiato esaminando \texttt{\_wh\_station} di tutti gli agenti. La
+          penalizzazione \`e lineare: $\text{penalty} = 8 \times n_{\text{heading}}$.
     \item \textbf{Fattibilit\`a energetica}: Se la distanza stimata (moltiplicata per un
-          fattore di percorso 1.4 per tenere conto degli ostacoli) supera l'energia residua
-          dell'agente, la stazione riceve una penalizzazione aggiuntiva di 200 punti,
-          rendendola di fatto non preferibile. Questo impedisce al Retriever di dirigersi
-          verso un magazzino irraggiungibile e rimanere senza energia a met\`a percorso.
+          fattore di percorso 1.4 per tenere conto di deviazioni residue) supera l'energia
+          residua dell'agente, la stazione riceve una penalizzazione aggiuntiva di 200 punti,
+          rendendola di fatto non preferibile.
 \end{itemize}
 
-\section{Peer Negotiation tra Retriever}
+$$\text{score}(s) = d_{\text{A*}}(pos, s) + 8 \cdot n_{\text{heading}}(s) + \begin{cases} 200 & \text{se } d_{\text{A*}} \cdot 1{,}4 > E_{\text{agent}} \\ 0 & \text{altrimenti} \end{cases}$$
+
+\subsection{Ri-routing per Congestione}
+
+Se il Retriever \`e in fase \texttt{approach} da almeno 6~passi e il numero di agenti
+diretti allo stesso ingresso supera la soglia \texttt{\_WH\_CONGESTION\_THRESHOLD},
+viene rivalutata la scelta del magazzino escludendo quello corrente. Se esiste
+un'alternativa con minor congestione, il Retriever cambia rotta immediatamente,
+azzerando il percorso A* e il contatore di approccio.
+
+\subsection{Ordinamento delle Celle Interne (Queueing)}
+
+Le celle interne al magazzino sono ordinate per distanza dall'ingresso in modo
+decrescente: la cella pi\`u lontana dall'ingresso \`e lo slot~0 (il pi\`u profondo).
+Gli agenti riempiono il magazzino dalla posizione pi\`u interna verso l'ingresso,
+garantendo che nessun agente si fermi direttamente sulla porta anche in condizioni
+di alta congestione.
+
+\section{Coordinamento tra Retriever (Peer Negotiation)}
 
 I conflitti tra Retriever che puntano allo stesso oggetto si risolvono in due livelli:
 
@@ -81,13 +144,40 @@ I conflitti tra Retriever che puntano allo stesso oggetto si risolvono in due li
           \texttt{CommunicationManager.try\_claim\_object}, operazione atomica condivisa
           da tutti gli agenti. Solo un Retriever ottiene il claim; i contendenti ricevono
           immediatamente un fallimento e selezionano un altro oggetto.
-    \item \textbf{Aggiornamento reattivo via TaskStatusMessage}: Dopo ogni claim
+    \item \textbf{Peer yield via TaskStatusMessage}: Dopo ogni claim
           riuscito, il Retriever diffonde un \texttt{TaskStatusMessage} a tutti i vicini.
           Alla ricezione, ogni peer rimuove dalla propria \texttt{task\_queue} gli oggetti
-          gi\`a presenti nella coda del mittente (\texttt{PEER-YIELD}), aggiornando
-          preventivamente la propria pianificazione senza attendere un fallimento esplicito.
+          gi\`a presenti nella coda del mittente, rilasciando i claim corrispondenti e
+          aggiornando preventivamente la propria pianificazione senza attendere un
+          fallimento esplicito.
 \end{enumerate}
 
 L'assenza di un arbitro centralizzato e la natura broadcast del \texttt{TaskStatusMessage}
 garantiscono convergenza rapida: nella pratica, le collisioni residue dopo il claim atomico
 sono rare e vengono risolte entro uno-due passi di comunicazione.
+
+\subsection{Broadcast Peer-to-Peer degli Oggetti Scoperti}
+
+I Retriever possono comunicare direttamente tra loro tramite
+\texttt{RetrieverEventMessage} con eventi \texttt{object\_spotted} e
+\texttt{cargo\_dropped}. Alla ricezione, il peer aggiunge l'oggetto a
+\texttt{known\_objects} se non gi\`a noto e non contrassegnato da tombstone. Questo
+crea catene di scoperta opportunistiche che propagano la conoscenza degli oggetti
+peer-to-peer, senza intermediazione del Coordinator.
+
+\subsection{Relay delle Posizioni}
+
+Prima di inviare un \texttt{TaskStatusMessage}, ogni Retriever aggiorna la propria
+posizione nel dizionario \texttt{retriever\_positions}. Questa informazione viene
+inclusa nei \texttt{MapDataMessage} e propagata da tutti i riceventi, creando una
+rete di relay in cui ogni agente diventa un nodo di trasmissione per le posizioni
+di tutti i Retriever.
+
+\section{Tolleranza ai Guasti: Cargo Drop}
+
+Se l'energia del Retriever raggiunge zero, tutti gli oggetti trasportati vengono
+rilasciati sulle celle libere adiacenti in una spirale espansiva. Le posizioni
+degli oggetti rilasciati vengono trasmesse ai vicini tramite
+\texttt{RetrieverEventMessage} con evento \texttt{cargo\_dropped}, permettendo
+ad altri Retriever di recuperarli. Questo meccanismo impedisce che un guasto
+energetico causi la perdita permanente degli oggetti gi\`a raccolti.

@@ -12,9 +12,15 @@ il proprio \texttt{known\_objects} con la posizione e il valore dell'oggetto. Og
 \texttt{TaskStatusMessage} ricevuto da un Retriever aggiorna uno dei dizionari interni:
 \texttt{retriever\_carrying} (numero di oggetti trasportati), \texttt{retriever\_energy}
 (energia residua) e \texttt{objects\_being\_collected} (set degli oggetti già in recupero).
-Il set \texttt{objects\_being\_collected} \`e la protezione principale contro la doppia
-assegnazione: qualsiasi oggetto gi\`a assegnato o dichiarato in recupero da un Retriever
-viene escluso dalla lista di candidati per le nuove assegnazioni.
+
+Il Coordinator estrae la coda di task dichiarata esplicitamente da ciascun Retriever
+nel \texttt{TaskStatusMessage}. Gli slot disponibili per nuove assegnazioni vengono
+calcolati come:
+
+$$\text{available\_slots}(r) = \text{capacity}(r) - |\text{task\_queue}(r)| - \text{carrying}(r)$$
+
+Questo approccio, basato sulla dichiarazione autoritativa del Retriever anziché su
+stime indirette, elimina le race condition tra assegnazione e auto-assegnazione.
 
 \section{Logica di Assegnazione}
 
@@ -30,7 +36,13 @@ Al momento dell'invio, il Coordinator trasmette sia il \texttt{TaskAssignmentMes
 che un \texttt{MapDataMessage} con le celle magazzino note, accelerando la scoperta delle
 stazioni di deposito da parte dei Retriever che non le hanno ancora esplorate.
 
-\section{Riposizionamento verso il Centroide}
+Il set \texttt{objects\_being\_collected} \`e la protezione principale contro la doppia
+assegnazione: qualsiasi oggetto gi\`a assegnato o dichiarato in recupero da un Retriever
+viene escluso dalla lista di candidati per le nuove assegnazioni.
+
+\section{Strategia di Movimento}
+
+\subsection{Riposizionamento verso il Centroide}
 
 Quando il Coordinator non ha compiti da assegnare, il suo obiettivo di movimento \`e
 rimanere raggiungibile dalla propria flotta. All'avvio, finch\'e non riceve nessuna
@@ -38,20 +50,63 @@ posizione recente da un Retriever, il Coordinator percorre un circuito di cinque
 strategici (centro e quattro quadranti della griglia, agganciati alla cella libera pi\`u
 vicina) per coprire tutta la griglia e ristabilire il contatto nel minor numero di passi.
 
-Non appena arrivano posizioni fresche (pi\`u recenti di 25 passi), calcola il centroide
-medio di tutti i Retriever e, se la propria distanza da quel punto supera una soglia
-(pari a $\frac{1}{4}$ del raggio di comunicazione), si sposta verso la cella libera pi\`u
-vicina al centroide.
+Non appena arrivano posizioni fresche (pi\`u recenti di \texttt{\_POS\_MAX\_AGE} passi,
+default~25), calcola il centroide medio di tutti i Retriever e, se la propria distanza
+da quel punto supera una soglia (pari a $\frac{1}{4}$ del raggio di comunicazione),
+si sposta verso la cella libera pi\`u vicina al centroide.
+
+Il centroide pu\`o essere opzionalmente biased verso le posizioni degli oggetti
+pendenti tramite il parametro \texttt{\_OBJECT\_BIASED\_CENTROID}:
+
+$$\text{centroid}_{\text{biased}} = \text{centroid}_{\text{ret}} \cdot (1 - b) + \text{centroid}_{\text{obj}} \cdot b$$
+
+dove $b = 0{,}05$ (default). Questo attira leggermente il Coordinator verso le zone
+ad alta densit\`a di oggetti senza allontanarlo eccessivamente dai Retriever.
 
 Se la distanza \`e gi\`a entro la soglia, il Coordinator rimane fermo (\texttt{IDLE}):
 non esegue n\`e esplorazione frontier-based n\`e passeggiate casuali, poich\`e il suo
 compito non \`e esplorare ma coordinarsi. Questa scelta riduce il consumo energetico e
 evita che l'agente si allontani involontariamente dagli agenti che gestisce.
 
+\subsection{Pattugliamento Anti-Inerzia (Boredom Patrol)}
+
+Se il Coordinator rimane inattivo per pi\`u di \texttt{\_BOREDOM\_THRESHOLD} passi
+(default 50) senza ricevere nuovi target di esplorazione, forza un ciclo di
+pattugliamento attraverso i waypoint strategici. Questo impedisce l'accumulo di
+energia sprecata in attesa passiva quando i task sono pochi e il centroide \`e gi\`a
+raggiunto.
+
+\subsection{Ricerca Attiva dei Retriever (Seek-Retriever)}
+
 Se esistono oggetti noti ma nessun Retriever \`e nel raggio di comunicazione, il Coordinator
 entra in modalit\`a \textbf{SEEK-RETRIEVER}: si dirige verso l'ultima posizione dichiarata
 di un Retriever noto, con l'obiettivo di ristabilire il canale di comunicazione e procedere
-con l'assegnazione appena possibile.
+con l'assegnazione appena possibile. Solo le posizioni pi\`u recenti di
+\texttt{\_POS\_MAX\_AGE} passi vengono considerate; le posizioni stale vengono ignorate
+per evitare di inseguire fantasmi. Se tutte le posizioni note sono stale o gi\`a visitate
+senza successo, il Coordinator torna al pattugliamento.
+
+\section{Consapevolezza Spaziale}
+
+\subsection{Rilevamento Chokepoint}
+
+Il Coordinator valuta se la propria posizione corrente \`e un \textit{chokepoint}:
+una cella con al massimo 2~vicini walkable. In tal caso, si sposta per evitare di
+bloccare il passaggio dei Retriever in corridoi stretti.
+
+\subsection{Rilevamento Blocco di Agenti Vicini}
+
+Se un agente adiacente ha \texttt{stuck\_counter $\geq$ 2} (bloccato da almeno due
+passi consecutivi), il Coordinator rileva di essere potenzialmente la causa del
+blocco e si sposta per liberare il passaggio. Questa euristica reattiva \`e
+complementare al protocollo ClearWay.
+
+\section{Esplorazione in Modalit\`a map\_known}
+
+In modalit\`a \texttt{map\_known}, il Coordinator utilizza \texttt{vision\_explored == 0}
+per identificare le celle non ancora scansionate visivamente. Quando ha task pendenti
+ed \`e gi\`a vicino al centroide, bias l'esplorazione verso le celle ignote pi\`u vicine
+al centroide. In assenza di task, tratta le celle non scansionate come frontiere normali.
 
 \section{Sincronizzazione tra Coordinator Multipli}
 
@@ -59,6 +114,11 @@ In configurazioni con pi\`u di un Coordinator, il rischio di doppia assegnazione
 Il \texttt{CoordinatorSyncMessage} viene scambiato periodicamente tra Coordinator vicini
 e contiene la lista delle assegnazioni attive (\texttt{assigned\_tasks}) e degli oggetti
 in recupero (\texttt{objects\_being\_collected}). Alla ricezione, ogni Coordinator fonde
-le informazioni ricevute con le proprie, aggiornando i set interni. Questa sincronizzazione
-non \`e istantanea — si propaga a onde tramite la comunicazione locale — ma \`e sufficiente
-per eliminare la stragrande maggioranza delle doppie assegnazioni in scenari realistici.
+le informazioni ricevute con le proprie, aggiornando i set interni.
+
+La sincronizzazione \`e soggetta a rate limiting: un solo messaggio ogni
+\texttt{\_SYNC\_RATE\_LIMIT} passi (default~10) per coppia di Coordinator,
+controllato tramite timestamp per-Coordinator nel dizionario \texttt{last\_sync\_step}.
+Questa propagazione non \`e istantanea — si propaga a onde tramite la comunicazione
+locale — ma \`e sufficiente per eliminare la stragrande maggioranza delle doppie
+assegnazioni in scenari realistici, bilanciando correttezza e overhead comunicativo.
