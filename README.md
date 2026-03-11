@@ -2,7 +2,7 @@
 
 **[Live demo](https://warehouse-swarm-intelligence-system.vercel.app)**
 
-**[Relazione PDF](docs/relazione.pdf)**
+**[Relazione PDF](docs/latex/relazione.pdf)**
 
 A real-time swarm intelligence simulation where autonomous agents cooperate to explore warehouses and retrieve objects. Built with a Python/FastAPI backend and a React/TypeScript frontend.
 
