@@ -623,50 +623,45 @@ class RetrieverAgent(BaseAgent):
             # --- Strategy 1: head toward UNKNOWN boundary cells ---
             # If the retriever's local map still has unexplored areas, head there
             # to expand coverage and potentially spot new objects.
+            # Uses FrontierExplorer to find clusters of frontier cells so the
+            # retriever targets large unexplored regions instead of zigzagging
+            # around the nearest boundary cell.
             if self._SMART_EXPLORE:
-                import numpy as _np
+                from backend.algorithms.exploration import FrontierExplorer
 
                 # In map_known mode, local_map is pre-filled so local_map==0
                 # is always empty.  Use vision_explored==0 to find cells not
                 # yet visually scanned — objects can only be in unseen areas.
                 if getattr(self.model, "map_known", False):
-                    unknown_mask = self.vision_explored == 0
+                    _unexp_mask = self.vision_explored == 0
                 else:
-                    unknown_mask = self.local_map == 0
-                if _np.any(unknown_mask):
-                    padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
-                    has_explored = _np.zeros_like(unknown_mask)
-                    for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                        has_explored |= (
-                            padded[
-                                1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx
-                            ]
-                            != 0
+                    _unexp_mask = None
+
+                frontiers = FrontierExplorer.find_frontiers(
+                    self.local_map,
+                    min_cluster_size=1,
+                    unexplored_mask=_unexp_mask,
+                )
+                if frontiers:
+                    # Filter out warehouse cells and unwalkable centroids
+                    _WH = (
+                        CellType.WAREHOUSE,
+                        CellType.WAREHOUSE_ENTRANCE,
+                        CellType.WAREHOUSE_EXIT,
+                    )
+                    valid = [
+                        f for f in frontiers
+                        if self.model.grid.is_walkable(*f[0])
+                        and self.model.grid.get_cell_type(*f[0]) not in _WH
+                    ]
+                    if valid:
+                        nearby_positions = coord_positions  # anti-cluster vs coordinators
+                        best = FrontierExplorer.select_best_frontier(
+                            valid, pos_tuple, nearby_positions
                         )
-                    boundary = unknown_mask & has_explored
-                    b_ys, b_xs = _np.where(boundary)
-                    if len(b_ys) > 0:
-                        dists = _np.abs(b_xs - pos_tuple[0]) + _np.abs(b_ys - pos_tuple[1])
-                        if coord_positions:
-                            # Anti-clustering: prefer boundary cells far from
-                            # coordinators.  score = dist_from_me - 0.5 * dist_from_coord
-                            # Lower score → better (close to me AND far from coord).
-                            coord_bonus = _np.zeros(len(b_ys), dtype=_np.float64)
-                            for cp in coord_positions:
-                                coord_bonus += _np.abs(b_xs - cp[0]) + _np.abs(b_ys - cp[1])
-                            scores = dists.astype(_np.float64) - 0.5 * coord_bonus
-                            best_idx = int(_np.argmin(scores))
-                        else:
-                            best_idx = int(_np.argmin(dists))
-                        target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
-                        tgt_ct = self.model.grid.get_cell_type(*target)
-                        if self.model.grid.is_walkable(*target) and tgt_ct not in (
-                            CellType.WAREHOUSE,
-                            CellType.WAREHOUSE_ENTRANCE,
-                            CellType.WAREHOUSE_EXIT,
-                        ):
-                            self._explore_target = target
-                            self.target_position = target
+                        if best:
+                            self._explore_target = best
+                            self.target_position = best
                             self.path = []
                             self.state = AgentState.EXPLORING
                             return

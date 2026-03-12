@@ -1427,6 +1427,10 @@ class BaseAgent(Agent):
         Execute one step of the agent's behavior
 
         Cycle: SENSE -> COMMUNICATE (receive) -> DECIDE -> ACT (move OR send)
+
+        When speed > 1 the agent performs multiple move sub-steps per tick.
+        Sense/Communicate/Decide run once; Act runs int(speed) times so
+        faster agents cover more ground per simulation step.
         """
         if self.energy <= 0:
             return  # Agent is out of energy
@@ -1439,4 +1443,11 @@ class BaseAgent(Agent):
         self.step_sense()
         self.step_communicate()
         self.step_decide()
-        self.step_act()
+
+        # Agents with speed > 1 get additional act (move) sub-steps.
+        # Sense/Communicate/Decide are NOT repeated — only movement benefits.
+        moves = max(1, int(self.speed))
+        for _ in range(moves):
+            if self.energy <= 0:
+                break
+            self.step_act()
