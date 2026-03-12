@@ -574,6 +574,7 @@ class RetrieverAgent(BaseAgent):
         self._wh_step = "approach"
         self._wh_approach_steps = 0
         self._wh_exit_stuck = 0
+        self._wh_known_wh_count = len(self.known_warehouses)
         self.target_position = station["entrance"]
 
         if purpose == "deliver":
@@ -927,6 +928,40 @@ class RetrieverAgent(BaseAgent):
                         self.move_towards(queue_cell)
             else:
                 self._wh_approach_steps += 1
+
+                # ── Dynamic warehouse re-evaluation ────────────────────────
+                # If the agent discovered new warehouses since the sequence
+                # started, re-evaluate whether a closer one exists and switch.
+                if len(self.known_warehouses) > self._wh_known_wh_count:
+                    self._wh_known_wh_count = len(self.known_warehouses)
+                    visible_entrances = [
+                        wh
+                        for wh in self.known_warehouses
+                        if self.model.grid.get_cell_type(*wh)
+                        == CellType.WAREHOUSE_ENTRANCE
+                    ]
+                    better = self.model.get_best_warehouse_for(
+                        pos=my_pos,
+                        known_entrances=visible_entrances,
+                        agent_energy=self.energy,
+                    )
+                    better_ent = better["entrance"]
+                    if better_ent != entrance:
+                        old_dist = self.model._path_distance(my_pos, entrance)
+                        new_dist = self.model._path_distance(my_pos, better_ent)
+                        if new_dist < old_dist:
+                            print(
+                                f"{self.tag} DYNAMIC-REROUTE: discovered closer "
+                                f"warehouse {better_ent} (dist={new_dist:.0f}) "
+                                f"vs current {entrance} (dist={old_dist:.0f})"
+                            )
+                            self._wh_station = better
+                            self._wh_approach_steps = 0
+                            self.target_position = better_ent
+                            self.path = []
+                            self.stuck_counter = 0
+                            station = better
+                            entrance = better_ent
 
                 # ── Congestion reroute ─────────────────────────────────────
                 # If the target warehouse is too crowded and there is an
