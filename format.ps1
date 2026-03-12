@@ -6,6 +6,17 @@ Write-Host "  Code Formatting & Linting" -ForegroundColor Cyan
 Write-Host "================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Check if environment exists and activate it
+if (Test-Path -Path ".venv") {
+    Write-Host "🔧 Activating virtual environment..." -ForegroundColor Yellow
+    & .\.venv\Scripts\Activate.ps1
+} else {
+    Write-Host "⚠️  Virtual environment not found" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ""
+
 # Run Isort
 Write-Host "📦 Running Isort..." -ForegroundColor Yellow
 isort .

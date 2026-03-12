@@ -2,7 +2,7 @@
 Frontier-based exploration strategies
 """
 
-from typing import List, Optional, Tuple, cast
+from typing import Callable, List, Optional, Tuple, cast
 
 import numpy as np
 from scipy.ndimage import label
@@ -113,17 +113,28 @@ class FrontierExplorer:
         frontiers: List[Tuple[Tuple[int, int], int]],
         agent_position: Tuple[int, int],
         nearby_agent_positions: Optional[List[Tuple[int, int]]] = None,
+        grid_size: Optional[Tuple[int, int]] = None,
+        explored_ratio_at: Optional[Callable[[int, int], float]] = None,
     ) -> Optional[Tuple[int, int]]:
         """
         Select the best frontier to explore
 
         Scoring function:
-        utility = cluster_size / (distance + 1) - agent_penalty
+        utility = cluster_size / (distance^0.4 + 1) - agent_penalty
+                  + coverage_bonus
+
+        The optional *coverage_bonus* rewards frontiers located in the
+        quadrant of the grid with the lowest explored ratio, nudging agents
+        toward large untouched regions instead of mopping up residual edges.
 
         Args:
             frontiers: List of (position, cluster_size)
             agent_position: Current agent position
             nearby_agent_positions: Positions of nearby agents
+            grid_size: (width, height) of the grid — enables quadrant bias
+            explored_ratio_at: callable(x, y) → float 0-1 giving the local
+                explored ratio around (x,y).  When provided, frontiers in
+                poorly-explored zones get a bonus.
 
         Returns:
             Best frontier position or None
@@ -153,13 +164,20 @@ class FrontierExplorer:
                 if other_dist < 10:  # Within 10 cells
                     agent_penalty += 0.5
 
+            # Coverage bonus: reward frontiers in poorly-explored zones
+            coverage_bonus = 0.0
+            if explored_ratio_at is not None:
+                local_ratio = explored_ratio_at(frontier_pos[0], frontier_pos[1])
+                # Invert: low ratio → high bonus (up to +5 for 0% explored)
+                coverage_bonus = (1.0 - local_ratio) * 5.0
+
             # Calculate utility.
             # Use dist^0.4 instead of dist^1 so that a large distant cluster
             # is properly preferred over a tiny cluster right next to the agent.
             # With linear distance: cluster_size=3 at dist=2 (score=1.0) beats
             # cluster_size=15 at dist=25 (score=0.58) — wrong direction.
             # With dist^0.4: those same examples score 1.24 vs 2.97 respectively.
-            utility = (cluster_size / (dist**0.4 + 1)) - agent_penalty * 2
+            utility = (cluster_size / (dist**0.4 + 1)) - agent_penalty * 2 + coverage_bonus
 
             if utility > best_utility:
                 best_utility = utility
