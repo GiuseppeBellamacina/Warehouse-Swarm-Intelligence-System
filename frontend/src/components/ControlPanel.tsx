@@ -1192,6 +1192,13 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       onChange={(v) => setRetrBeh({ jam_priority: v })}
                       disabled={isRunning}
                     />
+                    <Toggle
+                      label="Autonomous pickup"
+                      tip="Pick up objects on sight without waiting for coordinator assignment"
+                      value={overrides.retrieverBehavior.autonomous_pickup}
+                      onChange={(v) => setRetrBeh({ autonomous_pickup: v })}
+                      disabled={isRunning}
+                    />
                   </div>
                 )}
               </div>

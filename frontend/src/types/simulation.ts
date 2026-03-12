@@ -208,6 +208,7 @@ export interface RetrieverBehaviorParams {
   warehouse_congestion_reroute: boolean;
   warehouse_congestion_threshold: number;
   jam_priority: boolean;
+  autonomous_pickup: boolean;
 }
 
 export interface SimulationAgentsConfig {

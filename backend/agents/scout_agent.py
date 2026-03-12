@@ -410,7 +410,33 @@ class ScoutAgent(BaseAgent):
                     frontiers_to_use = far_frontiers
 
             nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
-            best = FrontierExplorer.select_best_frontier(frontiers_to_use, my_pos, nearby_positions)
+
+            # Build a coverage callback so select_best_frontier prefers
+            # frontiers in poorly-explored zones of the grid.
+            _local_map = self.local_map
+            _vis_exp = self.vision_explored
+            _is_map_known = getattr(self.model, "map_known", False)
+            _H, _W = _local_map.shape
+
+            def _explored_ratio(x: int, y: int) -> float:
+                """Return the explored ratio in a 7×7 window around (x, y)."""
+                r = 3
+                y0, y1 = max(0, y - r), min(_H, y + r + 1)
+                x0, x1 = max(0, x - r), min(_W, x + r + 1)
+                patch = _vis_exp[y0:y1, x0:x1] if _is_map_known else _local_map[y0:y1, x0:x1]
+                total = patch.size
+                if total == 0:
+                    return 1.0
+                explored = int(np.count_nonzero(patch))
+                return explored / total
+
+            best = FrontierExplorer.select_best_frontier(
+                frontiers_to_use,
+                my_pos,
+                nearby_positions,
+                grid_size=(self.model.grid.width, self.model.grid.height),
+                explored_ratio_at=_explored_ratio,
+            )
             if best:
                 # Only update target when the new best is genuinely far from the
                 # current one — prevents jittering between two nearby candidates.
@@ -436,6 +462,24 @@ class ScoutAgent(BaseAgent):
         # continuously re-sweeps the warehouse for newly-appeared objects.
         if self.target_position is None and self._STALE_COVERAGE_PATROL:
             self._pick_stale_coverage_target(my_pos)
+
+        # ---- Fallback 3: never idle — head to farthest walkable corner ----
+        # Guarantees the scout always has a destination even when every other
+        # heuristic fails (fully explored, no stale cells).
+        if self.target_position is None:
+            W, H = self.model.grid.width, self.model.grid.height
+            corners = [(0, 0), (W - 1, 0), (0, H - 1), (W - 1, H - 1)]
+            corners.sort(
+                key=lambda c: abs(c[0] - my_pos[0]) + abs(c[1] - my_pos[1]),
+                reverse=True,
+            )
+            for cx, cy in corners:
+                if (cx, cy) not in self.unreachable_targets:
+                    self.target_position = (cx, cy)
+                    self.path = []
+                    self.state = AgentState.MOVING_TO_TARGET
+                    self._target_lock_step = current_step
+                    break
 
     def _pick_stale_coverage_target(self, my_pos: Tuple[int, int]) -> None:
         """
@@ -537,8 +581,14 @@ class ScoutAgent(BaseAgent):
         return best_pos
 
     def _pick_unexplored_target(self, my_pos: Tuple[int, int]) -> None:
-        """Navigate towards a random UNKNOWN boundary cell via A* when no frontier found.
-        Uses numpy vectorisation instead of Python loops.
+        """Navigate towards the best UNKNOWN boundary cell.
+
+        Prefers boundary cells in the direction of the centroid of all
+        unexplored area — this naturally steers the scout toward the
+        largest unvisited region (e.g. if only the top half is explored,
+        the centroid of unknown cells sits in the bottom half).
+
+        Uses numpy vectorisation for performance.
         When map_known, uses vision_explored==0 instead of local_map==0.
         """
         # Boolean mask: cells considered "unknown" for exploration purposes
@@ -550,6 +600,12 @@ class ScoutAgent(BaseAgent):
             self.target_position = None
             self.state = AgentState.EXPLORING
             return
+
+        # Compute centroid of all unknown cells — this points toward the
+        # largest unexplored region of the map.
+        unk_ys, unk_xs = np.where(unknown_mask)
+        centroid_x = float(np.mean(unk_xs))
+        centroid_y = float(np.mean(unk_ys))
 
         # Pad and check 4-neighbours to find boundary cells
         # (unknown cells adjacent to at least one explored/scanned cell)
@@ -571,14 +627,33 @@ class ScoutAgent(BaseAgent):
         b_ys, b_xs = np.where(boundary_mask)
 
         if len(b_ys) == 0:
-            self.target_position = None
-            self.state = AgentState.EXPLORING
+            # No boundary cells — target the centroid of unknown area directly
+            cx, cy = int(centroid_x), int(centroid_y)
+            cx = max(0, min(cx, self.model.grid.width - 1))
+            cy = max(0, min(cy, self.model.grid.height - 1))
+            if self.model.grid.is_walkable(cx, cy) and (cx, cy) not in self.unreachable_targets:
+                self.target_position = (cx, cy)
+                self.path = []
+                self.state = AgentState.MOVING_TO_TARGET
+                self._target_lock_step = self.model.current_step
+            else:
+                self.target_position = None
+                self.state = AgentState.EXPLORING
             return
 
-        # Shuffle and try up to 20 candidates
-        indices = np.arange(len(b_ys))
-        np.random.shuffle(indices)
-        for idx in indices[:20]:
+        # Score each boundary cell: prefer cells close to the unknown-area
+        # centroid (pushes toward the biggest unexplored region).
+        # Add a small distance penalty from agent to avoid picking a cell
+        # very far away when a closer one is in the same direction.
+        b_xs_f = b_xs.astype(np.float32)
+        b_ys_f = b_ys.astype(np.float32)
+        dist_to_centroid = np.abs(b_xs_f - centroid_x) + np.abs(b_ys_f - centroid_y)
+        dist_from_agent = np.abs(b_xs_f - my_pos[0]) + np.abs(b_ys_f - my_pos[1])
+        # Lower score = better (close to centroid, not too far from agent)
+        scores = dist_to_centroid + dist_from_agent * 0.3
+        sort_idx = np.argsort(scores)
+
+        for idx in sort_idx[:30]:
             candidate = (int(b_xs[idx]), int(b_ys[idx]))
             if candidate in self.unreachable_targets:
                 continue

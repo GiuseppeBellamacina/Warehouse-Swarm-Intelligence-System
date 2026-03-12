@@ -325,6 +325,12 @@ class RetrieverBehaviorParams(BaseModel):
         default=True,
         description="In traffic jams, retrievers carrying more objects get movement priority",
     )
+    autonomous_pickup: bool = Field(
+        default=False,
+        description=(
+            "Retrievers pick up objects on sight" " without waiting for coordinator assignment"
+        ),
+    )
 
 
 class AgentRoleParams(BaseModel):
