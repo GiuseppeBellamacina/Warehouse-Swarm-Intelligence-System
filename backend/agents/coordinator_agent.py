@@ -683,16 +683,35 @@ class CoordinatorAgent(BaseAgent):
                 b_ys, b_xs = _np.where(boundary)
                 if len(b_ys) > 0:
                     dists = _np.abs(b_xs - my_pos[0]) + _np.abs(b_ys - my_pos[1])  # type: ignore[operator]
+
+                    # Global deconfliction: penalise boundary cells near any
+                    # peer's exploration target so the coordinator doesn't
+                    # redundantly explore the same zone as a scout/retriever.
+                    _cs_now = self.model.current_step
+                    _peer_pts = [
+                        pos
+                        for aid, pos in self.peer_explore_targets.items()
+                        if _cs_now - self.peer_explore_targets_step.get(aid, 0)
+                        <= self._explore_target_ttl
+                    ]
+                    peer_penalty = _np.zeros(len(b_ys), dtype=_np.float64)
+                    for pt in _peer_pts:
+                        pt_d = _np.abs(b_xs - pt[0]) + _np.abs(b_ys - pt[1])
+                        peer_penalty += _np.maximum(0, 10 - pt_d).astype(_np.float64) * 0.8
+
                     if has_work and centroid is not None:
                         # Has work: bias toward centroid so coordinator stays reachable
                         centroid_dists = _np.abs(b_xs - centroid[0]) + _np.abs(b_ys - centroid[1])  # type: ignore[operator]
-                        scores = dists.astype(_np.float64) + 0.5 * centroid_dists.astype(
-                            _np.float64
+                        scores = (
+                            dists.astype(_np.float64)
+                            + 0.5 * centroid_dists.astype(_np.float64)
+                            + peer_penalty
                         )
                         best_idx = int(_np.argmin(scores))
                     else:
-                        # No work: pure exploration — pick nearest frontier
-                        best_idx = int(_np.argmin(dists))
+                        # No work: pure exploration — avoid peer targets
+                        scores = dists.astype(_np.float64) + peer_penalty
+                        best_idx = int(_np.argmin(scores))
                     target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
                     if self.model.grid.is_walkable(*target):
                         self._explore_target = target

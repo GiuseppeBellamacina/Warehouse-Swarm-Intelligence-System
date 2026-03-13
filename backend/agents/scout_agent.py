@@ -92,6 +92,10 @@ class ScoutAgent(BaseAgent):
         self.last_failed_target: Optional[Tuple[int, int]] = None
         self.consecutive_failures_on_target = 0
 
+        # Exploration target — mirrors retriever/coordinator convention so the
+        # base_agent communication layer can broadcast it for area division.
+        self._explore_target: Optional[Tuple[int, int]] = None
+
         # Last known coordinator position — used to seek the coordinator when
         # discoveries are pending but no coordinator is currently in comms range.
         self.last_seen_coordinator_pos: Optional[Tuple[int, int]] = None
@@ -222,6 +226,7 @@ class ScoutAgent(BaseAgent):
                 )
                 self._scout_wh_station = station
                 self._scout_wh_step = "approach"
+                self._explore_target = None  # not exploring while recharging
                 self.state = AgentState.RECHARGING
                 self.target_position = station.get("entrance")
                 print(
@@ -279,6 +284,7 @@ class ScoutAgent(BaseAgent):
                     if self.target_position != self.last_seen_coordinator_pos:
                         self.target_position = self.last_seen_coordinator_pos
                         self.path = []
+                    self._explore_target = None  # not exploring while seeking
                     self.state = AgentState.MOVING_TO_TARGET
                     print(
                         f"{self.tag} SEEK-COORD: isolated for {steps_since_contact} steps, "
@@ -393,19 +399,33 @@ class ScoutAgent(BaseAgent):
                     for f in frontiers_to_use
                     if abs(f[0][0] - my_pos[0]) + abs(f[0][1] - my_pos[1]) >= min_dist
                 ]
-                # When ONLY nearby frontiers remain, skip them and jump directly to
-                # stale-coverage patrol.  This avoids the A→B→A oscillation between
-                # a handful of adjacent residual clusters.
-                # In map_known mode, DON'T skip nearby frontiers — they sit at the
-                # boundary of unscanned territory and should be explored directly.
+                # When ONLY nearby frontiers remain, check if any of them
+                # border genuinely unexplored territory.  If so, use them —
+                # they're real frontier cells that need visiting.  Only fall to
+                # stale-coverage patrol when all nearby frontiers sit in
+                # mostly-explored zones (residual edges, not real territory).
                 if not far_frontiers:
                     if not getattr(self.model, "map_known", False):
-                        if self._STALE_COVERAGE_PATROL:
+                        # Check if any nearby frontier is in a poorly-explored zone
+                        _lm = self.local_map
+                        _lH, _lW = _lm.shape
+                        def _nearby_explored(fx, fy):
+                            r = 5
+                            y0, y1 = max(0, fy - r), min(_lH, fy + r + 1)
+                            x0, x1 = max(0, fx - r), min(_lW, fx + r + 1)
+                            p = _lm[y0:y1, x0:x1]
+                            return int(np.count_nonzero(p)) / p.size if p.size else 1.0
+                        has_unexplored_nearby = any(
+                            _nearby_explored(f[0][0], f[0][1]) < 0.7
+                            for f in frontiers_to_use
+                        )
+                        if not has_unexplored_nearby and self._STALE_COVERAGE_PATROL:
                             self._pick_stale_coverage_target(my_pos)
                             if self.target_position is not None:
                                 return  # heading to a stale area
-                    # Fall through and use nearby frontiers
-                    frontiers_to_use = frontiers_to_use  # keep as-is (already near-only)
+                    # Fall through and use nearby frontiers (they border
+                    # genuinely unexplored territory)
+                    frontiers_to_use = frontiers_to_use
                 else:
                     frontiers_to_use = far_frontiers
 
@@ -419,8 +439,8 @@ class ScoutAgent(BaseAgent):
             _H, _W = _local_map.shape
 
             def _explored_ratio(x: int, y: int) -> float:
-                """Return the explored ratio in a 7×7 window around (x, y)."""
-                r = 3
+                """Return the explored ratio in a window around (x, y)."""
+                r = 3 if _is_map_known else 5
                 y0, y1 = max(0, y - r), min(_H, y + r + 1)
                 x0, x1 = max(0, x - r), min(_W, x + r + 1)
                 patch = _vis_exp[y0:y1, x0:x1] if _is_map_known else _local_map[y0:y1, x0:x1]
@@ -430,14 +450,48 @@ class ScoutAgent(BaseAgent):
                 explored = int(np.count_nonzero(patch))
                 return explored / total
 
+            # Build global peer-target list for area division.
+            # Exclude agents currently in comm range — handled by nearby_positions.
+            _cs = self.model.current_step
+            _nearby_ids = {a.unique_id for a in nearby}
+            _global_targets = [
+                pos
+                for aid, pos in self.peer_explore_targets.items()
+                if aid not in _nearby_ids
+                and _cs - self.peer_explore_targets_step.get(aid, 0)
+                <= self._explore_target_ttl
+            ]
+
             best = FrontierExplorer.select_best_frontier(
                 frontiers_to_use,
                 my_pos,
                 nearby_positions,
                 grid_size=(self.model.grid.width, self.model.grid.height),
                 explored_ratio_at=_explored_ratio,
+                all_peer_targets=_global_targets,
+                current_target=self.target_position,
             )
             if best:
+                # Shift target deeper into the unexplored region: compute
+                # centroid of unknown cells in a wide window around the
+                # frontier and aim there instead of the frontier edge.
+                _deep_r = 6
+                _fy, _fx = best[1], best[0]
+                _dy0 = max(0, _fy - _deep_r)
+                _dy1 = min(_H, _fy + _deep_r + 1)
+                _dx0 = max(0, _fx - _deep_r)
+                _dx1 = min(_W, _fx + _deep_r + 1)
+                _src = _vis_exp if _is_map_known else _local_map
+                _win = _src[_dy0:_dy1, _dx0:_dx1]
+                _unk_rows, _unk_cols = np.where(_win == 0)
+                if len(_unk_rows) > 3:
+                    _deep_x = int(np.mean(_unk_cols)) + _dx0
+                    _deep_y = int(np.mean(_unk_rows)) + _dy0
+                    _deep_x = max(0, min(_deep_x, _W - 1))
+                    _deep_y = max(0, min(_deep_y, _H - 1))
+                    if self.model.grid.is_walkable(_deep_x, _deep_y):
+                        best = (_deep_x, _deep_y)
+
                 # Only update target when the new best is genuinely far from the
                 # current one — prevents jittering between two nearby candidates.
                 if (
@@ -447,6 +501,7 @@ class ScoutAgent(BaseAgent):
                     > self._TARGET_HYSTERESIS
                 ):
                     self.target_position = best
+                    self._explore_target = best
                     self.path = []
                     self.consecutive_failures_on_target = 0
                     self._target_lock_step = current_step

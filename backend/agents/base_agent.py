@@ -125,6 +125,13 @@ class BaseAgent(Agent):
         self.coordinator_positions: Dict[int, Tuple[int, int]] = {}
         self.coordinator_positions_step: Dict[int, int] = {}
 
+        # Last-known exploration targets of ALL agents, learned via message relay.
+        # {agent_id: (x, y)} — used for global area division / deconfliction.
+        self.peer_explore_targets: Dict[int, Tuple[int, int]] = {}
+        self.peer_explore_targets_step: Dict[int, int] = {}
+        _EXPLORE_TARGET_TTL: int = 40  # entries older than this are pruned
+        self._explore_target_ttl = _EXPLORE_TARGET_TTL
+
         # Known warehouse locations
         self.known_warehouses: List[Tuple[int, int]] = []
 
@@ -385,6 +392,17 @@ class BaseAgent(Agent):
         # Create message — carry full knowledge with Stamped timestamps so every
         # recipient can apply "newest wins" and use this agent as a relay node.
         cs = self.model.current_step
+
+        # Build explore_targets dict: own target + relayed peers (TTL-filtered).
+        _et: Dict = {}
+        _own_target = getattr(self, "_explore_target", None)
+        if _own_target is not None:
+            _et[self.unique_id or 0] = Stamped(tuple(_own_target), cs)
+        for aid, pos in self.peer_explore_targets.items():
+            step = self.peer_explore_targets_step.get(aid, 0)
+            if cs - step <= self._explore_target_ttl:
+                _et[aid] = Stamped(tuple(pos), step)
+
         message = MapDataMessage(
             sender_id=self.unique_id or 0,
             timestamp=cs,
@@ -407,6 +425,7 @@ class BaseAgent(Agent):
                 for cid, p in self.coordinator_positions.items()
                 if p
             },
+            explore_targets=_et,
         )
 
         # Send to all nearby agents
@@ -510,6 +529,16 @@ class BaseAgent(Agent):
                     if step > self.coordinator_positions_step.get(cid, -1):
                         self.coordinator_positions[cid] = tuple(pos_val)
                         self.coordinator_positions_step[cid] = step
+
+                # --- explore_targets relay: Stamped(value=(x,y), step), newest wins ---
+                for aid, stamped in message.explore_targets.items():
+                    if aid == (self.unique_id or 0):
+                        continue  # skip own entry
+                    pos_val = stamped.value if isinstance(stamped, Stamped) else stamped[0]
+                    step = stamped.step if isinstance(stamped, Stamped) else stamped[1]
+                    if step > self.peer_explore_targets_step.get(aid, -1):
+                        self.peer_explore_targets[aid] = tuple(pos_val)
+                        self.peer_explore_targets_step[aid] = step
 
             elif isinstance(message, ObjectLocationMessage):
                 # Accept only if newer, not tombstoned, and not currently being collected

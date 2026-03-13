@@ -216,7 +216,7 @@ class ScoutBehaviorParams(BaseModel):
         description="Min Manhattan distance from other scouts for frontier selection",
     )
     target_hysteresis: int = Field(
-        default=15,
+        default=5,
         ge=0,
         description="Min Manhattan distance before switching to new frontier target",
     )
