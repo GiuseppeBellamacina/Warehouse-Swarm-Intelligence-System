@@ -128,6 +128,7 @@ class RetrieverAgent(BaseAgent):
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 40
+        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 15
 
     # ------------------------------------------------------------------
     # Sense
@@ -676,7 +677,15 @@ class RetrieverAgent(BaseAgent):
             # coordinator (or any other agent) to exchange map data.
             # Once within communication range the normal MapDataMessage
             # exchange delivers discoveries that self-assign can use.
-            if self._fruitless_explore_steps > self._SEEK_INFO_INTERVAL:
+            # In map_known mode use a much shorter interval: terrain is
+            # already known so frontier exploration adds little value —
+            # finding objects depends almost entirely on communication.
+            _seek_interval = (
+                self._SEEK_INFO_INTERVAL_MAP_KNOWN
+                if getattr(self.model, 'map_known', False)
+                else self._SEEK_INFO_INTERVAL
+            )
+            if self._fruitless_explore_steps > _seek_interval:
                 seek_target = self._find_nearest_info_source(pos_tuple)
                 if seek_target is not None:
                     self._explore_target = seek_target
@@ -700,7 +709,7 @@ class RetrieverAgent(BaseAgent):
             nearby_agents = self.get_nearby_agents(self.communication_radius)
             # If we found ANY nearby agents, map data was just exchanged —
             # reset fruitless counter so we don't keep seeking.
-            if nearby_agents and self._fruitless_explore_steps > self._SEEK_INFO_INTERVAL:
+            if nearby_agents and self._fruitless_explore_steps > _seek_interval:
                 self._fruitless_explore_steps = 0
             nearby_positions = []
             for a in nearby_agents:
@@ -846,8 +855,8 @@ class RetrieverAgent(BaseAgent):
                             self.target_position = best
                             if old_target != best:
                                 self.path = []
+                                print(f"{self.tag} EXPLORE: " f"frontier target {best}")
                             self.state = AgentState.EXPLORING
-                            print(f"{self.tag} EXPLORE: " f"frontier target {best}")
                             return
 
             # --- Strategy 2: centroid-biased walkable cell (fallback) ---
@@ -903,8 +912,8 @@ class RetrieverAgent(BaseAgent):
                 self.target_position = self._explore_target
                 if old_target != self._explore_target:
                     self.path = []
+                    print(f"{self.tag} EXPLORE: " f"centroid-biased target {self._explore_target}")
                 self.state = AgentState.EXPLORING
-                print(f"{self.tag} EXPLORE: " f"centroid-biased target {self._explore_target}")
 
             # --- Fallback 3: farthest walkable corner (never idle) ---
             # If the 25-cell search radius found nothing, head to the farthest

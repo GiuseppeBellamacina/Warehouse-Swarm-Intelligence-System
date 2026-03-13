@@ -161,8 +161,12 @@ class BaseAgent(Agent):
 
     @property
     def tag(self) -> str:
-        """Colored terminal label for this agent, e.g. \033[1;32m[SCOUT 0]\033[0m."""
-        return agent_tag(self.role, self.unique_id)
+        """Colored terminal label with step, e.g. [SCOUT 0 @42]."""
+        color = _AGENT_COLORS.get(self.role, "")
+        name = "COORD" if self.role == "coordinator" else self.role.upper()
+        reset = _RESET if color else ""
+        step = self.model.current_step
+        return f"{color}[{name} {self.unique_id} @{step}]{reset}"
 
     @property
     def energy_percentage(self) -> float:
