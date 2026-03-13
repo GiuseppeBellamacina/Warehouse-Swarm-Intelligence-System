@@ -338,7 +338,10 @@ class RetrieverAgent(BaseAgent):
             if self.task_queue:
                 next_target = self.task_queue[0]
                 # Skip if object is gone from the world
-                if next_target not in self.model.grid.objects and next_target not in self.known_objects:
+                if (
+                    next_target not in self.model.grid.objects
+                    and next_target not in self.known_objects
+                ):
                     self.task_queue.pop(0)
                     # Don't return — fall through to P4 so the retriever
                     # immediately self-assigns or explores instead of sitting
@@ -346,7 +349,9 @@ class RetrieverAgent(BaseAgent):
                 else:
                     # Claim the object
                     pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                    distance = abs(next_target[0] - pos_tuple[0]) + abs(next_target[1] - pos_tuple[1])
+                    distance = abs(next_target[0] - pos_tuple[0]) + abs(
+                        next_target[1] - pos_tuple[1]
+                    )
                     can_claim = self.model.comm_manager.try_claim_object(
                         next_target, self.unique_id, self.model.current_step, distance, self.energy
                     )
@@ -682,7 +687,7 @@ class RetrieverAgent(BaseAgent):
             # finding objects depends almost entirely on communication.
             _seek_interval = (
                 self._SEEK_INFO_INTERVAL_MAP_KNOWN
-                if getattr(self.model, 'map_known', False)
+                if getattr(self.model, "map_known", False)
                 else self._SEEK_INFO_INTERVAL
             )
 
@@ -721,10 +726,7 @@ class RetrieverAgent(BaseAgent):
                         if entrance:
                             for dx, dy in [(0, -1), (-1, 0), (1, 0), (0, 1)]:
                                 nx, ny = entrance[0] + dx, entrance[1] + dy
-                                if (
-                                    self.model.grid.get_cell_type(nx, ny)
-                                    == CellType.FREE
-                                ):
+                                if self.model.grid.get_cell_type(nx, ny) == CellType.FREE:
                                     seek_target = (nx, ny)
                                     break
                     # Only re-assign if target actually changed — avoids
@@ -870,7 +872,7 @@ class RetrieverAgent(BaseAgent):
                         import numpy as np
 
                         _H, _W = self.local_map.shape
-                        _map_known = getattr(self.model, 'map_known', False)
+                        _map_known = getattr(self.model, "map_known", False)
                         _has_scouts = len(self.model.scouts) > 0
                         _comm_weight = 0.6 if _has_scouts else 1.0
 
