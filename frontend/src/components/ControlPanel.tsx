@@ -844,12 +844,13 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       disabled={isRunning}
                     />
                     <Slider
-                      label="Zone divisions"
-                      tip="NxN macro-zone grid for exploration routing (1 = disabled). Higher values = smaller zones, more targeted exploration"
+                      label="Exploration zones"
+                      tip="Number of macro-zones the map is split into for exploration routing (1 = disabled, use even values: 2/4/6/8)"
                       value={overrides.scoutBehavior.zone_divisions}
                       onChange={(v) => setScoutBeh({ zone_divisions: v })}
                       min={1}
                       max={8}
+                      step={1}
                       disabled={isRunning}
                     />
                     <Slider

@@ -149,12 +149,37 @@ class ScoutAgent(BaseAgent):
 
     # ── Zone-based macro routing helpers ──────────────────────────────
 
+    def _zone_grid(self) -> Tuple[int, int]:
+        """Return (n_cols, n_rows) for the current zone_divisions setting.
+
+        ``zone_divisions`` is the *total number* of zones.  This method
+        finds the (cols, rows) factorisation that makes each zone as
+        square as possible given the grid dimensions.
+        """
+        n = self._ZONE_DIVISIONS
+        if n <= 1:
+            return (1, 1)
+        W, H = self.model.grid.width, self.model.grid.height
+        best_cols, best_rows = 1, n
+        best_diff = float("inf")
+        for c in range(1, n + 1):
+            if n % c == 0:
+                r = n // c
+                # aspect ratio of each zone cell
+                zw = W / c
+                zh = H / r
+                diff = abs(zw - zh)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_cols, best_rows = c, r
+        return best_cols, best_rows
+
     def _get_zone_bounds(self, zone: Tuple[int, int]) -> Tuple[int, int, int, int]:
         """Return (x0, y0, x1, y1) cell bounds for the given zone index."""
         W, H = self.model.grid.width, self.model.grid.height
-        n = self._ZONE_DIVISIONS
-        zone_w = W / n
-        zone_h = H / n
+        n_cols, n_rows = self._zone_grid()
+        zone_w = W / n_cols
+        zone_h = H / n_rows
         x0 = int(zone[0] * zone_w)
         y0 = int(zone[1] * zone_h)
         x1 = min(int((zone[0] + 1) * zone_w), W)
@@ -166,26 +191,26 @@ class ScoutAgent(BaseAgent):
     ) -> Optional[Tuple[int, int]]:
         """Pick the zone with the most unexplored area.
 
-        Divides the map into ``_ZONE_DIVISIONS × _ZONE_DIVISIONS`` blocks and
-        returns the ``(zi, zj)`` index of the best zone to explore.
+        Divides the map into ``zone_divisions`` blocks (cols × rows) and
+        returns the ``(col, row)`` index of the best zone to explore.
 
         Anti-flip-flop: the scout must stay in a zone for at least
         ``_TARGET_LOCK_DURATION * 2`` steps before it can switch, unless
         the zone is fully explored (<5 % unexplored).
         """
         W, H = self.model.grid.width, self.model.grid.height
-        n = self._ZONE_DIVISIONS
-        if n <= 1:
+        n_cols, n_rows = self._zone_grid()
+        if n_cols <= 1 and n_rows <= 1:
             return (0, 0)
-        zone_w = W / n
-        zone_h = H / n
+        zone_w = W / n_cols
+        zone_h = H / n_rows
         _is_mk = getattr(self.model, "map_known", False)
         src = self.vision_explored if _is_mk else self.local_map
 
         # Collect (zone_index, unexplored_ratio, dist_from_agent) for every zone
         zones: List[Tuple[Tuple[int, int], float, float]] = []
-        for zi in range(n):
-            for zj in range(n):
+        for zi in range(n_cols):
+            for zj in range(n_rows):
                 x0 = int(zi * zone_w)
                 y0 = int(zj * zone_h)
                 x1 = min(int((zi + 1) * zone_w), W)
@@ -204,16 +229,7 @@ class ScoutAgent(BaseAgent):
         if not zones:
             return None
 
-        # Log zone stats periodically (every 10 steps)
         cs = self.model.current_step
-        if cs % 10 == 0:
-            zone_str = "  ".join(
-                f"{z[0]}:{z[1]*100:.0f}%" for z in zones
-            )
-            print(
-                f"{self.tag} ZONE-STATS step={cs} "
-                f"cur={self._current_zone} zones=[{zone_str}]"
-            )
 
         # Anti-flip-flop: minimum stay in current zone
         min_stay = self._TARGET_LOCK_DURATION * 2
@@ -510,13 +526,13 @@ class ScoutAgent(BaseAgent):
             if new_zone is not None and new_zone != self._current_zone:
                 old_label = str(self._current_zone) if self._current_zone else "None"
                 # Log full zone stats on every switch
-                _n = self._ZONE_DIVISIONS
-                _zw = self.model.grid.width / _n
-                _zh = self.model.grid.height / _n
+                _zc, _zr = self._zone_grid()
+                _zw = self.model.grid.width / _zc
+                _zh = self.model.grid.height / _zr
                 _zsrc = self.vision_explored
                 _zparts = []
-                for _zi in range(_n):
-                    for _zj in range(_n):
+                for _zi in range(_zc):
+                    for _zj in range(_zr):
                         _zx0 = int(_zi * _zw)
                         _zy0 = int(_zj * _zh)
                         _zx1 = min(int((_zi + 1) * _zw), self.model.grid.width)
@@ -530,6 +546,7 @@ class ScoutAgent(BaseAgent):
                     f"{self.tag} ZONE-SWITCH step={current_step}: "
                     f"{old_label} → {new_zone}  "
                     f"(stayed {current_step - self._zone_switch_step} steps)  "
+                    f"grid={_zc}x{_zr}  "
                     f"[{'  '.join(_zparts)}]"
                 )
                 self._current_zone = new_zone
