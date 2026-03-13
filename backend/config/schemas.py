@@ -246,10 +246,10 @@ class ScoutBehaviorParams(BaseModel):
         default=5, ge=1, description="Min contiguous unknown cells to qualify as a frontier cluster"
     )
     zone_divisions: int = Field(
-        default=3,
+        default=6,
         ge=1,
         le=8,
-        description="NxN zone grid for macro-level exploration routing (1 disables zone routing)",
+        description="Number of macro-zones for exploration routing (1 disables, 2/4/6/8 recommended)",
     )
 
 
