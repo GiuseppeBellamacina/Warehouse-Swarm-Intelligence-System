@@ -29,7 +29,6 @@ from backend.config.schemas import (
     SimulationAgentsConfig,
 )
 
-
 # ── SVG chart renderer (mirrors frontend BenchmarkPanel) ─────────────────────
 
 CHART_COLORS = [
@@ -291,8 +290,7 @@ def _svg_table(
 
     # Header background
     parts.append(
-        f'<rect x="0" y="{base_y + pad_y}" width="{total_w}" height="{row_h}" '
-        f'fill="#111827"/>'
+        f'<rect x="0" y="{base_y + pad_y}" width="{total_w}" height="{row_h}" ' f'fill="#111827"/>'
     )
 
     # Header text
@@ -316,9 +314,7 @@ def _svg_table(
         y = base_y + pad_y + (ri + 1) * row_h
         # Zebra
         if ri % 2 == 1:
-            parts.append(
-                f'<rect x="0" y="{y}" width="{total_w}" height="{row_h}" fill="#111827"/>'
-            )
+            parts.append(f'<rect x="0" y="{y}" width="{total_w}" height="{row_h}" fill="#111827"/>')
         # Row divider
         parts.append(
             f'<line x1="0" x2="{total_w}" y1="{y + row_h}" y2="{y + row_h}" '
@@ -350,6 +346,7 @@ def _svg_table(
 
 # ── Snapshot collection ──────────────────────────────────────────────────────
 
+
 def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsConfig):
     """Run a single simulation, collect per-step snapshots."""
     mgr = SimulationManager()
@@ -361,16 +358,20 @@ def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsCo
     t0 = time.perf_counter()
     while model.running:
         model.step()
-        snapshots.append({
-            "step": model.current_step,
-            "objects_retrieved": model.objects_retrieved,
-            "total_objects": model.total_objects,
-            "average_energy": float(
-                np.mean([getattr(a, "energy", 0) for a in model.agents])
-            ) if model.agents else 0.0,
-            "active_agents": len([a for a in model.agents if getattr(a, "energy", 0) > 0]),
-            "messages_sent": model.comm_manager.messages_sent,
-        })
+        snapshots.append(
+            {
+                "step": model.current_step,
+                "objects_retrieved": model.objects_retrieved,
+                "total_objects": model.total_objects,
+                "average_energy": (
+                    float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
+                    if model.agents
+                    else 0.0
+                ),
+                "active_agents": len([a for a in model.agents if getattr(a, "energy", 0) > 0]),
+                "messages_sent": model.comm_manager.messages_sent,
+            }
+        )
     elapsed = time.perf_counter() - t0
 
     steps = model.current_step
@@ -384,6 +385,7 @@ def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsCo
 
 
 # ── Test configurations ─────────────────────────────────────────────────────
+
 
 def _default_agents(**overrides) -> SimulationAgentsConfig:
     """Return default SimulationAgentsConfig with optional field overrides."""
@@ -399,7 +401,9 @@ CONFIGS = [
         _default_agents(
             scouts=AgentRoleParams(count=0),
             coordinators=AgentRoleParams(count=0),
-            retrievers=AgentRoleParams(count=5, vision_radius=3, communication_radius=3, carrying_capacity=2),
+            retrievers=AgentRoleParams(
+                count=5, vision_radius=3, communication_radius=3, carrying_capacity=2
+            ),
         ),
     ),
     (
@@ -407,7 +411,9 @@ CONFIGS = [
         _default_agents(
             scouts=AgentRoleParams(count=0),
             coordinators=AgentRoleParams(count=0),
-            retrievers=AgentRoleParams(count=5, vision_radius=3, communication_radius=3, carrying_capacity=2),
+            retrievers=AgentRoleParams(
+                count=5, vision_radius=3, communication_radius=3, carrying_capacity=2
+            ),
             map_known=True,
         ),
     ),
@@ -474,11 +480,13 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
         series = []
         for i, (name, _steps, snapshots) in enumerate(results):
             ds = _downsample(snapshots)
-            series.append({
-                "label": name,
-                "color": _pick_color(i),
-                "data": [{"x": sn["step"], "y": cdef["extract"](sn)} for sn in ds],
-            })
+            series.append(
+                {
+                    "label": name,
+                    "color": _pick_color(i),
+                    "data": [{"x": sn["step"], "y": cdef["extract"](sn)} for sn in ds],
+                }
+            )
         svg = _svg_line_chart(
             f"{cdef['title']}  —  {map_name}",
             series,
@@ -515,9 +523,11 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     verbose = "-v" in sys.argv
     import builtins
+
     _real_print = builtins.print
 
     for grid_file in GRID_FILES:

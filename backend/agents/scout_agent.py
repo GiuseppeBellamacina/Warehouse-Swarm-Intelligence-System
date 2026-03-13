@@ -186,9 +186,7 @@ class ScoutAgent(BaseAgent):
         y1 = min(int((zone[1] + 1) * zone_h), H)
         return x0, y0, x1, y1
 
-    def _select_target_zone(
-        self, my_pos: Tuple[int, int]
-    ) -> Optional[Tuple[int, int]]:
+    def _select_target_zone(self, my_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
         """Pick the zone with the most unexplored area.
 
         Divides the map into ``zone_divisions`` blocks (cols × rows) and
@@ -233,10 +231,7 @@ class ScoutAgent(BaseAgent):
 
         # Anti-flip-flop: minimum stay in current zone
         min_stay = self._TARGET_LOCK_DURATION * 2
-        if (
-            self._current_zone is not None
-            and cs - self._zone_switch_step < min_stay
-        ):
+        if self._current_zone is not None and cs - self._zone_switch_step < min_stay:
             cur = next((z for z in zones if z[0] == self._current_zone), None)
             if cur and cur[1] > 0.05:
                 return self._current_zone
@@ -554,9 +549,7 @@ class ScoutAgent(BaseAgent):
             if self._current_zone is not None and frontiers_to_use:
                 zx0, zy0, zx1, zy1 = self._get_zone_bounds(self._current_zone)
                 zone_frontiers = [
-                    f
-                    for f in frontiers_to_use
-                    if zx0 <= f[0][0] < zx1 and zy0 <= f[0][1] < zy1
+                    f for f in frontiers_to_use if zx0 <= f[0][0] < zx1 and zy0 <= f[0][1] < zy1
                 ]
                 if zone_frontiers:
                     frontiers_to_use = zone_frontiers
@@ -585,10 +578,7 @@ class ScoutAgent(BaseAgent):
             elif self._STALE_COVERAGE_PATROL:
                 # All frontiers are nearby — check if they're in
                 # mostly-explored zones (residual edges).
-                has_unexplored = any(
-                    _zone_ratio(f[0][0], f[0][1]) < 0.7
-                    for f in frontiers_to_use
-                )
+                has_unexplored = any(_zone_ratio(f[0][0], f[0][1]) < 0.7 for f in frontiers_to_use)
                 if not has_unexplored:
                     self._pick_stale_coverage_target(my_pos)
                     if self.target_position is not None:
@@ -625,8 +615,7 @@ class ScoutAgent(BaseAgent):
                 pos
                 for aid, pos in self.peer_explore_targets.items()
                 if aid not in _nearby_ids
-                and _cs - self.peer_explore_targets_step.get(aid, 0)
-                <= self._explore_target_ttl
+                and _cs - self.peer_explore_targets_step.get(aid, 0) <= self._explore_target_ttl
             ]
 
             best = FrontierExplorer.select_best_frontier(
@@ -687,19 +676,13 @@ class ScoutAgent(BaseAgent):
                 cy = int(np.mean(unk_ys)) + zy0
                 cx = max(0, min(cx, self.model.grid.width - 1))
                 cy = max(0, min(cy, self.model.grid.height - 1))
-                if (
-                    self.model.grid.is_walkable(cx, cy)
-                    and (cx, cy) not in self.unreachable_targets
-                ):
+                if self.model.grid.is_walkable(cx, cy) and (cx, cy) not in self.unreachable_targets:
                     self.target_position = (cx, cy)
                     self._explore_target = (cx, cy)
                     self.path = []
                     self._target_lock_step = current_step
                     self.state = AgentState.MOVING_TO_TARGET
-                    print(
-                        f"{self.tag} ZONE: centroid ({cx},{cy}) "
-                        f"in zone {self._current_zone}"
-                    )
+                    print(f"{self.tag} ZONE: centroid ({cx},{cy}) " f"in zone {self._current_zone}")
                     return
 
         # ---- Fallback 1: navigate towards a random unknown boundary cell ----
