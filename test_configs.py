@@ -19,6 +19,7 @@ from backend.api.simulation_manager import SimulationManager
 from backend.config.schemas import (
     AgentRoleParams,
     GridScenarioConfig,
+    ScoutBehaviorParams,
     SimulationAgentsConfig,
 )
 
@@ -56,6 +57,7 @@ def _default_agents(**overrides) -> SimulationAgentsConfig:
 
 
 CONFIGS = [
+    # ── seek_coordinator=True (default) ──
     # 1S / 1C / 3R  —  all defaults, unknown map
     ("1S/1C/3R unknown", _default_agents()),
     # 1S / 1C / 3R  —  all defaults, map known
@@ -78,6 +80,17 @@ CONFIGS = [
             retrievers=AgentRoleParams(count=5, vision_radius=3, communication_radius=3, carrying_capacity=2),
             map_known=True,
         ),
+    ),
+    # ── seek_coordinator=False ──
+    # 1S / 1C / 3R  —  no seek, unknown map
+    (
+        "1S/1C/3R unknown  no-seek",
+        _default_agents(scout_behavior=ScoutBehaviorParams(seek_coordinator=False)),
+    ),
+    # 1S / 1C / 3R  —  no seek, map known
+    (
+        "1S/1C/3R map_known no-seek",
+        _default_agents(scout_behavior=ScoutBehaviorParams(seek_coordinator=False), map_known=True),
     ),
 ]
 
