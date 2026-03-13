@@ -4,8 +4,8 @@ Standard test suite — run all reference configurations and report results.
 Uses the same SimulationManager and SimulationAgentsConfig defaults used by
 the backend API, so results are identical to the web UI.
 
-Generates SVG charts (same visual style as the frontend BenchmarkPanel) and
-saves them to experiments/<map>/.
+Generates PNG charts (same visual style as the frontend BenchmarkPanel) and
+saves them to docs/benchmarks/<map>/.
 
 Usage:
     python test_configs.py              # quick summary
@@ -18,6 +18,7 @@ import sys
 import time
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, ".")
 
@@ -29,7 +30,7 @@ from backend.config.schemas import (
     SimulationAgentsConfig,
 )
 
-# ── SVG chart renderer (mirrors frontend BenchmarkPanel) ─────────────────────
+# ── PNG chart renderer (Pillow — mirrors frontend BenchmarkPanel) ────────────
 
 CHART_COLORS = [
     "#3b82f6",  # blue
@@ -57,291 +58,291 @@ def _pick_color(i: int) -> str:
     return CHART_COLORS[i % len(CHART_COLORS)]
 
 
-def _svg_line_chart(
+def _hex(c: str) -> tuple[int, int, int]:
+    """Convert hex colour to RGB tuple."""
+    c = c.lstrip("#")
+    return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+
+
+def _font(size: int, mono: bool = False):
+    """Load a TrueType font with fallback to Pillow default."""
+    names = (
+        ["consola.ttf", "Consolas.ttf", "DejaVuSansMono.ttf"]
+        if mono
+        else ["arial.ttf", "Arial.ttf", "DejaVuSans.ttf"]
+    )
+    for n in names:
+        try:
+            return ImageFont.truetype(n, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def _tw(draw: ImageDraw.ImageDraw, text: str, font) -> int:
+    """Measure text width."""
+    bb = draw.textbbox((0, 0), text, font=font)
+    return int(bb[2] - bb[0])
+
+
+def _paste_rotated(
+    img: Image.Image, text: str, font, fill: tuple, cx: int, cy: int, angle: int = 90
+) -> None:
+    """Paste text rotated CCW by *angle* degrees, centred at (cx, cy)."""
+    tmp = Image.new("RGBA", (800, 80), (0, 0, 0, 0))
+    d = ImageDraw.Draw(tmp)
+    bb = d.textbbox((0, 0), text, font=font)
+    tw, th = bb[2] - bb[0], bb[3] - bb[1]
+    d.text((-bb[0], -bb[1]), text, fill=(*fill, 255), font=font)
+    cropped = tmp.crop((0, 0, tw, th))
+    rotated = cropped.rotate(angle, expand=True, resample=Image.Resampling.BICUBIC)
+    x, y = cx - rotated.width // 2, cy - rotated.height // 2
+    img.paste(rotated, (x, y), rotated)
+
+
+# ── Pillow chart savers ──────────────────────────────────────────────────────
+
+
+def _save_line_chart(
+    path: str,
     title: str,
     series: list[dict],
     y_label: str,
     x_label: str = "Step",
     width: int = 620,
     height: int = 320,
-) -> str:
-    """Generate an SVG line chart string identical to the frontend SVGChart."""
-    t = THEME
-    pad = {"top": 40, "right": 20, "bottom": 52, "left": 58}
-    w = width - pad["left"] - pad["right"]
-    h = height - pad["top"] - pad["bottom"]
+    scale: int = 2,
+) -> None:
+    """Draw a line chart with Pillow and save as PNG."""
+    S = scale
+    W, H = width * S, height * S
+    img = Image.new("RGB", (W, H), _hex(THEME["bg"]))
+    draw = ImageDraw.Draw(img)
+    ft, fs, fl = _font(13 * S), _font(10 * S), _font(9 * S)
 
-    x_min, x_max, y_min, y_max = float("inf"), float("-inf"), float("inf"), float("-inf")
-    for s in series:
-        for d in s["data"]:
-            x_min = min(x_min, d["x"])
-            x_max = max(x_max, d["x"])
-            y_min = min(y_min, d["y"])
-            y_max = max(y_max, d["y"])
-    if not (x_min < float("inf")):
-        x_min, x_max, y_min, y_max = 0, 1, 0, 1
-    y_range = (y_max - y_min) or 1
-    y_min = max(0, y_min - y_range * 0.05)
-    y_max = y_max + y_range * 0.05
-    x_range = (x_max - x_min) or 1
+    pt, pr, pb, pl = 40 * S, 20 * S, 52 * S, 58 * S
+    cw, ch = W - pl - pr, H - pt - pb
 
-    def sx(x):
-        return pad["left"] + ((x - x_min) / x_range) * w
+    # Data bounds
+    xn = yn = float("inf")
+    xx = yx = float("-inf")
+    for sr in series:
+        for d in sr["data"]:
+            xn, xx = min(xn, d["x"]), max(xx, d["x"])
+            yn, yx = min(yn, d["y"]), max(yx, d["y"])
+    if xn > xx:
+        xn, xx, yn, yx = 0, 1, 0, 1
+    yr = (yx - yn) or 1
+    yn, yx = max(0, yn - yr * 0.05), yx + yr * 0.05
+    xr = (xx - xn) or 1
 
-    def sy(y):
-        return pad["top"] + h - ((y - y_min) / ((y_max - y_min) or 1)) * h
+    def sx(x: float) -> int:
+        return pl + int((x - xn) / xr * cw)
 
-    y_ticks = [y_min + (y_max - y_min) * i / 4 for i in range(5)]
-    x_ticks = [round(x_min + x_range * i / 4) for i in range(5)]
+    def sy(y: float) -> int:
+        return pt + ch - int((y - yn) / ((yx - yn) or 1) * ch)
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}" style="background:{t["bg"]};border-radius:8px">',
-        # Title
-        f'<text x="{width / 2}" y="22" text-anchor="middle" fill="{t["title"]}" '
-        f'font-size="13" font-weight="700">{title}</text>',
-        # Y axis label
-        f'<text x="14" y="{pad["top"] + h / 2}" text-anchor="middle" fill="{t["axisLabel"]}" '
-        f'font-size="10" transform="rotate(-90,14,{pad["top"] + h / 2})">{y_label}</text>',
-        # X axis label
-        f'<text x="{pad["left"] + w / 2}" y="{height - 6}" text-anchor="middle" '
-        f'fill="{t["axisLabel"]}" font-size="10">{x_label}</text>',
-    ]
+    # Title
+    tw_t = _tw(draw, title, ft)
+    draw.text(((W - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
 
-    # Grid + tick labels
-    for v in y_ticks:
+    # Y label (vertical)
+    _paste_rotated(img, y_label, fs, _hex(THEME["axisLabel"]), 10 * S, pt + ch // 2)
+    draw = ImageDraw.Draw(img)
+
+    # X label
+    xw = _tw(draw, x_label, fs)
+    draw.text(((W - xw) // 2, H - 12 * S), x_label, fill=_hex(THEME["axisLabel"]), font=fs)
+
+    # Grid + ticks
+    gc, tc = _hex(THEME["grid"]), _hex(THEME["tickLabel"])
+    for i in range(5):
+        v = yn + (yx - yn) * i / 4
+        yy = sy(v)
+        draw.line([(pl, yy), (pl + cw, yy)], fill=gc, width=1)
         lbl = str(int(v)) if v == int(v) else f"{v:.1f}"
-        parts.append(
-            f'<line x1="{pad["left"]}" x2="{pad["left"] + w}" y1="{sy(v):.1f}" '
-            f'y2="{sy(v):.1f}" stroke="{t["grid"]}" stroke-width="0.5"/>'
-        )
-        parts.append(
-            f'<text x="{pad["left"] - 6}" y="{sy(v) + 3:.1f}" text-anchor="end" '
-            f'fill="{t["tickLabel"]}" font-size="9">{lbl}</text>'
-        )
-    for v in x_ticks:
-        parts.append(
-            f'<line x1="{sx(v):.1f}" x2="{sx(v):.1f}" y1="{pad["top"]}" '
-            f'y2="{pad["top"] + h}" stroke="{t["grid"]}" stroke-width="0.5"/>'
-        )
-        parts.append(
-            f'<text x="{sx(v):.1f}" y="{pad["top"] + h + 14}" text-anchor="middle" '
-            f'fill="{t["tickLabel"]}" font-size="9">{v}</text>'
-        )
+        lw = _tw(draw, lbl, fl)
+        draw.text((pl - lw - 4 * S, yy - 5 * S), lbl, fill=tc, font=fl)
+    for i in range(5):
+        v = round(xn + xr * i / 4)
+        vx = sx(v)
+        draw.line([(vx, pt), (vx, pt + ch)], fill=gc, width=1)
+        lbl = str(int(v))
+        lw = _tw(draw, lbl, fl)
+        draw.text((vx - lw // 2, pt + ch + 3 * S), lbl, fill=tc, font=fl)
 
     # Axes
-    parts.append(
-        f'<line x1="{pad["left"]}" x2="{pad["left"]}" y1="{pad["top"]}" '
-        f'y2="{pad["top"] + h}" stroke="{t["axis"]}" stroke-width="1"/>'
-    )
-    parts.append(
-        f'<line x1="{pad["left"]}" x2="{pad["left"] + w}" y1="{pad["top"] + h}" '
-        f'y2="{pad["top"] + h}" stroke="{t["axis"]}" stroke-width="1"/>'
-    )
+    ac = _hex(THEME["axis"])
+    draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
+    draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
 
-    # Lines
-    for s in series:
-        if len(s["data"]) < 2:
+    # Data lines
+    for sr in series:
+        if len(sr["data"]) < 2:
             continue
-        pts = " ".join(f"{sx(d['x']):.1f},{sy(d['y']):.1f}" for d in s["data"])
-        parts.append(
-            f'<polyline points="{pts}" fill="none" stroke="{s["color"]}" '
-            f'stroke-width="1.5" stroke-linejoin="round"/>'
-        )
+        pts = [(sx(d["x"]), sy(d["y"])) for d in sr["data"]]
+        draw.line(pts, fill=_hex(sr["color"]), width=S + 1)
 
     # Legend
-    for i, s in enumerate(series):
-        lx = pad["left"] + 8
-        ly = pad["top"] + 10 + i * 14
-        parts.append(
-            f'<line x1="{lx}" x2="{lx + 16}" y1="{ly}" y2="{ly}" '
-            f'stroke="{s["color"]}" stroke-width="2"/>'
-        )
-        parts.append(
-            f'<text x="{lx + 20}" y="{ly + 3}" fill="{t["legend"]}" '
-            f'font-size="9">{s["label"]}</text>'
-        )
+    lc = _hex(THEME["legend"])
+    for i, sr in enumerate(series):
+        lx = pl + 8 * S
+        ly = pt + 10 * S + i * 14 * S
+        draw.line([(lx, ly), (lx + 16 * S, ly)], fill=_hex(sr["color"]), width=S + 1)
+        draw.text((lx + 20 * S, ly - 5 * S), sr["label"], fill=lc, font=fl)
 
-    parts.append("</svg>")
-    return "\n".join(parts)
+    img.save(path, "PNG")
 
 
-def _svg_bar_chart(
+def _save_bar_chart(
+    path: str,
     title: str,
     labels: list[str],
     values: list[int],
     colors: list[str],
     y_label: str = "Steps",
     width: int = 620,
-    height: int = 320,
-) -> str:
-    """Generate an SVG bar chart for comparing total steps across configs."""
-    t = THEME
-    pad = {"top": 40, "right": 20, "bottom": 80, "left": 58}
-    w = width - pad["left"] - pad["right"]
-    h = height - pad["top"] - pad["bottom"]
+    height: int = 360,
+    scale: int = 2,
+) -> None:
+    """Draw a bar chart with Pillow and save as PNG."""
+    S = scale
+    W, H = width * S, height * S
+    img = Image.new("RGB", (W, H), _hex(THEME["bg"]))
+    draw = ImageDraw.Draw(img)
+    ft, fs, fl, fb = _font(13 * S), _font(10 * S), _font(8 * S), _font(10 * S)
 
-    y_max = max(values) * 1.1 if values else 1
+    pt, pr, pb, pl = 40 * S, 20 * S, 100 * S, 58 * S
+    cw, ch = W - pl - pr, H - pt - pb
 
-    def sy(y):
-        return pad["top"] + h - (y / y_max) * h
+    ym = max(values) * 1.12 if values else 1
 
-    bar_gap = 8
-    bar_w = (w - bar_gap * (len(labels) + 1)) / max(len(labels), 1)
+    def sy(v: float) -> int:
+        return pt + ch - int(v / ym * ch)
 
-    y_ticks = [y_max * i / 4 for i in range(5)]
+    gap = 8 * S
+    n = max(len(labels), 1)
+    bw = (cw - gap * (n + 1)) // n
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}" style="background:{t["bg"]};border-radius:8px">',
-        f'<text x="{width / 2}" y="22" text-anchor="middle" fill="{t["title"]}" '
-        f'font-size="13" font-weight="700">{title}</text>',
-        f'<text x="14" y="{pad["top"] + h / 2}" text-anchor="middle" fill="{t["axisLabel"]}" '
-        f'font-size="10" transform="rotate(-90,14,{pad["top"] + h / 2})">{y_label}</text>',
-    ]
+    # Title
+    tw_t = _tw(draw, title, ft)
+    draw.text(((W - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
+
+    # Y label
+    _paste_rotated(img, y_label, fs, _hex(THEME["axisLabel"]), 10 * S, pt + ch // 2)
+    draw = ImageDraw.Draw(img)
 
     # Grid
-    for v in y_ticks:
-        lbl = str(int(v))
-        parts.append(
-            f'<line x1="{pad["left"]}" x2="{pad["left"] + w}" y1="{sy(v):.1f}" '
-            f'y2="{sy(v):.1f}" stroke="{t["grid"]}" stroke-width="0.5"/>'
-        )
-        parts.append(
-            f'<text x="{pad["left"] - 6}" y="{sy(v) + 3:.1f}" text-anchor="end" '
-            f'fill="{t["tickLabel"]}" font-size="9">{lbl}</text>'
-        )
+    gc, tc = _hex(THEME["grid"]), _hex(THEME["tickLabel"])
+    for i in range(5):
+        v = round(ym * i / 4)
+        yy = sy(v)
+        draw.line([(pl, yy), (pl + cw, yy)], fill=gc, width=1)
+        lbl = str(v)
+        lw = _tw(draw, lbl, fl)
+        draw.text((pl - lw - 4 * S, yy - 4 * S), lbl, fill=tc, font=fl)
 
     # Axes
-    parts.append(
-        f'<line x1="{pad["left"]}" x2="{pad["left"]}" y1="{pad["top"]}" '
-        f'y2="{pad["top"] + h}" stroke="{t["axis"]}" stroke-width="1"/>'
-    )
-    parts.append(
-        f'<line x1="{pad["left"]}" x2="{pad["left"] + w}" y1="{pad["top"] + h}" '
-        f'y2="{pad["top"] + h}" stroke="{t["axis"]}" stroke-width="1"/>'
-    )
+    ac = _hex(THEME["axis"])
+    draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
+    draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
 
-    # Bars
+    # Bars + labels
     for i, (lbl, val, col) in enumerate(zip(labels, values, colors)):
-        bx = pad["left"] + bar_gap + i * (bar_w + bar_gap)
+        bx = pl + gap + i * (bw + gap)
         by = sy(val)
-        bh = pad["top"] + h - by
-        parts.append(
-            f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w:.1f}" height="{bh:.1f}" '
-            f'fill="{col}" rx="3"/>'
-        )
+        draw.rectangle([(bx, by), (bx + bw, pt + ch)], fill=_hex(col))
         # Value on top
-        parts.append(
-            f'<text x="{bx + bar_w / 2:.1f}" y="{by - 4:.1f}" text-anchor="middle" '
-            f'fill="{t["legend"]}" font-size="10" font-weight="600">{val}</text>'
+        vtxt = str(val)
+        vw = _tw(draw, vtxt, fb)
+        draw.text((bx + (bw - vw) // 2, by - 14 * S), vtxt, fill=_hex(THEME["legend"]), font=fb)
+        # Label below (rotated 35° CCW)
+        _paste_rotated(
+            img, lbl, fl, _hex(THEME["tickLabel"]), bx + bw // 2, pt + ch + pb // 2, angle=35
         )
-        # Label below (rotated)
-        parts.append(
-            f'<text x="{bx + bar_w / 2:.1f}" y="{pad["top"] + h + 12}" '
-            f'text-anchor="end" fill="{t["tickLabel"]}" font-size="8" '
-            f'transform="rotate(-35,{bx + bar_w / 2:.1f},{pad["top"] + h + 12})">{lbl}</text>'
-        )
+        draw = ImageDraw.Draw(img)
 
-    parts.append("</svg>")
-    return "\n".join(parts)
+    img.save(path, "PNG")
 
 
-def _svg_table(
+def _save_table(
+    path: str,
     title: str,
     headers: list[str],
     rows: list[list[str]],
     colors: list[str],
     width: int = 900,
-) -> str:
-    """Generate an SVG table similar to the frontend exportTableAsPNG."""
-    t = THEME
-    row_h = 28
-    pad_x = 12
-    pad_y = 8
+    scale: int = 2,
+) -> None:
+    """Draw a summary table with Pillow and save as PNG."""
+    S = scale
+    row_h = 28 * S
+    pad_x, pad_y = 12 * S, 8 * S
+    title_h = 30 * S
+    ft, fh = _font(13 * S), _font(11 * S)
+    fm = _font(11 * S, mono=True)
 
-    # Estimate column widths (roughly 7px per char at font-size 11)
-    col_widths = []
+    # Measure column widths
+    tmp = Image.new("RGB", (1, 1))
+    td = ImageDraw.Draw(tmp)
+    col_w: list[int] = []
     for ci in range(len(headers)):
-        max_w = len(headers[ci]) * 7 + pad_x * 2
+        m = _tw(td, headers[ci], fh) + pad_x * 2
         for row in rows:
             if ci < len(row):
-                cw = len(row[ci]) * 7 + pad_x * 2
-                max_w = max(max_w, cw)
-        col_widths.append(max_w)
+                m = max(m, _tw(td, row[ci], fm) + pad_x * 2)
+        col_w.append(m)
+    total_w = max(sum(col_w), width * S)
+    ratio = total_w / sum(col_w)
+    col_w = [int(c * ratio) for c in col_w]
+    total_w = sum(col_w)
+    total_h = (len(rows) + 1) * row_h + pad_y * 2 + title_h
 
-    total_w = max(sum(col_widths), width)
-    # Scale col_widths to fill total_w
-    scale = total_w / sum(col_widths)
-    col_widths = [int(cw * scale) for cw in col_widths]
-    total_w = sum(col_widths)
+    img = Image.new("RGB", (total_w, total_h), _hex("#1f2937"))
+    draw = ImageDraw.Draw(img)
 
-    total_h = (len(rows) + 1) * row_h + pad_y * 2 + 30  # extra for title
+    # Title
+    tw_t = _tw(draw, title, ft)
+    draw.text(((total_w - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {total_w} {total_h}" '
-        f'width="{total_w}" height="{total_h}" style="background:#1f2937;border-radius:8px">',
-        # Title
-        f'<text x="{total_w / 2}" y="20" text-anchor="middle" fill="{t["title"]}" '
-        f'font-size="13" font-weight="700">{title}</text>',
-    ]
-
-    base_y = 30
-
-    # Header background
-    parts.append(
-        f'<rect x="0" y="{base_y + pad_y}" width="{total_w}" height="{row_h}" ' f'fill="#111827"/>'
-    )
-
-    # Header text
+    by = title_h
+    # Header bg
+    draw.rectangle([(0, by + pad_y), (total_w, by + pad_y + row_h)], fill=_hex("#111827"))
     x = 0
     for ci, hdr in enumerate(headers):
-        parts.append(
-            f'<text x="{x + pad_x}" y="{base_y + pad_y + row_h * 0.65}" '
-            f'fill="#9ca3af" font-size="11" font-weight="bold" '
-            f'font-family="sans-serif">{hdr}</text>'
-        )
-        x += col_widths[ci]
-
-    # Header divider
-    parts.append(
-        f'<line x1="0" x2="{total_w}" y1="{base_y + pad_y + row_h}" '
-        f'y2="{base_y + pad_y + row_h}" stroke="#374151" stroke-width="1"/>'
+        draw.text((x + pad_x, by + pad_y + row_h // 4), hdr, fill=_hex("#9ca3af"), font=fh)
+        x += col_w[ci]
+    draw.line(
+        [(0, by + pad_y + row_h), (total_w, by + pad_y + row_h)], fill=_hex("#374151"), width=S
     )
 
     # Data rows
     for ri, row in enumerate(rows):
-        y = base_y + pad_y + (ri + 1) * row_h
-        # Zebra
+        y = by + pad_y + (ri + 1) * row_h
         if ri % 2 == 1:
-            parts.append(f'<rect x="0" y="{y}" width="{total_w}" height="{row_h}" fill="#111827"/>')
-        # Row divider
-        parts.append(
-            f'<line x1="0" x2="{total_w}" y1="{y + row_h}" y2="{y + row_h}" '
-            f'stroke="#1f2937" stroke-width="1"/>'
-        )
+            draw.rectangle([(0, y), (total_w, y + row_h)], fill=_hex("#111827"))
+        draw.line([(0, y + row_h), (total_w, y + row_h)], fill=_hex("#1f2937"), width=1)
         x = 0
         for ci, cell in enumerate(row):
             if ci == 0:
-                # Color dot + label
-                col = colors[ri] if ri < len(colors) else "#6b7280"
-                parts.append(
-                    f'<circle cx="{x + pad_x + 4}" cy="{y + row_h * 0.5}" r="4" fill="{col}"/>'
+                col = _hex(colors[ri]) if ri < len(colors) else _hex("#6b7280")
+                r_dot = 4 * S
+                draw.ellipse(
+                    [
+                        (x + pad_x, y + row_h // 2 - r_dot),
+                        (x + pad_x + r_dot * 2, y + row_h // 2 + r_dot),
+                    ],
+                    fill=col,
                 )
-                parts.append(
-                    f'<text x="{x + pad_x + 14}" y="{y + row_h * 0.65}" '
-                    f'fill="#d1d5db" font-size="11" font-family="monospace">{cell}</text>'
+                draw.text(
+                    (x + pad_x + r_dot * 3, y + row_h // 4), cell, fill=_hex("#d1d5db"), font=fm
                 )
             else:
-                fill = "#6b7280" if ci >= 6 else "#d1d5db"
-                parts.append(
-                    f'<text x="{x + pad_x}" y="{y + row_h * 0.65}" '
-                    f'fill="{fill}" font-size="11" font-family="monospace">{cell}</text>'
-                )
-            x += col_widths[ci]
+                fill = _hex("#6b7280") if ci >= 6 else _hex("#d1d5db")
+                draw.text((x + pad_x, y + row_h // 4), cell, fill=fill, font=fm)
+            x += col_w[ci]
 
-    parts.append("</svg>")
-    return "\n".join(parts)
+    img.save(path, "PNG")
 
 
 # ── Snapshot collection ──────────────────────────────────────────────────────
@@ -472,7 +473,7 @@ def _downsample(data: list[dict], max_pts: int = 300) -> list[dict]:
 
 
 def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], out_dir: str):
-    """Generate SVG charts + table for one map and save to out_dir."""
+    """Generate PNG charts + table for one map and save to out_dir."""
     os.makedirs(out_dir, exist_ok=True)
 
     # 1) Line charts (one per metric, all configs overlaid)
@@ -487,22 +488,24 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
                     "data": [{"x": sn["step"], "y": cdef["extract"](sn)} for sn in ds],
                 }
             )
-        svg = _svg_line_chart(
+        _save_line_chart(
+            os.path.join(out_dir, f"{cdef['key']}.png"),
             f"{cdef['title']}  —  {map_name}",
             series,
             cdef["y_label"],
         )
-        path = os.path.join(out_dir, f"{cdef['key']}.svg")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(svg)
 
     # 2) Bar chart — total steps comparison
     labels = [name for name, _, _ in results]
     values = [steps for _, steps, _ in results]
     colors = [_pick_color(i) for i in range(len(results))]
-    svg = _svg_bar_chart(f"Total Steps Comparison  —  {map_name}", labels, values, colors)
-    with open(os.path.join(out_dir, "steps_comparison.svg"), "w", encoding="utf-8") as f:
-        f.write(svg)
+    _save_bar_chart(
+        os.path.join(out_dir, "steps_comparison.png"),
+        f"Total Steps Comparison  —  {map_name}",
+        labels,
+        values,
+        colors,
+    )
 
     # 3) Summary table
     headers = ["Config", "Steps", "Retrieved", "Completion", "Efficiency", "Avg Energy", "Messages"]
@@ -516,9 +519,13 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
         avg_e = f"{last.get('average_energy', 0):.0f}"
         msgs = str(last.get("messages_sent", 0))
         rows.append([name, str(steps), f"{retrieved}/{total}", pct, eff, avg_e, msgs])
-    svg = _svg_table(f"Summary  —  {map_name}", headers, rows, colors)
-    with open(os.path.join(out_dir, "summary_table.svg"), "w", encoding="utf-8") as f:
-        f.write(svg)
+    _save_table(
+        os.path.join(out_dir, "summary_table.png"),
+        f"Summary  —  {map_name}",
+        headers,
+        rows,
+        colors,
+    )
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

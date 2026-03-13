@@ -269,6 +269,164 @@ const SVGChart: React.FC<ChartProps> = ({
   );
 };
 
+// ── SVG bar chart ────────────────────────────────────────────────────────────
+
+interface BarChartBar {
+  label: string;
+  value: number;
+  color: string;
+}
+
+interface BarChartProps {
+  title: string;
+  bars: BarChartBar[];
+  yLabel: string;
+  width?: number;
+  height?: number;
+  theme?: ChartTheme;
+}
+
+const SVGBarChart: React.FC<BarChartProps> = ({
+  title,
+  bars,
+  yLabel,
+  width = 620,
+  height = 320,
+  theme = "dark",
+}) => {
+  const t = THEME[theme];
+  const pad = { top: 40, right: 20, bottom: 60, left: 58 };
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+
+  const yMax =
+    bars.length > 0 ? Math.max(...bars.map((b) => b.value)) * 1.12 : 1;
+  const sy = (v: number) => pad.top + h - (v / yMax) * h;
+
+  // Y-axis ticks (5 ticks)
+  const yTicks: number[] = [];
+  for (let i = 0; i <= 4; i++) yTicks.push(Math.round((yMax * i) / 4));
+
+  const barGap = 0.3; // fraction of slot used for gap
+  const slotW = bars.length > 0 ? w / bars.length : w;
+  const barW = slotW * (1 - barGap);
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox={`0 0 ${width} ${height}`}
+      width={width}
+      height={height}
+      className="w-full h-auto"
+      style={{ background: t.bg, borderRadius: 8 }}
+    >
+      {/* Title */}
+      <text
+        x={width / 2}
+        y={22}
+        textAnchor="middle"
+        fill={t.title}
+        fontSize={13}
+        fontWeight={700}
+      >
+        {title}
+      </text>
+
+      {/* Y axis label */}
+      <text
+        x={14}
+        y={pad.top + h / 2}
+        textAnchor="middle"
+        fill={t.axisLabel}
+        fontSize={10}
+        transform={`rotate(-90, 14, ${pad.top + h / 2})`}
+      >
+        {yLabel}
+      </text>
+
+      {/* Grid + Y tick labels */}
+      {yTicks.map((v, i) => (
+        <g key={`y${i}`}>
+          <line
+            x1={pad.left}
+            x2={pad.left + w}
+            y1={sy(v)}
+            y2={sy(v)}
+            stroke={t.grid}
+            strokeWidth={0.5}
+          />
+          <text
+            x={pad.left - 6}
+            y={sy(v) + 3}
+            textAnchor="end"
+            fill={t.tickLabel}
+            fontSize={9}
+          >
+            {v}
+          </text>
+        </g>
+      ))}
+
+      {/* Axes */}
+      <line
+        x1={pad.left}
+        x2={pad.left}
+        y1={pad.top}
+        y2={pad.top + h}
+        stroke={t.axis}
+        strokeWidth={1}
+      />
+      <line
+        x1={pad.left}
+        x2={pad.left + w}
+        y1={pad.top + h}
+        y2={pad.top + h}
+        stroke={t.axis}
+        strokeWidth={1}
+      />
+
+      {/* Bars */}
+      {bars.map((bar, i) => {
+        const x = pad.left + i * slotW + (slotW - barW) / 2;
+        const barH = (bar.value / yMax) * h;
+        return (
+          <g key={i}>
+            <rect
+              x={x}
+              y={pad.top + h - barH}
+              width={barW}
+              height={barH}
+              fill={bar.color}
+              rx={3}
+            />
+            {/* Value label on top */}
+            <text
+              x={x + barW / 2}
+              y={pad.top + h - barH - 5}
+              textAnchor="middle"
+              fill={t.title}
+              fontSize={10}
+              fontWeight={600}
+            >
+              {bar.value}
+            </text>
+            {/* Run label below */}
+            <text
+              x={x + barW / 2}
+              y={pad.top + h + 14}
+              textAnchor="middle"
+              fill={t.tickLabel}
+              fontSize={9}
+            >
+              {bar.label.length > 14 ? bar.label.slice(0, 13) + "…" : bar.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
+
 // ── Chart export helper ──────────────────────────────────────────────────────
 
 function exportSVGAsPNG(svgEl: SVGSVGElement, filename: string) {
@@ -888,10 +1046,11 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
   const [impactParam, setImpactParam] = useState<ParamKey>("totalAgents");
   const [impactMetric, setImpactMetric] = useState<MetricKey>("totalSteps");
   const [chartTheme, setChartTheme] = useState<ChartTheme>("dark");
-  const [enlargedChart, setEnlargedChart] = useState<"line" | "scatter" | null>(
-    null,
-  );
+  const [enlargedChart, setEnlargedChart] = useState<
+    "line" | "bar" | "scatter" | null
+  >(null);
   const chartRef = useRef<HTMLDivElement>(null);
+  const barChartRef = useRef<HTMLDivElement>(null);
   const impactChartRef = useRef<HTMLDivElement>(null);
   const tableRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -935,6 +1094,15 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
       `benchmark-impact-${impactParam}-vs-${impactMetric}-${new Date().toISOString().slice(0, 10)}.png`,
     );
   }, [impactParam, impactMetric]);
+
+  const handleExportBarChart = useCallback(() => {
+    const svg = barChartRef.current?.querySelector("svg");
+    if (!svg) return;
+    exportSVGAsPNG(
+      svg,
+      `benchmark-steps-comparison-${new Date().toISOString().slice(0, 10)}.png`,
+    );
+  }, []);
 
   const handleExportTable = useCallback(() => {
     if (selectedRuns.length === 0) return;
@@ -1271,6 +1439,50 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
         </div>
       )}
 
+      {/* ── Steps comparison bar chart ── */}
+      {selectedRuns.length >= 2 && (
+        <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
+          <div
+            ref={barChartRef}
+            onClick={() => setEnlargedChart("bar")}
+            className="cursor-pointer"
+            title="Click to enlarge"
+          >
+            <SVGBarChart
+              title="Steps Comparison"
+              bars={selectedRuns.map((run, i) => ({
+                label: run.label,
+                value: run.summary?.totalSteps ?? 0,
+                color: pickColor(i),
+              }))}
+              yLabel="Total Steps"
+              theme={chartTheme}
+            />
+          </div>
+
+          {/* Export bar chart button */}
+          <button
+            onClick={handleExportBarChart}
+            className="w-full py-1.5 rounded-md font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors flex items-center justify-center gap-1"
+          >
+            <svg
+              className="w-3 h-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+              />
+            </svg>
+            Export chart as PNG
+          </button>
+        </div>
+      )}
+
       {/* ── Config diff between selected runs ── */}
       {selectedRuns.length >= 2 && configDiffs.length > 0 && (
         <div className="bg-gray-800/50 border border-gray-700/40 rounded-lg p-2.5 space-y-2">
@@ -1560,6 +1772,20 @@ export const BenchmarkPanel: React.FC<BenchmarkPanelProps> = ({
                   title={chartDef.title}
                   series={chartSeries}
                   yLabel={chartDef.yLabel}
+                  width={1100}
+                  height={560}
+                  theme={chartTheme}
+                />
+              )}
+              {enlargedChart === "bar" && (
+                <SVGBarChart
+                  title="Steps Comparison"
+                  bars={selectedRuns.map((run, i) => ({
+                    label: run.label,
+                    value: run.summary?.totalSteps ?? 0,
+                    color: pickColor(i),
+                  }))}
+                  yLabel="Total Steps"
                   width={1100}
                   height={560}
                   theme={chartTheme}
