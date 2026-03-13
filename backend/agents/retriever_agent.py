@@ -688,16 +688,42 @@ class RetrieverAgent(BaseAgent):
             if self._fruitless_explore_steps > _seek_interval:
                 seek_target = self._find_nearest_info_source(pos_tuple)
                 if seek_target is not None:
-                    self._explore_target = seek_target
-                    self.target_position = seek_target
-                    self.path = []
-                    self.state = AgentState.EXPLORING
-                    print(
-                        f"{self.tag} SEEK-INFO: idle for "
-                        f"{self._fruitless_explore_steps} steps, "
-                        f"heading to agent near {seek_target} "
-                        f"for map data exchange"
-                    )
+                    # If the target agent is inside a warehouse, redirect to a
+                    # walkable cell just outside the entrance.  The retriever
+                    # only needs communication proximity — not actual entry.
+                    # Without this, move_towards would route through the
+                    # entrance (Case 2) and the door-unblocking mechanism would
+                    # push the agent off, causing an oscillation loop.
+                    _WH_CELL_TYPES = {
+                        CellType.WAREHOUSE,
+                        CellType.WAREHOUSE_ENTRANCE,
+                        CellType.WAREHOUSE_EXIT,
+                    }
+                    if self.model.grid.get_cell_type(*seek_target) in _WH_CELL_TYPES:
+                        wh = self.model.get_nearest_warehouse_to(seek_target)
+                        entrance = wh.get("entrance")
+                        if entrance:
+                            for dx, dy in [(0, -1), (-1, 0), (1, 0), (0, 1)]:
+                                nx, ny = entrance[0] + dx, entrance[1] + dy
+                                if (
+                                    self.model.grid.get_cell_type(nx, ny)
+                                    == CellType.FREE
+                                ):
+                                    seek_target = (nx, ny)
+                                    break
+                    # Only re-assign if target actually changed — avoids
+                    # clearing the cached path every single step.
+                    if seek_target != self._explore_target:
+                        self._explore_target = seek_target
+                        self.target_position = seek_target
+                        self.path = []
+                        self.state = AgentState.EXPLORING
+                        print(
+                            f"{self.tag} SEEK-INFO: idle for "
+                            f"{self._fruitless_explore_steps} steps, "
+                            f"heading to agent near {seek_target} "
+                            f"for map data exchange"
+                        )
                     return
 
             # Gather nearby agent positions AND target positions for anti-clustering.
