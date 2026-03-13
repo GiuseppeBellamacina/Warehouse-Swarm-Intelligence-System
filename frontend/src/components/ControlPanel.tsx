@@ -844,6 +844,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       disabled={isRunning}
                     />
                     <Slider
+                      label="Zone divisions"
+                      tip="NxN macro-zone grid for exploration routing (1 = disabled). Higher values = smaller zones, more targeted exploration"
+                      value={overrides.scoutBehavior.zone_divisions}
+                      onChange={(v) => setScoutBeh({ zone_divisions: v })}
+                      min={1}
+                      max={8}
+                      disabled={isRunning}
+                    />
+                    <Slider
                       label="Anti-cluster distance"
                       tip="Min Manhattan distance from other scouts when choosing frontiers — prevents scouts from clustering together"
                       value={overrides.scoutBehavior.anti_cluster_distance}

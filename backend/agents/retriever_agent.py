@@ -872,7 +872,7 @@ class RetrieverAgent(BaseAgent):
                         _H, _W = self.local_map.shape
                         _map_known = getattr(self.model, 'map_known', False)
                         _has_scouts = len(self.model.scouts) > 0
-                        _comm_weight = 0.0 if _has_scouts else 1.0
+                        _comm_weight = 0.6 if _has_scouts else 1.0
 
                         def _explored_ratio(fx: int, fy: int) -> float:
                             r = 3 if _map_known else 5

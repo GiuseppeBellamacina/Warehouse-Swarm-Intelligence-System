@@ -74,6 +74,7 @@ class ScoutAgent(BaseAgent):
         self._SEEK_COORDINATOR_DELAY: int = _b["seek_coordinator_delay"]
         self._TARGET_LOCK_DURATION: int = _b["target_lock_duration"]
         self._MIN_FRONTIER_CLUSTER_SIZE: int = _b["min_frontier_cluster_size"]
+        self._ZONE_DIVISIONS: int = _b["zone_divisions"]
 
         self.state = AgentState.EXPLORING
         self.pathfinder = AStarPathfinder(model.grid)
@@ -120,6 +121,10 @@ class ScoutAgent(BaseAgent):
         # prevent erratic direction changes when entering a new zone.
         self._target_lock_step: int = 0
 
+        # Zone-based exploration: current target zone (zi, zj) index
+        self._current_zone: Optional[Tuple[int, int]] = None
+        self._zone_switch_step: int = 0  # step at which we last switched zone
+
         # Coverage map: tracks the model step at which each cell was last physically
         # within this scout's vision radius.  When all frontier exploration is
         # exhausted, cells absent from vision for _RESCAN_AGE steps become valid
@@ -141,6 +146,97 @@ class ScoutAgent(BaseAgent):
         self.decision_maker.register_utility_function(
             ActionType.RECHARGE, UtilityFunctions.recharge_utility
         )
+
+    # ── Zone-based macro routing helpers ──────────────────────────────
+
+    def _get_zone_bounds(self, zone: Tuple[int, int]) -> Tuple[int, int, int, int]:
+        """Return (x0, y0, x1, y1) cell bounds for the given zone index."""
+        W, H = self.model.grid.width, self.model.grid.height
+        n = self._ZONE_DIVISIONS
+        zone_w = W / n
+        zone_h = H / n
+        x0 = int(zone[0] * zone_w)
+        y0 = int(zone[1] * zone_h)
+        x1 = min(int((zone[0] + 1) * zone_w), W)
+        y1 = min(int((zone[1] + 1) * zone_h), H)
+        return x0, y0, x1, y1
+
+    def _select_target_zone(
+        self, my_pos: Tuple[int, int]
+    ) -> Optional[Tuple[int, int]]:
+        """Pick the zone with the most unexplored area.
+
+        Divides the map into ``_ZONE_DIVISIONS × _ZONE_DIVISIONS`` blocks and
+        returns the ``(zi, zj)`` index of the best zone to explore.
+
+        Anti-flip-flop: the scout must stay in a zone for at least
+        ``_TARGET_LOCK_DURATION * 2`` steps before it can switch, unless
+        the zone is fully explored (<5 % unexplored).
+        """
+        W, H = self.model.grid.width, self.model.grid.height
+        n = self._ZONE_DIVISIONS
+        if n <= 1:
+            return (0, 0)
+        zone_w = W / n
+        zone_h = H / n
+        _is_mk = getattr(self.model, "map_known", False)
+        src = self.vision_explored if _is_mk else self.local_map
+
+        # Collect (zone_index, unexplored_ratio, dist_from_agent) for every zone
+        zones: List[Tuple[Tuple[int, int], float, float]] = []
+        for zi in range(n):
+            for zj in range(n):
+                x0 = int(zi * zone_w)
+                y0 = int(zj * zone_h)
+                x1 = min(int((zi + 1) * zone_w), W)
+                y1 = min(int((zj + 1) * zone_h), H)
+                patch = src[y0:y1, x0:x1]
+                total = patch.size
+                if total == 0:
+                    continue
+                unexplored = total - int(np.count_nonzero(patch))
+                ratio = unexplored / total
+                cx = (x0 + x1) / 2.0
+                cy = (y0 + y1) / 2.0
+                dist = abs(cx - my_pos[0]) + abs(cy - my_pos[1])
+                zones.append(((zi, zj), ratio, dist))
+
+        if not zones:
+            return None
+
+        # Log zone stats periodically (every 10 steps)
+        cs = self.model.current_step
+        if cs % 10 == 0:
+            zone_str = "  ".join(
+                f"{z[0]}:{z[1]*100:.0f}%" for z in zones
+            )
+            print(
+                f"{self.tag} ZONE-STATS step={cs} "
+                f"cur={self._current_zone} zones=[{zone_str}]"
+            )
+
+        # Anti-flip-flop: minimum stay in current zone
+        min_stay = self._TARGET_LOCK_DURATION * 2
+        if (
+            self._current_zone is not None
+            and cs - self._zone_switch_step < min_stay
+        ):
+            cur = next((z for z in zones if z[0] == self._current_zone), None)
+            if cur and cur[1] > 0.05:
+                return self._current_zone
+
+        # Hysteresis: stay in current zone if still productive
+        if self._current_zone is not None:
+            cur = next((z for z in zones if z[0] == self._current_zone), None)
+            if cur and cur[1] > 0.15:
+                best_ratio = max(z[1] for z in zones)
+                if cur[1] >= best_ratio - 0.10:
+                    return self._current_zone
+
+        max_dist = float(W + H)
+        # Score: unexplored ratio dominant, small distance discount
+        best = max(zones, key=lambda z: z[1] - (z[2] / max_dist) * 0.15)
+        return best[0]
 
     def step_sense(self) -> None:
         """Perceive environment and track newly discovered objects"""
@@ -356,16 +452,30 @@ class ScoutAgent(BaseAgent):
             )
 
         # Filter blacklisted / stale frontiers and recently-reached targets.
-        # Skipping recently-reached targets prevents immediate oscillation back
-        # to a frontier the scout just finished exploring.
+        _is_map_known = getattr(self.model, "map_known", False)
+        _filt_map = self.local_map
+        _filt_vis = self.vision_explored
+        _filt_H, _filt_W = _filt_map.shape
+
+        def _zone_ratio(fx: int, fy: int) -> float:
+            """Explored ratio in 11×11 window around (fx, fy)."""
+            r = 5
+            y0, y1 = max(0, fy - r), min(_filt_H, fy + r + 1)
+            x0, x1 = max(0, fx - r), min(_filt_W, fx + r + 1)
+            p = _filt_vis[y0:y1, x0:x1] if _is_map_known else _filt_map[y0:y1, x0:x1]
+            return int(np.count_nonzero(p)) / p.size if p.size else 1.0
+
         valid_frontiers = []
         for frontier_pos, cluster_size in frontiers:
             if frontier_pos in self.unreachable_targets:
-                continue  # skip until TTL expires (purged at top of step_decide)
+                continue
             if frontier_pos in self._recent_targets:
-                continue  # visited too recently
+                continue
             if not self.model.grid.is_walkable(*frontier_pos):
-                continue  # centroid landed on an obstacle — skip
+                continue
+            # In unknown mode, reject frontiers in well-explored zones
+            if not _is_map_known and _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
+                continue
             valid_frontiers.append((frontier_pos, cluster_size))
 
         # Anti-clustering: prefer frontiers far from other scouts
@@ -388,46 +498,86 @@ class ScoutAgent(BaseAgent):
         else:
             frontiers_to_use = valid_frontiers
 
-        if frontiers_to_use:
-            if self._FAR_FRONTIER_ENABLED:
-                # Prefer frontiers that require actual travel (> 2× vision radius) so the
-                # scout pushes into genuinely new territory rather than hopping between
-                # tiny adjacent clusters it can already partially see.
-                min_dist = max(self.vision_radius * 2, 8)
-                far_frontiers = [
+        # ── Zone-based macro routing (map_known only) ──
+        # In map_known, all frontiers are visible globally — zone routing
+        # hard-filters frontiers to the most unexplored block so the scout
+        # doesn't nibble residual edges.
+        # In unknown mode, zone routing is not used: the natural frontier
+        # following + _zone_ratio filter is sufficient.
+        _zone_waypoint: Optional[Tuple[int, int]] = None
+        if self._ZONE_DIVISIONS > 1 and _is_map_known:
+            new_zone = self._select_target_zone(my_pos)
+            if new_zone is not None and new_zone != self._current_zone:
+                old_label = str(self._current_zone) if self._current_zone else "None"
+                # Log full zone stats on every switch
+                _n = self._ZONE_DIVISIONS
+                _zw = self.model.grid.width / _n
+                _zh = self.model.grid.height / _n
+                _zsrc = self.vision_explored
+                _zparts = []
+                for _zi in range(_n):
+                    for _zj in range(_n):
+                        _zx0 = int(_zi * _zw)
+                        _zy0 = int(_zj * _zh)
+                        _zx1 = min(int((_zi + 1) * _zw), self.model.grid.width)
+                        _zy1 = min(int((_zj + 1) * _zh), self.model.grid.height)
+                        _zp = _zsrc[_zy0:_zy1, _zx0:_zx1]
+                        _zunk = _zp.size - int(np.count_nonzero(_zp))
+                        _zpct = _zunk / _zp.size * 100 if _zp.size else 0
+                        _zmk = "*" if (_zi, _zj) == new_zone else " "
+                        _zparts.append(f"{_zmk}({_zi},{_zj}):{_zpct:.0f}%")
+                print(
+                    f"{self.tag} ZONE-SWITCH step={current_step}: "
+                    f"{old_label} → {new_zone}  "
+                    f"(stayed {current_step - self._zone_switch_step} steps)  "
+                    f"[{'  '.join(_zparts)}]"
+                )
+                self._current_zone = new_zone
+                self._zone_switch_step = current_step
+            if self._current_zone is not None and frontiers_to_use:
+                zx0, zy0, zx1, zy1 = self._get_zone_bounds(self._current_zone)
+                zone_frontiers = [
                     f
                     for f in frontiers_to_use
-                    if abs(f[0][0] - my_pos[0]) + abs(f[0][1] - my_pos[1]) >= min_dist
+                    if zx0 <= f[0][0] < zx1 and zy0 <= f[0][1] < zy1
                 ]
-                # When ONLY nearby frontiers remain, check if any of them
-                # border genuinely unexplored territory.  If so, use them —
-                # they're real frontier cells that need visiting.  Only fall to
-                # stale-coverage patrol when all nearby frontiers sit in
-                # mostly-explored zones (residual edges, not real territory).
-                if not far_frontiers:
-                    if not getattr(self.model, "map_known", False):
-                        # Check if any nearby frontier is in a poorly-explored zone
-                        _lm = self.local_map
-                        _lH, _lW = _lm.shape
-                        def _nearby_explored(fx, fy):
-                            r = 5
-                            y0, y1 = max(0, fy - r), min(_lH, fy + r + 1)
-                            x0, x1 = max(0, fx - r), min(_lW, fx + r + 1)
-                            p = _lm[y0:y1, x0:x1]
-                            return int(np.count_nonzero(p)) / p.size if p.size else 1.0
-                        has_unexplored_nearby = any(
-                            _nearby_explored(f[0][0], f[0][1]) < 0.7
-                            for f in frontiers_to_use
-                        )
-                        if not has_unexplored_nearby and self._STALE_COVERAGE_PATROL:
-                            self._pick_stale_coverage_target(my_pos)
-                            if self.target_position is not None:
-                                return  # heading to a stale area
-                    # Fall through and use nearby frontiers (they border
-                    # genuinely unexplored territory)
-                    frontiers_to_use = frontiers_to_use
+                if zone_frontiers:
+                    frontiers_to_use = zone_frontiers
                 else:
-                    frontiers_to_use = far_frontiers
+                    # Zone fully explored — compute waypoint for momentum
+                    zone_patch = self.vision_explored[zy0:zy1, zx0:zx1]
+                    unk_ys, unk_xs = np.where(zone_patch == 0)
+                    if len(unk_ys) > 0:
+                        _zone_waypoint = (
+                            int(np.mean(unk_xs)) + zx0,
+                            int(np.mean(unk_ys)) + zy0,
+                        )
+
+        # ── Far-frontier filter (unknown only) ──
+        # Prefer frontiers that require actual travel so the scout pushes
+        # into new territory rather than hopping between tiny nearby clusters.
+        if frontiers_to_use and self._FAR_FRONTIER_ENABLED and not _is_map_known:
+            min_dist = max(self.vision_radius * 2, 8)
+            far_frontiers = [
+                f
+                for f in frontiers_to_use
+                if abs(f[0][0] - my_pos[0]) + abs(f[0][1] - my_pos[1]) >= min_dist
+            ]
+            if far_frontiers:
+                frontiers_to_use = far_frontiers
+            elif self._STALE_COVERAGE_PATROL:
+                # All frontiers are nearby — check if they're in
+                # mostly-explored zones (residual edges).
+                has_unexplored = any(
+                    _zone_ratio(f[0][0], f[0][1]) < 0.7
+                    for f in frontiers_to_use
+                )
+                if not has_unexplored:
+                    self._pick_stale_coverage_target(my_pos)
+                    if self.target_position is not None:
+                        return
+
+        if frontiers_to_use:
 
             nearby_positions = [pos_to_tuple(a.pos) for a in nearby if a.pos]
 
@@ -469,7 +619,7 @@ class ScoutAgent(BaseAgent):
                 grid_size=(self.model.grid.width, self.model.grid.height),
                 explored_ratio_at=_explored_ratio,
                 all_peer_targets=_global_targets,
-                current_target=self.target_position,
+                current_target=_zone_waypoint or self.target_position,
             )
             if best:
                 # Shift target deeper into the unexplored region: compute
@@ -507,6 +657,33 @@ class ScoutAgent(BaseAgent):
                     self._target_lock_step = current_step
                 self.state = AgentState.MOVING_TO_TARGET
                 return
+
+        # Zone centroid fallback (map_known only): if zone routing is active
+        # but no frontier was selected, head to the centroid of unexplored
+        # cells inside the target zone.
+        if self._current_zone is not None and self._ZONE_DIVISIONS > 1 and _is_map_known:
+            zx0, zy0, zx1, zy1 = self._get_zone_bounds(self._current_zone)
+            zone_patch = self.vision_explored[zy0:zy1, zx0:zx1]
+            unk_ys, unk_xs = np.where(zone_patch == 0)
+            if len(unk_ys) > 0:
+                cx = int(np.mean(unk_xs)) + zx0
+                cy = int(np.mean(unk_ys)) + zy0
+                cx = max(0, min(cx, self.model.grid.width - 1))
+                cy = max(0, min(cy, self.model.grid.height - 1))
+                if (
+                    self.model.grid.is_walkable(cx, cy)
+                    and (cx, cy) not in self.unreachable_targets
+                ):
+                    self.target_position = (cx, cy)
+                    self._explore_target = (cx, cy)
+                    self.path = []
+                    self._target_lock_step = current_step
+                    self.state = AgentState.MOVING_TO_TARGET
+                    print(
+                        f"{self.tag} ZONE: centroid ({cx},{cy}) "
+                        f"in zone {self._current_zone}"
+                    )
+                    return
 
         # ---- Fallback 1: navigate towards a random unknown boundary cell ----
         self._pick_unexplored_target(my_pos)
