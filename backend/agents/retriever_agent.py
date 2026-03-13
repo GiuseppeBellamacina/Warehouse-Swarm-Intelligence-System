@@ -2,7 +2,6 @@
 Retriever Agent - Heavy lifter for object collection and delivery
 """
 
-import random
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from backend.agents.base_agent import AgentState, BaseAgent, agent_tag, pos_to_tuple
@@ -95,6 +94,7 @@ class RetrieverAgent(BaseAgent):
         self._WH_CONGESTION_REROUTE: bool = _b["warehouse_congestion_reroute"]
         self._WH_CONGESTION_THRESHOLD: int = _b["warehouse_congestion_threshold"]
         self._JAM_PRIORITY: bool = _b["jam_priority"]
+        self._AUTONOMOUS_PICKUP: bool = _b["autonomous_pickup"]
 
         self.carrying_capacity = carrying_capacity
         self.carrying_objects = 0
@@ -121,6 +121,14 @@ class RetrieverAgent(BaseAgent):
         # Exploration target when idle
         self._explore_target: Optional[Tuple[int, int]] = None
         self._explore_steps: int = 0  # steps since last new explore target
+
+        # Fruitless exploration tracking: how many steps since last productive
+        # activity (pickup, delivery, or task assignment).  When this exceeds
+        # _SEEK_INFO_INTERVAL the retriever heads toward the nearest known
+        # coordinator/peer to exchange map data.
+        self._fruitless_explore_steps: int = 0
+        self._SEEK_INFO_INTERVAL: int = 40
+        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 15
 
     # ------------------------------------------------------------------
     # Sense
@@ -175,6 +183,7 @@ class RetrieverAgent(BaseAgent):
                     # Add to task queue only if not already there and not picked up
                     if target not in self.task_queue and target in self.known_objects:
                         self.task_queue.append(target)
+                        self._fruitless_explore_steps = 0
                         print(
                             f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
                             f"queued task {target} "
@@ -280,8 +289,19 @@ class RetrieverAgent(BaseAgent):
                 self._start_warehouse_sequence("deliver")
                 return
             elif not self.task_queue:
-                self._start_warehouse_sequence("deliver")
-                return
+                # Before committing to the warehouse, try to self-assign one
+                # more object — the retriever may have learned about new
+                # objects from peers while travelling.  This avoids a wasted
+                # trip when there are still nearby unclaimed packages.
+                if (
+                    self.carrying_objects < self.carrying_capacity
+                    and (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP)
+                    and self._try_self_assign_visible()
+                ):
+                    pass  # claimed something — fall through to P3
+                else:
+                    self._start_warehouse_sequence("deliver")
+                    return
             # else: still have capacity AND queued tasks — fall through to P3
 
         # ---- P2: Recharge if energy critically low ----
@@ -305,43 +325,71 @@ class RetrieverAgent(BaseAgent):
                     key=lambda t: abs(t[0] - pos_tuple[0]) + abs(t[1] - pos_tuple[1])
                 )
 
-            next_target = self.task_queue[0]
-            # Skip if object is gone from the world
-            if next_target not in self.model.grid.objects and next_target not in self.known_objects:
-                self.task_queue.pop(0)
-                return
-            # Claim the object
-            pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
-            distance = abs(next_target[0] - pos_tuple[0]) + abs(next_target[1] - pos_tuple[1])
-            can_claim = self.model.comm_manager.try_claim_object(
-                next_target, self.unique_id, self.model.current_step, distance, self.energy
-            )
-            if can_claim:
-                self.state = AgentState.RETRIEVING
-                self.target_position = next_target
-                self.path = []  # invalidate cached path — new target
-            else:
-                # Object claimed by someone else, abort
-                print(
-                    f"{self.tag} SKIP: task {next_target} " f"already claimed, removing from queue"
-                )
-                self.task_queue.pop(0)
-                self.model.comm_manager.release_claim(next_target, self.unique_id)
-            # ---- P3b: opportunistic nearby objects while travelling ----
-            # Even if we already have a primary task, try to claim unclaimed objects
-            # that are close by and fit in the remaining carrying slots.
-            if self.state == AgentState.RETRIEVING and self._wh_step is None:
-                if self._OPPORTUNISTIC_PICKUP:
-                    self._try_opportunistic_pickup()
-            return
+            # ── Purge unreachable targets before selecting ──────────
+            # Loop/stuck detection blacklists positions into unreachable_targets.
+            # Re-queue them only after a cooldown so the agent doesn't oscillate.
+            _UNREACHABLE_COOLDOWN = 20
+            self.task_queue = [
+                t
+                for t in self.task_queue
+                if t not in self.unreachable_targets
+                or self.model.current_step - self.unreachable_targets[t] > _UNREACHABLE_COOLDOWN
+            ]
+            if self.task_queue:
+                next_target = self.task_queue[0]
+                # Skip if object is gone from the world
+                if (
+                    next_target not in self.model.grid.objects
+                    and next_target not in self.known_objects
+                ):
+                    self.task_queue.pop(0)
+                    # Don't return — fall through to P4 so the retriever
+                    # immediately self-assigns or explores instead of sitting
+                    # idle for a full step with no target.
+                else:
+                    # Claim the object
+                    pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                    distance = abs(next_target[0] - pos_tuple[0]) + abs(
+                        next_target[1] - pos_tuple[1]
+                    )
+                    can_claim = self.model.comm_manager.try_claim_object(
+                        next_target, self.unique_id, self.model.current_step, distance, self.energy
+                    )
+                    if can_claim:
+                        self.state = AgentState.RETRIEVING
+                        if self.target_position != next_target:
+                            self.target_position = next_target
+                            self.path = []  # invalidate cached path — new target
+                        print(f"{self.tag} CLAIM: heading to {next_target} " f"(dist={distance})")
+                    else:
+                        # Object claimed by someone else, abort
+                        print(
+                            f"{self.tag} SKIP: task {next_target} "
+                            f"already claimed, removing from queue"
+                        )
+                        self.task_queue.pop(0)
+                        self.model.comm_manager.release_claim(next_target, self.unique_id)
+                    # ---- P3b: opportunistic nearby objects while travelling ----
+                    # Even if we already have a primary task, try to claim unclaimed objects
+                    # that are close by and fit in the remaining carrying slots.
+                    if self.state == AgentState.RETRIEVING and self._wh_step is None:
+                        if self._OPPORTUNISTIC_PICKUP or self._AUTONOMOUS_PICKUP:
+                            self._try_opportunistic_pickup()
+                    return
+            # else: task_queue emptied by unreachable purge — fall through to P4
 
         # ---- P4: No tasks — self-assign from full known_objects map before exploring ----
         # Uses the entire accumulated knowledge base (vision + shared map from all
-        # nearby agents), not just currently visible cells.  This is the hive-mind
+        # nearby agents), not just currently visible cells.  This is the "hive-mind"
         # behaviour: if any peer has spotted objects and shared the info, the retriever
         # will proactively head there without waiting for a coordinator assignment.
+        #
+        # When autonomous_pickup is enabled the retriever ALWAYS self-assigns
+        # from known_objects — it behaves as if no coordinator exists, picking
+        # up any object it knows about without waiting for an assignment.
         if self._wh_step is None:
-            if self._SELF_ASSIGN and self._try_self_assign_visible():
+            if (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP) and self._try_self_assign_visible():
+                self._fruitless_explore_steps = 0
                 return  # claimed something, P3 will handle it next step
             self._update_explore_target()
 
@@ -574,6 +622,7 @@ class RetrieverAgent(BaseAgent):
         self._wh_step = "approach"
         self._wh_approach_steps = 0
         self._wh_exit_stuck = 0
+        self._wh_known_wh_count = len(self.known_warehouses)
         self.target_position = station["entrance"]
 
         if purpose == "deliver":
@@ -589,6 +638,8 @@ class RetrieverAgent(BaseAgent):
         """Pick a new exploration target when idle (no tasks).
 
         Priority:
+          0. Seek info — if exploring fruitlessly for too long, head toward
+             the nearest coordinator or peer to exchange map data.
           1. Head toward the centroid of peers' last-known object sightings
              (via retriever_positions of peers that had objects) — best guess
              for where new objects might appear.
@@ -602,108 +653,390 @@ class RetrieverAgent(BaseAgent):
         """
         pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
 
-        # Check if we've reached the current explore target
-        if self._explore_target and pos_tuple == self._explore_target:
+        # Check if we've reached the current explore target OR if it was
+        # abandoned (target_position cleared by stuck/loop detection in
+        # move_towards).  Without this, _explore_target stays stale and
+        # blocks re-evaluation for up to _EXPLORE_RETARGET steps, during
+        # which the agent is completely frozen.
+        if self._explore_target:
+            if pos_tuple == self._explore_target or self.target_position is None:
+                self._explore_target = None
+
+        # Force immediate retarget when stuck next to another agent that is
+        # heading in a conflicting direction — waiting the full
+        # _EXPLORE_RETARGET interval only prolongs the jam.
+        # Use threshold of 3 to avoid premature recalculation on a single
+        # blocked step, which would reset the path every step and stall.
+        if self._explore_target and self.stuck_counter >= 3:
             self._explore_target = None
 
-        # Pick a new target every 15 steps or when we don't have one
+        # Pick a new target every N steps or when we don't have one
         self._explore_steps += 1
+        self._fruitless_explore_steps += 1
         if self._explore_target is None or self._explore_steps > self._EXPLORE_RETARGET:
             self._explore_steps = 0
 
-            # Gather nearby coordinator positions for anti-clustering
+            # --- Strategy 0: seek info from coordinator/peer ---
+            # If the retriever has been exploring without productive
+            # activity for too long, head toward the nearest known
+            # coordinator (or any other agent) to exchange map data.
+            # Once within communication range the normal MapDataMessage
+            # exchange delivers discoveries that self-assign can use.
+            # In map_known mode use a much shorter interval: terrain is
+            # already known so frontier exploration adds little value —
+            # finding objects depends almost entirely on communication.
+            _seek_interval = (
+                self._SEEK_INFO_INTERVAL_MAP_KNOWN
+                if getattr(self.model, "map_known", False)
+                else self._SEEK_INFO_INTERVAL
+            )
+
+            # Gather nearby agent positions AND target positions for anti-clustering.
+            # Include ALL agent types so two idle retrievers near each other are
+            # pushed toward DIFFERENT frontiers.
+            # Using *target* positions (where they're heading) is critical: two
+            # agents can be at different cells but pick the same frontier if we
+            # only penalise current positions.
             nearby_agents = self.get_nearby_agents(self.communication_radius)
-            coord_positions = [
-                pos_to_tuple(a.pos)
-                for a in nearby_agents
-                if getattr(a, "role", None) == "coordinator" and a.pos
-            ]
+            # If we found ANY nearby agents, map data was just exchanged —
+            # reset fruitless counter so we don't keep seeking.
+            # This check MUST run before the SEEK-INFO block below;
+            # otherwise the SEEK-INFO `return` prevents the reset and
+            # the agent loops in SEEK-INFO forever after arriving.
+            if nearby_agents and self._fruitless_explore_steps > _seek_interval:
+                self._fruitless_explore_steps = 0
+
+            if self._fruitless_explore_steps > _seek_interval:
+                seek_target = self._find_nearest_info_source(pos_tuple)
+                if seek_target is not None:
+                    # If the target agent is inside a warehouse, redirect to a
+                    # walkable cell just outside the entrance.  The retriever
+                    # only needs communication proximity — not actual entry.
+                    # Without this, move_towards would route through the
+                    # entrance (Case 2) and the door-unblocking mechanism would
+                    # push the agent off, causing an oscillation loop.
+                    _WH_CELL_TYPES = {
+                        CellType.WAREHOUSE,
+                        CellType.WAREHOUSE_ENTRANCE,
+                        CellType.WAREHOUSE_EXIT,
+                    }
+                    if self.model.grid.get_cell_type(*seek_target) in _WH_CELL_TYPES:
+                        wh = self.model.get_nearest_warehouse_to(seek_target)
+                        entrance = wh.get("entrance")
+                        if entrance:
+                            for dx, dy in [(0, -1), (-1, 0), (1, 0), (0, 1)]:
+                                nx, ny = entrance[0] + dx, entrance[1] + dy
+                                if self.model.grid.get_cell_type(nx, ny) == CellType.FREE:
+                                    seek_target = (nx, ny)
+                                    break
+                    # Only re-assign if target actually changed — avoids
+                    # clearing the cached path every single step.
+                    if seek_target != self._explore_target:
+                        self._explore_target = seek_target
+                        self.target_position = seek_target
+                        self.path = []
+                        self.state = AgentState.EXPLORING
+                        print(
+                            f"{self.tag} SEEK-INFO: idle for "
+                            f"{self._fruitless_explore_steps} steps, "
+                            f"heading to agent near {seek_target} "
+                            f"for map data exchange"
+                        )
+                    # Reset so the agent returns to frontier exploration
+                    # after one retarget interval.  Without this the counter
+                    # grows unboundedly and SEEK-INFO re-fires every 15 steps,
+                    # trapping the agent for 100+ steps.
+                    self._fruitless_explore_steps = 0
+                    return
+            nearby_positions = []
+            for a in nearby_agents:
+                if a.unique_id == self.unique_id or a.pos is None:
+                    continue
+                nearby_positions.append(pos_to_tuple(a.pos))
+                # Also include their exploration/movement targets so the penalty
+                # covers where they're GOING, not just where they ARE now.
+                a_target = getattr(a, "_explore_target", None) or getattr(
+                    a, "target_position", None
+                )
+                if a_target is not None:
+                    nearby_positions.append((a_target[0], a_target[1]))
 
             # --- Strategy 1: head toward UNKNOWN boundary cells ---
             # If the retriever's local map still has unexplored areas, head there
             # to expand coverage and potentially spot new objects.
+            # Uses FrontierExplorer to find clusters of frontier cells so the
+            # retriever targets large unexplored regions instead of zigzagging
+            # around the nearest boundary cell.
             if self._SMART_EXPLORE:
-                import numpy as _np
+                from backend.algorithms.exploration import FrontierExplorer
 
                 # In map_known mode, local_map is pre-filled so local_map==0
                 # is always empty.  Use vision_explored==0 to find cells not
                 # yet visually scanned — objects can only be in unseen areas.
                 if getattr(self.model, "map_known", False):
-                    unknown_mask = self.vision_explored == 0
+                    _unexp_mask = self.vision_explored == 0
                 else:
-                    unknown_mask = self.local_map == 0
-                if _np.any(unknown_mask):
-                    padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
-                    has_explored = _np.zeros_like(unknown_mask)
-                    for dy, dx in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                        has_explored |= (
-                            padded[
-                                1 + dy : padded.shape[0] - 1 + dy, 1 + dx : padded.shape[1] - 1 + dx
+                    _unexp_mask = None
+
+                frontiers = FrontierExplorer.find_frontiers(
+                    self.local_map,
+                    min_cluster_size=1,
+                    unexplored_mask=_unexp_mask,
+                )
+                if frontiers:
+                    # Filter out warehouse cells and unwalkable centroids
+                    _WH = (
+                        CellType.WAREHOUSE,
+                        CellType.WAREHOUSE_ENTRANCE,
+                        CellType.WAREHOUSE_EXIT,
+                    )
+                    valid = [
+                        f
+                        for f in frontiers
+                        if self.model.grid.is_walkable(*f[0])
+                        and self.model.grid.get_cell_type(*f[0]) not in _WH
+                    ]
+                    if valid:
+                        # Soft deconfliction: if another nearby retriever
+                        # already targets a frontier within 6 cells, prefer
+                        # frontiers further away.  If no alternative exists,
+                        # fall through to normal scoring.
+                        _DECONFLICT_DIST = 6
+                        peer_targets: list = []
+                        for a in nearby_agents:
+                            if a.unique_id == self.unique_id:
+                                continue
+                            pt = getattr(a, "_explore_target", None) or getattr(
+                                a, "target_position", None
+                            )
+                            if pt is not None:
+                                peer_targets.append((pt[0], pt[1]))
+
+                        if peer_targets:
+                            deconf_valid = [
+                                f
+                                for f in valid
+                                if all(
+                                    abs(f[0][0] - pt[0]) + abs(f[0][1] - pt[1]) > _DECONFLICT_DIST
+                                    for pt in peer_targets
+                                )
                             ]
-                            != 0
+                            if deconf_valid:
+                                valid = deconf_valid
+                            elif self.model.current_step <= 20:
+                                # Early game only: if all frontiers overlap
+                                # with peers and agents are clustered, spread
+                                # to different corners to bootstrap exploration.
+                                clustered = any(
+                                    abs(pt[0] - pos_tuple[0]) + abs(pt[1] - pos_tuple[1]) <= 8
+                                    for pt in peer_targets
+                                )
+                                if clustered:
+                                    W = self.model.grid.width
+                                    H = self.model.grid.height
+                                    corners = [
+                                        (0, 0),
+                                        (W - 1, 0),
+                                        (0, H - 1),
+                                        (W - 1, H - 1),
+                                    ]
+                                    corners.sort(
+                                        key=lambda c: abs(c[0] - pos_tuple[0])
+                                        + abs(c[1] - pos_tuple[1]),
+                                        reverse=True,
+                                    )
+                                    corners = corners[:-1]
+                                    target = corners[self.unique_id % len(corners)]
+                                    self._explore_target = target
+                                    self.target_position = target
+                                    self.path = []
+                                    self.state = AgentState.EXPLORING
+                                    print(
+                                        f"{self.tag} EXPLORE: "
+                                        f"spread to {target} "
+                                        f"(cluster deconfliction)"
+                                    )
+                                    return
+
+                        # Coverage callback: ratio of explored cells in
+                        # a window around each frontier centroid.  Frontiers
+                        # in largely-unseen areas get a higher score.
+                        # Blended approach: personal vision counts fully,
+                        # communicated terrain (local_map non-zero but
+                        # vision_explored=0) counts partially.
+                        # Weight depends on team composition:
+                        # - With scouts: low weight (0.3) — retrievers stay
+                        #   near scout's trail for fast object retrieval.
+                        # - Without scouts: full weight (1.0) — retrievers
+                        #   spread out, avoiding redundant exploration.
+                        import numpy as np
+
+                        _H, _W = self.local_map.shape
+                        _map_known = getattr(self.model, "map_known", False)
+                        _has_scouts = len(self.model.scouts) > 0
+                        _comm_weight = 0.6 if _has_scouts else 1.0
+
+                        def _explored_ratio(fx: int, fy: int) -> float:
+                            r = 3 if _map_known else 5
+                            y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
+                            x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
+                            if _map_known:
+                                patch = self.vision_explored[y0:y1, x0:x1]
+                                total = patch.size
+                                return float(np.count_nonzero(patch) / total) if total else 1.0
+                            vis = self.vision_explored[y0:y1, x0:x1]
+                            comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
+                            blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
+                            total = blended.size
+                            return float(np.sum(blended) / total) if total else 1.0
+
+                        # Build global peer-target list for area division.
+                        # Only include targets from non-retriever agents
+                        # (scouts, coordinators) — retriever-to-retriever
+                        # deconfliction is handled by the local
+                        # _DECONFLICT_DIST filter and nearby_positions penalty.
+                        _cs = self.model.current_step
+                        _retriever_ids = {a.unique_id for a in self.model.retrievers}
+                        _global_targets = [
+                            pos
+                            for aid, pos in self.peer_explore_targets.items()
+                            if aid not in _retriever_ids
+                            and _cs - self.peer_explore_targets_step.get(aid, 0)
+                            <= self._explore_target_ttl
+                        ]
+
+                        best = FrontierExplorer.select_best_frontier(
+                            valid,
+                            pos_tuple,
+                            nearby_positions,
+                            grid_size=(self.model.grid.width, self.model.grid.height),
+                            explored_ratio_at=_explored_ratio,
+                            all_peer_targets=_global_targets,
+                            current_target=self._explore_target,
                         )
-                    boundary = unknown_mask & has_explored
-                    b_ys, b_xs = _np.where(boundary)
-                    if len(b_ys) > 0:
-                        dists = _np.abs(b_xs - pos_tuple[0]) + _np.abs(b_ys - pos_tuple[1])
-                        if coord_positions:
-                            # Anti-clustering: prefer boundary cells far from
-                            # coordinators.  score = dist_from_me - 0.5 * dist_from_coord
-                            # Lower score → better (close to me AND far from coord).
-                            coord_bonus = _np.zeros(len(b_ys), dtype=_np.float64)
-                            for cp in coord_positions:
-                                coord_bonus += _np.abs(b_xs - cp[0]) + _np.abs(b_ys - cp[1])
-                            scores = dists.astype(_np.float64) - 0.5 * coord_bonus
-                            best_idx = int(_np.argmin(scores))
-                        else:
-                            best_idx = int(_np.argmin(dists))
-                        target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
-                        tgt_ct = self.model.grid.get_cell_type(*target)
-                        if self.model.grid.is_walkable(*target) and tgt_ct not in (
-                            CellType.WAREHOUSE,
-                            CellType.WAREHOUSE_ENTRANCE,
-                            CellType.WAREHOUSE_EXIT,
-                        ):
-                            self._explore_target = target
-                            self.target_position = target
-                            self.path = []
+                        if best:
+                            old_target = self._explore_target
+                            self._explore_target = best
+                            self.target_position = best
+                            if old_target != best:
+                                self.path = []
+                                print(f"{self.tag} EXPLORE: " f"frontier target {best}")
                             self.state = AgentState.EXPLORING
                             return
 
-            # --- Strategy 2: random walkable cell (fallback) ---
+            # --- Strategy 2: centroid-biased walkable cell (fallback) ---
+            # Bias toward the centroid of all unknown (unexplored) cells so the
+            # retriever naturally drifts toward the least-covered region of the map.
+            import numpy as np
+
+            if getattr(self.model, "map_known", False):
+                _unk_mask = self.vision_explored == 0
+            else:
+                _unk_mask = self.local_map == 0
+
+            unk_coords = np.argwhere(_unk_mask)
+            # Compute centroid of unknown area (or map centre if fully explored)
+            if len(unk_coords) > 0:
+                centroid_x = float(np.mean(unk_coords[:, 0]))
+                centroid_y = float(np.mean(unk_coords[:, 1]))
+            else:
+                centroid_x = self.model.grid.width / 2.0
+                centroid_y = self.model.grid.height / 2.0
+
             candidates = []
+            _BAD = (
+                CellType.OBSTACLE,
+                CellType.WAREHOUSE,
+                CellType.WAREHOUSE_ENTRANCE,
+                CellType.WAREHOUSE_EXIT,
+            )
             for dx in range(-12, 13):
                 for dy in range(-12, 13):
                     cx, cy = pos_tuple[0] + dx, pos_tuple[1] + dy
                     if 0 <= cx < self.model.grid.width and 0 <= cy < self.model.grid.height:
                         ct = self.model.grid.get_cell_type(cx, cy)
-                        if ct not in (
-                            CellType.OBSTACLE,
-                            CellType.WAREHOUSE,
-                            CellType.WAREHOUSE_ENTRANCE,
-                            CellType.WAREHOUSE_EXIT,
-                        ) and self.model.grid.is_walkable(cx, cy):
+                        if ct not in _BAD and self.model.grid.is_walkable(cx, cy):
                             candidates.append((cx, cy))
-            if candidates:
-                if coord_positions:
-                    # Pick the cell farthest from coordinators
-                    def _min_coord_dist(cell: tuple) -> int:
-                        return min(
-                            abs(cell[0] - cp[0]) + abs(cell[1] - cp[1]) for cp in coord_positions
-                        )
 
-                    candidates.sort(key=_min_coord_dist, reverse=True)
-                    self._explore_target = candidates[0]
-                else:
-                    self._explore_target = random.choice(candidates)
+            if candidates:
+                # Score: prefer cells closer to unknown centroid (lower = better)
+                # with a secondary penalty to keep agents spread apart.
+                def _score(cell: tuple) -> float:
+                    cdist = abs(cell[0] - centroid_x) + abs(cell[1] - centroid_y)
+                    agent_penalty = 0.0
+                    if nearby_positions:
+                        min_ad = min(
+                            abs(cell[0] - ap[0]) + abs(cell[1] - ap[1]) for ap in nearby_positions
+                        )
+                        agent_penalty = max(0, 8 - min_ad)  # penalty when close to peers
+                    return cdist + agent_penalty
+
+                candidates.sort(key=_score)
+                old_target = self._explore_target
+                self._explore_target = candidates[0]
                 self.target_position = self._explore_target
+                if old_target != self._explore_target:
+                    self.path = []
+                    print(f"{self.tag} EXPLORE: " f"centroid-biased target {self._explore_target}")
+                self.state = AgentState.EXPLORING
+
+            # --- Fallback 3: farthest walkable corner (never idle) ---
+            # If the 25-cell search radius found nothing, head to the farthest
+            # walkable corner of the map.  This guarantees the retriever NEVER
+            # goes idle while the simulation is still running.
+            else:
+                corners = [
+                    (0, 0),
+                    (self.model.grid.width - 1, 0),
+                    (0, self.model.grid.height - 1),
+                    (self.model.grid.width - 1, self.model.grid.height - 1),
+                ]
+                best_corner = max(
+                    corners,
+                    key=lambda c: abs(c[0] - pos_tuple[0]) + abs(c[1] - pos_tuple[1]),
+                )
+                self._explore_target = best_corner
+                self.target_position = best_corner
                 self.path = []
                 self.state = AgentState.EXPLORING
-            else:
-                self.state = AgentState.IDLE
-                self.target_position = None
+                print(f"{self.tag} EXPLORE: " f"corner fallback target {best_corner}")
         else:
             self.state = AgentState.EXPLORING
+            # Safety net: if target_position was cleared by stuck/loop
+            # detection while _explore_target still exists, re-apply it
+            # so the agent doesn't sit still for one or more steps.
+            if self.target_position is None and self._explore_target is not None:
+                self.target_position = self._explore_target
+                self.path = []
+
+    def _find_nearest_info_source(self, my_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+        """Find the nearest coordinator (preferred) or any other agent.
+
+        Used by the seek-info strategy: when the retriever has been
+        exploring fruitlessly, it heads toward another agent to trigger
+        a MapDataMessage exchange and learn about recently discovered
+        objects.
+
+        Searches all agents visible to the model (not limited to comm
+        range) — same approach the scout uses in its SEEK-COORD logic.
+        Returns the position of the best candidate, or None.
+        """
+        best_pos: Optional[Tuple[int, int]] = None
+        best_dist = float("inf")
+        best_is_coord = False
+
+        for agent in self.model.agents:
+            if agent.unique_id == self.unique_id or agent.pos is None:
+                continue
+            a_pos = pos_to_tuple(agent.pos)
+            dist = abs(a_pos[0] - my_pos[0]) + abs(a_pos[1] - my_pos[1])
+            is_coord = getattr(agent, "role", None) == "coordinator"
+            # Prefer coordinators; among same type, prefer closer
+            if is_coord and not best_is_coord:
+                best_pos, best_dist, best_is_coord = a_pos, dist, True
+            elif is_coord == best_is_coord and dist < best_dist:
+                best_pos, best_dist, best_is_coord = a_pos, dist, is_coord
+        return best_pos
 
     # ------------------------------------------------------------------
     # Energy depletion: drop cargo
@@ -872,7 +1205,12 @@ class RetrieverAgent(BaseAgent):
             if self.state == AgentState.RETRIEVING and my_pos and my_pos == self.target_position:
                 self._try_pickup_object()
 
-        elif self.state == AgentState.IDLE:
+        else:
+            # No target — force exploration regardless of current state.
+            # This catches dead-ends where state is RETRIEVING but the
+            # target was cleared (stuck/loop detection, stale-task prune,
+            # failed claim).  Without this, only IDLE/EXPLORING triggered
+            # re-exploration and the agent would freeze.
             self._update_explore_target()
 
     def _execute_warehouse_step(self) -> None:
@@ -888,6 +1226,33 @@ class RetrieverAgent(BaseAgent):
         assert station is not None
 
         if self._wh_step == "approach":
+            # ── Opportunistic detour during approach ──────────────────
+            # If the retriever still has spare carrying capacity AND knows
+            # about a nearby unclaimed object, abort the warehouse run,
+            # pick up the object first, then resume delivery later.
+            # This prevents wasted trips when objects are discovered (or
+            # reported by peers) while the retriever is already heading
+            # to the warehouse.
+            if (
+                self.carrying_objects < self.carrying_capacity
+                and self.state == AgentState.DELIVERING
+                and (self._OPPORTUNISTIC_PICKUP or self._AUTONOMOUS_PICKUP)
+            ):
+                self._try_opportunistic_pickup()
+                if self.task_queue:
+                    # Successfully claimed something — abort warehouse
+                    # sequence and let P3 handle the new task next step.
+                    print(
+                        f"{self.tag} WH-DETOUR: aborting approach to "
+                        f"pick up {self.task_queue[0]} en route"
+                    )
+                    self._wh_step = None
+                    self._wh_station = None
+                    self.state = AgentState.RETRIEVING
+                    self.target_position = self.task_queue[0]
+                    self.path = []
+                    return
+
             entrance = station["entrance"]
             cell_type = self.model.grid.get_cell_type(*my_pos)
             # Transition once the agent is ON the entrance OR inside (interior).
@@ -927,6 +1292,39 @@ class RetrieverAgent(BaseAgent):
                         self.move_towards(queue_cell)
             else:
                 self._wh_approach_steps += 1
+
+                # ── Dynamic warehouse re-evaluation ────────────────────────
+                # If the agent discovered new warehouses since the sequence
+                # started, re-evaluate whether a closer one exists and switch.
+                if len(self.known_warehouses) > self._wh_known_wh_count:
+                    self._wh_known_wh_count = len(self.known_warehouses)
+                    visible_entrances = [
+                        wh
+                        for wh in self.known_warehouses
+                        if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
+                    ]
+                    better = self.model.get_best_warehouse_for(
+                        pos=my_pos,
+                        known_entrances=visible_entrances,
+                        agent_energy=self.energy,
+                    )
+                    better_ent = better["entrance"]
+                    if better_ent != entrance:
+                        old_dist = self.model._path_distance(my_pos, entrance)
+                        new_dist = self.model._path_distance(my_pos, better_ent)
+                        if new_dist < old_dist:
+                            print(
+                                f"{self.tag} DYNAMIC-REROUTE: discovered closer "
+                                f"warehouse {better_ent} (dist={new_dist:.0f}) "
+                                f"vs current {entrance} (dist={old_dist:.0f})"
+                            )
+                            self._wh_station = better
+                            self._wh_approach_steps = 0
+                            self.target_position = better_ent
+                            self.path = []
+                            self.stuck_counter = 0
+                            station = better
+                            entrance = better_ent
 
                 # ── Congestion reroute ─────────────────────────────────────
                 # If the target warehouse is too crowded and there is an
@@ -977,6 +1375,7 @@ class RetrieverAgent(BaseAgent):
                 delivered = self.carrying_objects
                 self.model.objects_retrieved += delivered
                 self.carrying_objects = 0
+                self._fruitless_explore_steps = 0
                 self.energy_consumption["move"] = 0.6  # normal move cost
                 print(
                     f"{self.tag} DELIVERY: "
@@ -1121,6 +1520,7 @@ class RetrieverAgent(BaseAgent):
                     f"(carrying {self.carrying_objects}/{self.carrying_capacity})"
                 )
                 self.pending_events.append("object_picked")
+                self._fruitless_explore_steps = 0
                 self.model.comm_manager.release_claim(pos_tuple, self.unique_id)
                 # Remove from task queue
                 if pos_tuple in self.task_queue:

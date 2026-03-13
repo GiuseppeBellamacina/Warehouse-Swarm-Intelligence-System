@@ -844,6 +844,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       disabled={isRunning}
                     />
                     <Slider
+                      label="Exploration zones"
+                      tip="Number of macro-zones the map is split into for exploration routing (1 = disabled, use even values: 2/4/6/8)"
+                      value={overrides.scoutBehavior.zone_divisions}
+                      onChange={(v) => setScoutBeh({ zone_divisions: v })}
+                      min={1}
+                      max={8}
+                      step={1}
+                      disabled={isRunning}
+                    />
+                    <Slider
                       label="Anti-cluster distance"
                       tip="Min Manhattan distance from other scouts when choosing frontiers — prevents scouts from clustering together"
                       value={overrides.scoutBehavior.anti_cluster_distance}
@@ -1190,6 +1200,13 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       tip="In traffic jams, retrievers carrying more objects get movement priority"
                       value={overrides.retrieverBehavior.jam_priority}
                       onChange={(v) => setRetrBeh({ jam_priority: v })}
+                      disabled={isRunning}
+                    />
+                    <Toggle
+                      label="Autonomous pickup"
+                      tip="Pick up objects on sight without waiting for coordinator assignment"
+                      value={overrides.retrieverBehavior.autonomous_pickup}
+                      onChange={(v) => setRetrBeh({ autonomous_pickup: v })}
                       disabled={isRunning}
                     />
                   </div>

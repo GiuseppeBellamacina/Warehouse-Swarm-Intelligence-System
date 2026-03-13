@@ -216,7 +216,7 @@ class ScoutBehaviorParams(BaseModel):
         description="Min Manhattan distance from other scouts for frontier selection",
     )
     target_hysteresis: int = Field(
-        default=15,
+        default=5,
         ge=0,
         description="Min Manhattan distance before switching to new frontier target",
     )
@@ -244,6 +244,12 @@ class ScoutBehaviorParams(BaseModel):
     )
     min_frontier_cluster_size: int = Field(
         default=5, ge=1, description="Min contiguous unknown cells to qualify as a frontier cluster"
+    )
+    zone_divisions: int = Field(
+        default=6,
+        ge=1,
+        le=8,
+        description="Number of macro-zones for exploration routing (1 disables, 2/4/6/8 recommended)",
     )
 
 
@@ -324,6 +330,12 @@ class RetrieverBehaviorParams(BaseModel):
     jam_priority: bool = Field(
         default=True,
         description="In traffic jams, retrievers carrying more objects get movement priority",
+    )
+    autonomous_pickup: bool = Field(
+        default=False,
+        description=(
+            "Retrievers pick up objects on sight" " without waiting for coordinator assignment"
+        ),
     )
 
 
