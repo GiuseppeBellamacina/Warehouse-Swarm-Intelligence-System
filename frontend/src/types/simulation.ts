@@ -181,6 +181,7 @@ export interface ScoutBehaviorParams {
   stale_coverage_patrol: boolean;
   anti_clustering: boolean;
   seek_coordinator: boolean;
+  zone_divisions: number;
 }
 
 export interface CoordinatorBehaviorParams {

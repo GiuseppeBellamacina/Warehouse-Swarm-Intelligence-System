@@ -245,6 +245,12 @@ class ScoutBehaviorParams(BaseModel):
     min_frontier_cluster_size: int = Field(
         default=5, ge=1, description="Min contiguous unknown cells to qualify as a frontier cluster"
     )
+    zone_divisions: int = Field(
+        default=3,
+        ge=1,
+        le=8,
+        description="NxN zone grid for macro-level exploration routing (1 disables zone routing)",
+    )
 
 
 class CoordinatorBehaviorParams(BaseModel):
