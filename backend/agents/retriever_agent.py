@@ -795,11 +795,10 @@ class RetrieverAgent(BaseAgent):
                         and self.model.grid.get_cell_type(*f[0]) not in _WH
                     ]
                     if valid:
-                        # Collect exploration targets of nearby retrievers for
-                        # deconfliction — if another retriever already targets a
-                        # frontier within _DECONFLICT_DIST cells, remove it from
-                        # the candidate list before scoring so the two agents
-                        # don't fight over the same region.
+                        # Soft deconfliction: if another nearby retriever
+                        # already targets a frontier within 6 cells, prefer
+                        # frontiers further away.  If no alternative exists,
+                        # fall through to normal scoring.
                         _DECONFLICT_DIST = 6
                         peer_targets: list = []
                         for a in nearby_agents:
@@ -822,12 +821,10 @@ class RetrieverAgent(BaseAgent):
                             ]
                             if deconf_valid:
                                 valid = deconf_valid
-                            else:
-                                # All frontiers overlap with peer targets.
-                                # If agents are clustered (any peer target
-                                # within 8 cells), spread to different corners
-                                # so agents don't fight over the same tiny
-                                # frontier — critical at simulation start.
+                            elif self.model.current_step <= 20:
+                                # Early game only: if all frontiers overlap
+                                # with peers and agents are clustered, spread
+                                # to different corners to bootstrap exploration.
                                 clustered = any(
                                     abs(pt[0] - pos_tuple[0]) + abs(pt[1] - pos_tuple[1]) <= 8
                                     for pt in peer_targets
@@ -846,7 +843,6 @@ class RetrieverAgent(BaseAgent):
                                         + abs(c[1] - pos_tuple[1]),
                                         reverse=True,
                                     )
-                                    # Drop nearest corner (the one we're at)
                                     corners = corners[:-1]
                                     target = corners[self.unique_id % len(corners)]
                                     self._explore_target = target
@@ -859,23 +855,38 @@ class RetrieverAgent(BaseAgent):
                                         f"(cluster deconfliction)"
                                     )
                                     return
-                                # Not clustered — keep full list (normal
-                                # fallback for mid/late-game encounters).
 
                         # Coverage callback: ratio of explored cells in
-                        # a 7×7 window around each frontier centroid.  Frontiers
+                        # a window around each frontier centroid.  Frontiers
                         # in largely-unseen areas get a higher score.
+                        # Blended approach: personal vision counts fully,
+                        # communicated terrain (local_map non-zero but
+                        # vision_explored=0) counts partially.
+                        # Weight depends on team composition:
+                        # - With scouts: low weight (0.3) — retrievers stay
+                        #   near scout's trail for fast object retrieval.
+                        # - Without scouts: full weight (1.0) — retrievers
+                        #   spread out, avoiding redundant exploration.
                         import numpy as np
 
                         _H, _W = self.local_map.shape
+                        _map_known = getattr(self.model, 'map_known', False)
+                        _has_scouts = len(self.model.scouts) > 0
+                        _comm_weight = 0.0 if _has_scouts else 1.0
 
                         def _explored_ratio(fx: int, fy: int) -> float:
-                            r = 3 if getattr(self.model, 'map_known', False) else 5
+                            r = 3 if _map_known else 5
                             y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
                             x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
-                            patch = self.vision_explored[y0:y1, x0:x1]
-                            total = patch.size
-                            return float(np.sum(patch > 0) / total) if total else 1.0
+                            if _map_known:
+                                patch = self.vision_explored[y0:y1, x0:x1]
+                                total = patch.size
+                                return float(np.count_nonzero(patch) / total) if total else 1.0
+                            vis = self.vision_explored[y0:y1, x0:x1]
+                            comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
+                            blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
+                            total = blended.size
+                            return float(np.sum(blended) / total) if total else 1.0
 
                         # Build global peer-target list for area division.
                         # Only include targets from non-retriever agents
