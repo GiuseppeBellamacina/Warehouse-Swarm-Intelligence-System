@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 896 242" width="896" height="242" style="background:#1f2937;border-radius:8px">
+<text x="448.0" y="20" text-anchor="middle" fill="#e5e7eb" font-size="13" font-weight="700">Summary  —  A</text>
+<rect x="0" y="38" width="896" height="28" fill="#111827"/>
+<text x="12" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Config</text>
+<text x="271" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Steps</text>
+<text x="345" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Retrieved</text>
+<text x="454" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Completion</text>
+<text x="572" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Efficiency</text>
+<text x="690" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Avg Energy</text>
+<text x="808" y="56.2" fill="#9ca3af" font-size="11" font-weight="bold" font-family="sans-serif">Messages</text>
+<line x1="0" x2="896" y1="66" y2="66" stroke="#374151" stroke-width="1"/>
+<line x1="0" x2="896" y1="94" y2="94" stroke="#1f2937" stroke-width="1"/>
+<circle cx="16" cy="80.0" r="4" fill="#3b82f6"/>
+<text x="26" y="84.2" fill="#d1d5db" font-size="11" font-family="monospace">1S/1C/3R unknown</text>
+<text x="271" y="84.2" fill="#d1d5db" font-size="11" font-family="monospace">125</text>
+<text x="345" y="84.2" fill="#d1d5db" font-size="11" font-family="monospace">10/10</text>
+<text x="454" y="84.2" fill="#d1d5db" font-size="11" font-family="monospace">100.0%</text>
+<text x="572" y="84.2" fill="#d1d5db" font-size="11" font-family="monospace">8.00</text>
+<text x="690" y="84.2" fill="#d1d5db" font-size="11" font-family="monospace">376</text>
+<text x="808" y="84.2" fill="#6b7280" font-size="11" font-family="monospace">201</text>
+<rect x="0" y="94" width="896" height="28" fill="#111827"/>
+<line x1="0" x2="896" y1="122" y2="122" stroke="#1f2937" stroke-width="1"/>
+<circle cx="16" cy="108.0" r="4" fill="#10b981"/>
+<text x="26" y="112.2" fill="#d1d5db" font-size="11" font-family="monospace">1S/1C/3R map_known</text>
+<text x="271" y="112.2" fill="#d1d5db" font-size="11" font-family="monospace">70</text>
+<text x="345" y="112.2" fill="#d1d5db" font-size="11" font-family="monospace">10/10</text>
+<text x="454" y="112.2" fill="#d1d5db" font-size="11" font-family="monospace">100.0%</text>
+<text x="572" y="112.2" fill="#d1d5db" font-size="11" font-family="monospace">14.29</text>
+<text x="690" y="112.2" fill="#d1d5db" font-size="11" font-family="monospace">427</text>
+<text x="808" y="112.2" fill="#6b7280" font-size="11" font-family="monospace">135</text>
+<line x1="0" x2="896" y1="150" y2="150" stroke="#1f2937" stroke-width="1"/>
+<circle cx="16" cy="136.0" r="4" fill="#f59e0b"/>
+<text x="26" y="140.2" fill="#d1d5db" font-size="11" font-family="monospace">0S/0C/5R unknown</text>
+<text x="271" y="140.2" fill="#d1d5db" font-size="11" font-family="monospace">148</text>
+<text x="345" y="140.2" fill="#d1d5db" font-size="11" font-family="monospace">10/10</text>
+<text x="454" y="140.2" fill="#d1d5db" font-size="11" font-family="monospace">100.0%</text>
+<text x="572" y="140.2" fill="#d1d5db" font-size="11" font-family="monospace">6.76</text>
+<text x="690" y="140.2" fill="#d1d5db" font-size="11" font-family="monospace">398</text>
+<text x="808" y="140.2" fill="#6b7280" font-size="11" font-family="monospace">354</text>
+<rect x="0" y="150" width="896" height="28" fill="#111827"/>
+<line x1="0" x2="896" y1="178" y2="178" stroke="#1f2937" stroke-width="1"/>
+<circle cx="16" cy="164.0" r="4" fill="#ef4444"/>
+<text x="26" y="168.2" fill="#d1d5db" font-size="11" font-family="monospace">0S/0C/5R map_known</text>
+<text x="271" y="168.2" fill="#d1d5db" font-size="11" font-family="monospace">82</text>
+<text x="345" y="168.2" fill="#d1d5db" font-size="11" font-family="monospace">10/10</text>
+<text x="454" y="168.2" fill="#d1d5db" font-size="11" font-family="monospace">100.0%</text>
+<text x="572" y="168.2" fill="#d1d5db" font-size="11" font-family="monospace">12.20</text>
+<text x="690" y="168.2" fill="#d1d5db" font-size="11" font-family="monospace">436</text>
+<text x="808" y="168.2" fill="#6b7280" font-size="11" font-family="monospace">328</text>
+<line x1="0" x2="896" y1="206" y2="206" stroke="#1f2937" stroke-width="1"/>
+<circle cx="16" cy="192.0" r="4" fill="#8b5cf6"/>
+<text x="26" y="196.2" fill="#d1d5db" font-size="11" font-family="monospace">1S/1C/3R unknown  no-seek</text>
+<text x="271" y="196.2" fill="#d1d5db" font-size="11" font-family="monospace">115</text>
+<text x="345" y="196.2" fill="#d1d5db" font-size="11" font-family="monospace">10/10</text>
+<text x="454" y="196.2" fill="#d1d5db" font-size="11" font-family="monospace">100.0%</text>
+<text x="572" y="196.2" fill="#d1d5db" font-size="11" font-family="monospace">8.70</text>
+<text x="690" y="196.2" fill="#d1d5db" font-size="11" font-family="monospace">385</text>
+<text x="808" y="196.2" fill="#6b7280" font-size="11" font-family="monospace">175</text>
+<rect x="0" y="206" width="896" height="28" fill="#111827"/>
+<line x1="0" x2="896" y1="234" y2="234" stroke="#1f2937" stroke-width="1"/>
+<circle cx="16" cy="220.0" r="4" fill="#ec4899"/>
+<text x="26" y="224.2" fill="#d1d5db" font-size="11" font-family="monospace">1S/1C/3R map_known no-seek</text>
+<text x="271" y="224.2" fill="#d1d5db" font-size="11" font-family="monospace">75</text>
+<text x="345" y="224.2" fill="#d1d5db" font-size="11" font-family="monospace">10/10</text>
+<text x="454" y="224.2" fill="#d1d5db" font-size="11" font-family="monospace">100.0%</text>
+<text x="572" y="224.2" fill="#d1d5db" font-size="11" font-family="monospace">13.33</text>
+<text x="690" y="224.2" fill="#d1d5db" font-size="11" font-family="monospace">422</text>
+<text x="808" y="224.2" fill="#6b7280" font-size="11" font-family="monospace">118</text>
+</svg>
