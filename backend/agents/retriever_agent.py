@@ -128,7 +128,7 @@ class RetrieverAgent(BaseAgent):
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 40
-        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 15
+        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 40
 
     # ------------------------------------------------------------------
     # Sense
@@ -797,6 +797,51 @@ class RetrieverAgent(BaseAgent):
                         and self.model.grid.get_cell_type(*f[0]) not in _WH
                     ]
                     if valid:
+                        # Early game: spread retrievers to different map
+                        # quadrants.  At step 1 no agent has a target yet,
+                        # so peer_targets is empty and scoring converges on
+                        # the same centroid.  Detect clustering by agent
+                        # positions instead.
+                        if self.model.current_step <= 20:
+                            peer_positions = [
+                                pos_to_tuple(a.pos)
+                                for a in nearby_agents
+                                if a.unique_id != self.unique_id and a.pos is not None
+                            ]
+                            clustered = any(
+                                abs(pp[0] - pos_tuple[0]) + abs(pp[1] - pos_tuple[1]) <= 8
+                                for pp in peer_positions
+                            )
+                            if clustered:
+                                W = self.model.grid.width
+                                H = self.model.grid.height
+                                corners = [
+                                    (0, 0),
+                                    (W - 1, 0),
+                                    (0, H - 1),
+                                    (W - 1, H - 1),
+                                ]
+                                # Each retriever picks a different corner
+                                # based on its index within the retriever list.
+                                ret_ids = sorted(a.unique_id for a in self.model.retrievers)
+                                my_idx = ret_ids.index(self.unique_id) if self.unique_id in ret_ids else 0
+                                corners.sort(
+                                    key=lambda c: abs(c[0] - pos_tuple[0])
+                                    + abs(c[1] - pos_tuple[1]),
+                                    reverse=True,
+                                )
+                                target = corners[my_idx % len(corners)]
+                                self._explore_target = target
+                                self.target_position = target
+                                self.path = []
+                                self.state = AgentState.EXPLORING
+                                print(
+                                    f"{self.tag} EXPLORE: "
+                                    f"spread to {target} "
+                                    f"(cluster deconfliction)"
+                                )
+                                return
+
                         # Soft deconfliction: if another nearby retriever
                         # already targets a frontier within 6 cells, prefer
                         # frontiers further away.  If no alternative exists,
@@ -823,40 +868,6 @@ class RetrieverAgent(BaseAgent):
                             ]
                             if deconf_valid:
                                 valid = deconf_valid
-                            elif self.model.current_step <= 20:
-                                # Early game only: if all frontiers overlap
-                                # with peers and agents are clustered, spread
-                                # to different corners to bootstrap exploration.
-                                clustered = any(
-                                    abs(pt[0] - pos_tuple[0]) + abs(pt[1] - pos_tuple[1]) <= 8
-                                    for pt in peer_targets
-                                )
-                                if clustered:
-                                    W = self.model.grid.width
-                                    H = self.model.grid.height
-                                    corners = [
-                                        (0, 0),
-                                        (W - 1, 0),
-                                        (0, H - 1),
-                                        (W - 1, H - 1),
-                                    ]
-                                    corners.sort(
-                                        key=lambda c: abs(c[0] - pos_tuple[0])
-                                        + abs(c[1] - pos_tuple[1]),
-                                        reverse=True,
-                                    )
-                                    corners = corners[:-1]
-                                    target = corners[self.unique_id % len(corners)]
-                                    self._explore_target = target
-                                    self.target_position = target
-                                    self.path = []
-                                    self.state = AgentState.EXPLORING
-                                    print(
-                                        f"{self.tag} EXPLORE: "
-                                        f"spread to {target} "
-                                        f"(cluster deconfliction)"
-                                    )
-                                    return
 
                         # Coverage callback: ratio of explored cells in
                         # a window around each frontier centroid.  Frontiers
