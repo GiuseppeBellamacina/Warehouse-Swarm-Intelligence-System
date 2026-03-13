@@ -324,40 +324,53 @@ class RetrieverAgent(BaseAgent):
                     key=lambda t: abs(t[0] - pos_tuple[0]) + abs(t[1] - pos_tuple[1])
                 )
 
-            next_target = self.task_queue[0]
-            # Skip if object is gone from the world
-            if next_target not in self.model.grid.objects and next_target not in self.known_objects:
-                self.task_queue.pop(0)
-                # Don't return — fall through to P4 so the retriever
-                # immediately self-assigns or explores instead of sitting
-                # idle for a full step with no target.
-            else:
-                # Claim the object
-                pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                distance = abs(next_target[0] - pos_tuple[0]) + abs(next_target[1] - pos_tuple[1])
-                can_claim = self.model.comm_manager.try_claim_object(
-                    next_target, self.unique_id, self.model.current_step, distance, self.energy
-                )
-                if can_claim:
-                    self.state = AgentState.RETRIEVING
-                    self.target_position = next_target
-                    self.path = []  # invalidate cached path — new target
-                    print(f"{self.tag} CLAIM: heading to {next_target} " f"(dist={distance})")
-                else:
-                    # Object claimed by someone else, abort
-                    print(
-                        f"{self.tag} SKIP: task {next_target} "
-                        f"already claimed, removing from queue"
-                    )
+            # ── Purge unreachable targets before selecting ──────────
+            # Loop/stuck detection blacklists positions into unreachable_targets.
+            # Re-queue them only after a cooldown so the agent doesn't oscillate.
+            _UNREACHABLE_COOLDOWN = 20
+            self.task_queue = [
+                t
+                for t in self.task_queue
+                if t not in self.unreachable_targets
+                or self.model.current_step - self.unreachable_targets[t] > _UNREACHABLE_COOLDOWN
+            ]
+            if self.task_queue:
+                next_target = self.task_queue[0]
+                # Skip if object is gone from the world
+                if next_target not in self.model.grid.objects and next_target not in self.known_objects:
                     self.task_queue.pop(0)
-                    self.model.comm_manager.release_claim(next_target, self.unique_id)
-                # ---- P3b: opportunistic nearby objects while travelling ----
-                # Even if we already have a primary task, try to claim unclaimed objects
-                # that are close by and fit in the remaining carrying slots.
-                if self.state == AgentState.RETRIEVING and self._wh_step is None:
-                    if self._OPPORTUNISTIC_PICKUP or self._AUTONOMOUS_PICKUP:
-                        self._try_opportunistic_pickup()
-                return
+                    # Don't return — fall through to P4 so the retriever
+                    # immediately self-assigns or explores instead of sitting
+                    # idle for a full step with no target.
+                else:
+                    # Claim the object
+                    pos_tuple = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                    distance = abs(next_target[0] - pos_tuple[0]) + abs(next_target[1] - pos_tuple[1])
+                    can_claim = self.model.comm_manager.try_claim_object(
+                        next_target, self.unique_id, self.model.current_step, distance, self.energy
+                    )
+                    if can_claim:
+                        self.state = AgentState.RETRIEVING
+                        if self.target_position != next_target:
+                            self.target_position = next_target
+                            self.path = []  # invalidate cached path — new target
+                        print(f"{self.tag} CLAIM: heading to {next_target} " f"(dist={distance})")
+                    else:
+                        # Object claimed by someone else, abort
+                        print(
+                            f"{self.tag} SKIP: task {next_target} "
+                            f"already claimed, removing from queue"
+                        )
+                        self.task_queue.pop(0)
+                        self.model.comm_manager.release_claim(next_target, self.unique_id)
+                    # ---- P3b: opportunistic nearby objects while travelling ----
+                    # Even if we already have a primary task, try to claim unclaimed objects
+                    # that are close by and fit in the remaining carrying slots.
+                    if self.state == AgentState.RETRIEVING and self._wh_step is None:
+                        if self._OPPORTUNISTIC_PICKUP or self._AUTONOMOUS_PICKUP:
+                            self._try_opportunistic_pickup()
+                    return
+            # else: task_queue emptied by unreachable purge — fall through to P4
 
         # ---- P4: No tasks — self-assign from full known_objects map before exploring ----
         # Uses the entire accumulated knowledge base (vision + shared map from all
@@ -646,7 +659,9 @@ class RetrieverAgent(BaseAgent):
         # Force immediate retarget when stuck next to another agent that is
         # heading in a conflicting direction — waiting the full
         # _EXPLORE_RETARGET interval only prolongs the jam.
-        if self._explore_target and self.stuck_counter >= 1:
+        # Use threshold of 3 to avoid premature recalculation on a single
+        # blocked step, which would reset the path every step and stall.
+        if self._explore_target and self.stuck_counter >= 3:
             self._explore_target = None
 
         # Pick a new target every N steps or when we don't have one
@@ -826,9 +841,11 @@ class RetrieverAgent(BaseAgent):
                             explored_ratio_at=_explored_ratio,
                         )
                         if best:
+                            old_target = self._explore_target
                             self._explore_target = best
                             self.target_position = best
-                            self.path = []
+                            if old_target != best:
+                                self.path = []
                             self.state = AgentState.EXPLORING
                             print(f"{self.tag} EXPLORE: " f"frontier target {best}")
                             return
@@ -881,9 +898,11 @@ class RetrieverAgent(BaseAgent):
                     return cdist + agent_penalty
 
                 candidates.sort(key=_score)
+                old_target = self._explore_target
                 self._explore_target = candidates[0]
                 self.target_position = self._explore_target
-                self.path = []
+                if old_target != self._explore_target:
+                    self.path = []
                 self.state = AgentState.EXPLORING
                 print(f"{self.tag} EXPLORE: " f"centroid-biased target {self._explore_target}")
 
