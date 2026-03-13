@@ -685,6 +685,22 @@ class RetrieverAgent(BaseAgent):
                 if getattr(self.model, 'map_known', False)
                 else self._SEEK_INFO_INTERVAL
             )
+
+            # Gather nearby agent positions AND target positions for anti-clustering.
+            # Include ALL agent types so two idle retrievers near each other are
+            # pushed toward DIFFERENT frontiers.
+            # Using *target* positions (where they're heading) is critical: two
+            # agents can be at different cells but pick the same frontier if we
+            # only penalise current positions.
+            nearby_agents = self.get_nearby_agents(self.communication_radius)
+            # If we found ANY nearby agents, map data was just exchanged —
+            # reset fruitless counter so we don't keep seeking.
+            # This check MUST run before the SEEK-INFO block below;
+            # otherwise the SEEK-INFO `return` prevents the reset and
+            # the agent loops in SEEK-INFO forever after arriving.
+            if nearby_agents and self._fruitless_explore_steps > _seek_interval:
+                self._fruitless_explore_steps = 0
+
             if self._fruitless_explore_steps > _seek_interval:
                 seek_target = self._find_nearest_info_source(pos_tuple)
                 if seek_target is not None:
@@ -724,19 +740,12 @@ class RetrieverAgent(BaseAgent):
                             f"heading to agent near {seek_target} "
                             f"for map data exchange"
                         )
+                    # Reset so the agent returns to frontier exploration
+                    # after one retarget interval.  Without this the counter
+                    # grows unboundedly and SEEK-INFO re-fires every 15 steps,
+                    # trapping the agent for 100+ steps.
+                    self._fruitless_explore_steps = 0
                     return
-
-            # Gather nearby agent positions AND target positions for anti-clustering.
-            # Include ALL agent types so two idle retrievers near each other are
-            # pushed toward DIFFERENT frontiers.
-            # Using *target* positions (where they're heading) is critical: two
-            # agents can be at different cells but pick the same frontier if we
-            # only penalise current positions.
-            nearby_agents = self.get_nearby_agents(self.communication_radius)
-            # If we found ANY nearby agents, map data was just exchanged —
-            # reset fruitless counter so we don't keep seeking.
-            if nearby_agents and self._fruitless_explore_steps > _seek_interval:
-                self._fruitless_explore_steps = 0
             nearby_positions = []
             for a in nearby_agents:
                 if a.unique_id == self.unique_id or a.pos is None:
@@ -858,15 +867,30 @@ class RetrieverAgent(BaseAgent):
                         # in largely-unseen areas get a higher score.
                         import numpy as np
 
+                        _H, _W = self.local_map.shape
+
                         def _explored_ratio(fx: int, fy: int) -> float:
-                            r = 3
-                            x0 = max(fx - r, 0)
-                            x1 = min(fx + r + 1, self.local_map.shape[0])
-                            y0 = max(fy - r, 0)
-                            y1 = min(fy + r + 1, self.local_map.shape[1])
-                            patch = self.vision_explored[x0:x1, y0:y1]
+                            r = 3 if getattr(self.model, 'map_known', False) else 5
+                            y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
+                            x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
+                            patch = self.vision_explored[y0:y1, x0:x1]
                             total = patch.size
                             return float(np.sum(patch > 0) / total) if total else 1.0
+
+                        # Build global peer-target list for area division.
+                        # Only include targets from non-retriever agents
+                        # (scouts, coordinators) — retriever-to-retriever
+                        # deconfliction is handled by the local
+                        # _DECONFLICT_DIST filter and nearby_positions penalty.
+                        _cs = self.model.current_step
+                        _retriever_ids = {a.unique_id for a in self.model.retrievers}
+                        _global_targets = [
+                            pos
+                            for aid, pos in self.peer_explore_targets.items()
+                            if aid not in _retriever_ids
+                            and _cs - self.peer_explore_targets_step.get(aid, 0)
+                            <= self._explore_target_ttl
+                        ]
 
                         best = FrontierExplorer.select_best_frontier(
                             valid,
@@ -874,6 +898,8 @@ class RetrieverAgent(BaseAgent):
                             nearby_positions,
                             grid_size=(self.model.grid.width, self.model.grid.height),
                             explored_ratio_at=_explored_ratio,
+                            all_peer_targets=_global_targets,
+                            current_target=self._explore_target,
                         )
                         if best:
                             old_target = self._explore_target

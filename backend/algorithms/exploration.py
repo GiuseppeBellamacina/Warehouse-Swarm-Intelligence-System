@@ -104,6 +104,17 @@ class FrontierExplorer:
             idx = cid - 1
             cx = int(sum_x[idx] / sizes[idx])
             cy = int(sum_y[idx] / sizes[idx])
+
+            # The geometric centroid may land on a wall or obstacle.
+            # If so, snap to the nearest cell that actually belongs to
+            # this cluster so downstream consumers never discard a large
+            # frontier just because its centroid is unwalkable.
+            if labeled_array[cy, cx] != cid:
+                members_y, members_x = np.where(labeled_array == cid)
+                dists = np.abs(members_x - cx) + np.abs(members_y - cy)
+                nearest = np.argmin(dists)
+                cx, cy = int(members_x[nearest]), int(members_y[nearest])
+
             frontiers.append(((cx, cy), int(sizes[idx])))
 
         return frontiers
@@ -115,17 +126,22 @@ class FrontierExplorer:
         nearby_agent_positions: Optional[List[Tuple[int, int]]] = None,
         grid_size: Optional[Tuple[int, int]] = None,
         explored_ratio_at: Optional[Callable[[int, int], float]] = None,
+        all_peer_targets: Optional[List[Tuple[int, int]]] = None,
+        current_target: Optional[Tuple[int, int]] = None,
     ) -> Optional[Tuple[int, int]]:
         """
         Select the best frontier to explore
 
         Scoring function:
-        utility = cluster_size / (distance^0.4 + 1) - agent_penalty
-                  + coverage_bonus
+        utility = effective_size / (distance^0.4 + 1) - agent_penalty
+                  - global_penalty + coverage_bonus + momentum_bonus
 
-        The optional *coverage_bonus* rewards frontiers located in the
-        quadrant of the grid with the lowest explored ratio, nudging agents
-        toward large untouched regions instead of mopping up residual edges.
+        effective_size = cluster_size * max(1 - explored_ratio, 0.05)
+        coverage_bonus = (1 - explored_ratio) * 3.0
+
+        Scaling cluster_size by the unexplored fraction prevents large
+        mostly-explored frontiers from dominating small frontiers in
+        completely unseen regions.
 
         Args:
             frontiers: List of (position, cluster_size)
@@ -135,6 +151,12 @@ class FrontierExplorer:
             explored_ratio_at: callable(x, y) → float 0-1 giving the local
                 explored ratio around (x,y).  When provided, frontiers in
                 poorly-explored zones get a bonus.
+            all_peer_targets: exploration targets of ALL known agents (from
+                relayed MapDataMessages).  Adds a soft penalty to avoid
+                frontiers already targeted by another agent anywhere on the map.
+            current_target: agent's current exploration target — adds a
+                directional momentum bonus so the agent continues pushing
+                in the same direction instead of flipping back and forth.
 
         Returns:
             Best frontier position or None
@@ -144,6 +166,20 @@ class FrontierExplorer:
 
         if nearby_agent_positions is None:
             nearby_agent_positions = []
+        if all_peer_targets is None:
+            all_peer_targets = []
+
+        # Precompute direction vector from agent to current target (for momentum)
+        _has_momentum = False
+        _dx_ct = 0.0
+        _dy_ct = 0.0
+        _mag_ct = 0.0
+        if current_target is not None and current_target != tuple(agent_position):
+            _dx_ct = float(current_target[0] - agent_position[0])
+            _dy_ct = float(current_target[1] - agent_position[1])
+            _mag_ct = np.sqrt(_dx_ct**2 + _dy_ct**2)
+            if _mag_ct > 0:
+                _has_momentum = True
 
         best_frontier = None
         best_utility = -float("inf")
@@ -164,20 +200,52 @@ class FrontierExplorer:
                 if other_dist < 10:  # Within 10 cells
                     agent_penalty += 0.5
 
-            # Coverage bonus: reward frontiers in poorly-explored zones
+            # Global deconfliction: soft penalty for frontiers near any known
+            # peer's exploration target (learned via relay).  Weaker than local
+            # penalty because the data can be slightly stale.
+            global_penalty = 0.0
+            for pt in all_peer_targets:
+                pt_dist = abs(frontier_pos[0] - pt[0]) + abs(frontier_pos[1] - pt[1])
+                if pt_dist < 8:
+                    global_penalty += max(0.0, (8 - pt_dist) / 8) * 1.5
+
+            # Coverage: scale effective cluster size by how unexplored the
+            # surrounding area is.  An 89%-explored frontier of size 21 has
+            # only ~2.3 genuinely-new cells; treating it as size 21 causes
+            # agents to flock there instead of pushing into fully-unseen
+            # regions.  A small additive bonus further nudges toward the
+            # least-explored zones without dominating the distance term.
+            effective_size = float(cluster_size)
             coverage_bonus = 0.0
             if explored_ratio_at is not None:
                 local_ratio = explored_ratio_at(frontier_pos[0], frontier_pos[1])
-                # Invert: low ratio → high bonus (up to +5 for 0% explored)
+                unexplored_frac = max(1.0 - local_ratio, 0.05)
+                effective_size = cluster_size * unexplored_frac
                 coverage_bonus = (1.0 - local_ratio) * 5.0
+
+            # Momentum: bonus for frontiers aligned with the agent's current
+            # heading direction.  Prevents "nibbling" where the agent scans a
+            # few cells, the explored_ratio rises, and it flips to a distant
+            # frontier instead of continuing deeper into unexplored territory.
+            momentum_bonus = 0.0
+            if _has_momentum:
+                dx_f = float(frontier_pos[0] - agent_position[0])
+                dy_f = float(frontier_pos[1] - agent_position[1])
+                mag_f = np.sqrt(dx_f**2 + dy_f**2)
+                if mag_f > 0:
+                    cos_sim = (_dx_ct * dx_f + _dy_ct * dy_f) / (_mag_ct * mag_f)
+                    momentum_bonus = max(0.0, cos_sim) * 3.0
 
             # Calculate utility.
             # Use dist^0.4 instead of dist^1 so that a large distant cluster
             # is properly preferred over a tiny cluster right next to the agent.
-            # With linear distance: cluster_size=3 at dist=2 (score=1.0) beats
-            # cluster_size=15 at dist=25 (score=0.58) — wrong direction.
-            # With dist^0.4: those same examples score 1.24 vs 2.97 respectively.
-            utility = (cluster_size / (dist**0.4 + 1)) - agent_penalty * 2 + coverage_bonus
+            utility = (
+                (effective_size / (dist**0.4 + 1))
+                - agent_penalty * 2
+                - global_penalty
+                + coverage_bonus
+                + momentum_bonus
+            )
 
             if utility > best_utility:
                 best_utility = utility
