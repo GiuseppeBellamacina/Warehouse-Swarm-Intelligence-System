@@ -15,16 +15,18 @@ La priorit\`a dello Scout \`e deterministica e segue questa sequenza:
           la ricarica, continua a comunicare la mappa locale e gli oggetti scoperti.
     \item \textbf{Consegna scoperte al Coordinator}: Se lo Scout ha scoperto nuovi oggetti
           e un Coordinator si trova nel raggio di comunicazione, li trasmette immediatamente
-          tramite \texttt{ObjectSpottedMessage}. Se nessun Coordinator \`e a portata, lo Scout
-          si dirige verso l'ultima posizione nota del Coordinator (\texttt{last\_seen\_coordinator\_pos})
-          per consegnare le informazioni al pi\`u presto. Se \`e trascorso troppo tempo senza
-          trovarlo, viene effettuata una scansione estesa fino a $4\times$ il raggio di
-          comunicazione per localizzarlo.
+          tramite \texttt{ObjectSpottedMessage}. Se nessun agente \`e stato in contatto
+          negli ultimi \texttt{\_SEEK\_COORDINATOR\_DELAY} passi (default~25) e il parametro
+          \texttt{seek\_coordinator} \`e attivo, lo Scout si dirige verso l'ultima posizione
+          nota del Coordinator per consegnare le informazioni. Se la posizione salvata
+          risulta stale (il Coordinator non \`e presente all'arrivo), viene effettuata
+          una scansione estesa fino a $4\times$ il raggio di comunicazione per localizzarlo.
+          La posizione del Coordinator viene aggiornata sia dalla visione diretta sia
+          dalle posizioni ricevute in relay via \texttt{MapDataMessage}.
     \item \textbf{Selezione frontiera}: Se non \`e in ricarica, \texttt{FrontierExplorer}
           calcola le frontiere disponibili dalla mappa locale e seleziona quella con utilit\`a
-          massima. La funzione $U(f)$ favorisce cluster grandi e vicini, penalizzando cluster
-          gi\`a puntati da altri Scout (comunicazione implicita via \texttt{target\_position}
-          osservata nei messaggi di stato).
+          massima. In modalit\`a \texttt{map\_known}, il routing a zone (Sezione~\ref{sec:zone-routing})
+          filtra le frontiere per dirigere lo Scout verso la zona pi\`u inesplorata.
     \item \textbf{Movimento}: A* calcola il percorso ottimale verso la frontiera selezionata,
           con le posizioni degli altri agenti come penalizzazione soft.
     \item \textbf{Comunicazione}: Ad ogni passo, lo Scout condivide con tutti gli agenti
@@ -33,19 +35,81 @@ La priorit\`a dello Scout \`e deterministica e segue questa sequenza:
           \texttt{ObjectSpottedMessage} indirizzati ai Coordinator vicini.
 \end{enumerate}
 
+\subsection{Relay Passivo e Parametro seek\_coordinator}
+
+Il \texttt{MapDataMessage}, trasmesso ad ogni passo a tutti gli agenti nel raggio di
+comunicazione, trasporta anche la lista degli oggetti noti. Le scoperte si propagano
+quindi passivamente attraverso qualsiasi catena di agenti:
+scout\,$\rightarrow$\,retriever\,$\rightarrow$\,coordinator. Lo Scout attiva la ricerca
+attiva del Coordinator solo quando \`e stato \textit{completamente isolato} (nessun contatto
+con alcun agente) per almeno \texttt{seek\_coordinator\_delay} passi.
+
+Quando il parametro booleano \texttt{seek\_coordinator} \`e disattivato, lo Scout non
+cerca mai attivamente il Coordinator: si affida esclusivamente al relay passivo.
+In alcune configurazioni di mappa, disabilitare questo parametro riduce i passi
+sprecati in spostamenti non esplorativi.
+
 \section{Selezione delle Frontiere}
 
-\subsection{Funzione di Utilit\`a con Distanza Sub-lineare}
+\subsection{Funzione di Utilit\`a Completa}
 
-La funzione di utilit\`a per la selezione delle frontiere utilizza una distanza con
-esponente sub-lineare:
+La funzione di utilit\`a per la selezione delle frontiere combina cinque termini:
 
-$$U(f) = \frac{\text{cluster\_size}}{d(f)^{0.4} + 1} - 0{,}5 \cdot n_{\text{agenti}}(f)$$
+$$U(f) = \frac{S_{\text{eff}}(f)}{d(f)^{0.4} + 1}
+       - 2 \cdot P_{\text{locale}}(f)
+       - P_{\text{globale}}(f)
+       + B_{\text{cov}}(f)
+       + B_{\text{mom}}(f)$$
 
+\paragraph{Dimensione Effettiva (Scaling Multiplicativo per Copertura).}
+La dimensione del cluster viene scalata dalla frazione inesplorata della zona circostante:
+
+$$S_{\text{eff}}(f) = \text{cluster\_size}(f) \cdot \max\!\big(1 - r_{\text{exp}}(f),\; 0{,}05\big)$$
+
+dove $r_{\text{exp}}(f)$ \`e la frazione di celle gi\`a esplorate in una finestra
+centrata sulla frontiera ($11\times11$ in modalit\`a unknown, $7\times7$ in
+\texttt{map\_known}). In questo modo, una frontiera in una zona esplorata al 89\%
+con cluster di dimensione~21 ha $S_{\text{eff}} = 21 \times 0{,}11 \approx 2{,}3$:
+non pu\`o competere con piccole frontiere in territorio completamente inesplorato.
+
+\paragraph{Distanza Sub-lineare.}
 L'uso di $d^{0.4}$ anzich\'e $d$ lineare impedisce che cluster piccoli ma vicini
-prevalgano sistematicamente su cluster grandi e distanti. Senza questa correzione,
-un cluster di 3~celle a distanza~2 vincerebbe contro un cluster di 50~celle a
-distanza~25, portando a una copertura frammentata.
+prevalgano sistematicamente su cluster grandi e distanti.
+
+\paragraph{Penalizzazione Locale.}
+$$P_{\text{locale}}(f) = \sum_{\substack{a \in \text{agenti\_vicini} \\ d(f, a) < 10}} 0{,}5$$
+Ogni agente entro 10~celle dalla frontiera aggiunge una penalizzazione di 0,5.
+Il fattore \`e raddoppiato ($\times 2$) nella formula finale.
+
+\paragraph{Penalizzazione Globale.}
+$$P_{\text{globale}}(f) = \sum_{t \in \text{peer\_targets}} \max\!\Big(0,\; \frac{8 - d(f, t)}{8}\Big) \cdot 1{,}5$$
+Penalizzazione pi\`u debole basata sui target di esplorazione degli altri Scout,
+propagati via relay. Deconflitto a campo lontano.
+
+\paragraph{Bonus Copertura.}
+$$B_{\text{cov}}(f) = (1 - r_{\text{exp}}(f)) \cdot 5{,}0$$
+Bonus additivo che nudge lo Scout verso le zone meno esplorate, complementare allo
+scaling multiplicativo di $S_{\text{eff}}$.
+
+\paragraph{Bonus Momento.}
+$$B_{\text{mom}}(f) = \max(0,\; \cos\theta) \cdot 3{,}0$$
+dove $\theta$ \`e l'angolo tra la direzione corrente dello Scout (dal target attuale)
+e la direzione verso la frontiera $f$. Questo bonus impedisce che lo Scout cambi
+continuamente direzione quando compare una nuova frontiera laterale leggermente pi\`u
+appetibile: lo forza a continuare nella direzione gi\`a intrapresa.
+
+\subsection{Filtro Zone Esplorate (Solo Unknown Mode)}
+
+Prima della valutazione dell'utilit\`a, in modalit\`a unknown le frontiere vengono
+pre-filtrate in base alla copertura locale:
+
+$$r_{\text{zone}}(f) = \frac{|\{c \in W_{11}(f) : c \ne \text{UNKNOWN}\}|}{|W_{11}(f)|}$$
+
+Se $r_{\text{zone}}(f) > 0{,}85$, la frontiera viene scartata: si trova in una
+zona quasi completamente esplorata e spostarsi per coprire poche celle residue
+non \`e efficiente. Questo filtro non si applica in \texttt{map\_known}, dove il
+routing a zone (Sezione~\ref{sec:zone-routing}) gestisce la stessa problematica
+in modo pi\`u strutturato.
 
 \subsection{Blocco del Target (Target Lock)}
 
@@ -61,40 +125,80 @@ molti cluster di frontiera adiacenti.
 
 Dopo aver raggiunto una frontiera, la sua posizione viene inserita in una blacklist
 per \texttt{\_RECENT\_TARGET\_TTL} passi (default 200). Ci\`o previene l'oscillazione
-immediata tra cluster appena esplorati: senza la blacklist, un cluster marginalmente
-non coperto verrebbe continuamente riselezionato prima di essere completamente
-scansionato.
+immediata tra cluster appena esplorati.
 
 \subsection{Preferenza per Frontiere Lontane}
 
 Quando abilitata (\texttt{\_FAR\_FRONTIER\_ENABLED}), la selezione preferisce frontiere
-che richiedono uno spostamento superiore a $2\times$ il raggio di visione (distanza minima
-configurabile, default 8~celle). Questo spinge lo Scout verso territorio genuinamente
-inesplorato, evitando di micro-esplorare artefatti di confine tra cluster adiacenti gi\`a
-parzialmente coperti. Se non esistono frontiere lontane, si ricade sulle frontiere
-disponibili. In modalit\`a \texttt{map\_known}, questa euristica viene disattivata:
-le frontiere vicine al confine tra zone scansionate e non scansionate sono le pi\`u
-rilevanti.
+che richiedono uno spostamento superiore a $2\times$ il raggio di visione. In
+modalit\`a \texttt{map\_known}, questa euristica viene disattivata.
+
+\section{Routing a Zone (Map\_Known)} \label{sec:zone-routing}
+
+In modalit\`a \texttt{map\_known}, tutte le frontiere della griglia sono visibili
+globalmente e la funzione di utilit\`a classica non basta a impedire che lo Scout
+``rosicchi'' bordi residui di zone gi\`a quasi completamente esplorate. Per risolvere
+questo problema, lo Scout suddivide la griglia in \textbf{zone macro} e filtra le
+frontiere candidate alla sola zona target, concentrando l'esplorazione in un blocco
+alla volta.
+
+\subsection{Suddivisione della Griglia}
+
+Il parametro \texttt{zone\_divisions} (default~6) specifica il \textit{numero totale}
+di zone. Il metodo \texttt{\_zone\_grid()} fattorizza questo numero in $(c, r)$ colonne
+e righe scegliendo la combinazione che rende ogni zona il pi\`u possibile quadrata:
+
+$$(\text{cols}, \text{rows}) = \arg\min_{\substack{c \cdot r = n \\ c | n}} \left| \frac{W}{c} - \frac{H}{r} \right|$$
+
+Ad esempio, su una griglia $25 \times 25$ con $n = 6$, il risultato \`e $2 \times 3$
+(zone da $12{,}5 \times 8{,}3$ celle), anzich\'e $6 \times 1$ o $1 \times 6$.
+
+\subsection{Selezione della Zona Target}
+
+Il metodo \texttt{\_select\_target\_zone()} assegna un punteggio a ciascuna zona
+combinando la frazione inesplorata (dominante) con una piccola componente di distanza:
+
+$$\text{score}(z) = r_{\text{unk}}(z) - \frac{d(z)}{W + H} \cdot 0{,}15$$
+
+dove $r_{\text{unk}}(z)$ \`e la frazione di celle con \texttt{vision\_explored == 0}
+nella zona e $d(z)$ \`e la distanza Manhattan dal centroide della zona. Lo Scout
+seleziona la zona con punteggio massimo.
+
+Due meccanismi prevengono il flip-flop tra zone:
+
+\begin{itemize}
+    \item \textbf{Anti-flip-flop}: Lo Scout deve restare nella zona corrente per almeno
+          $2 \times \texttt{\_TARGET\_LOCK\_DURATION}$ passi prima di poter cambiare,
+          a meno che la zona non sia gi\`a completamente esplorata
+          ($r_{\text{unk}} < 5\%$).
+    \item \textbf{Isteresi}: Se la zona corrente ha ancora pi\`u del 15\%
+          di inesplorato \textit{e} il suo rapporto \`e entro il 10\% della zona migliore,
+          lo Scout resta nella zona corrente anzich\'e spostarsi.
+\end{itemize}
+
+\subsection{Filtro Hard delle Frontiere}
+
+Dopo la selezione della zona target, le frontiere vengono filtrate spazialmente:
+solo quelle che cadono entro i limiti $(x_0, y_0, x_1, y_1)$ della zona selezionata
+sono considerate. Se nessuna frontiera cade nella zona (zona completamente esplorata),
+viene calcolato un \textit{waypoint} come centroide delle celle ancora inesplorate
+nella zona, utilizzato come bonus di momento per guidare lo Scout verso di essa.
+
+Questo filtro non si applica in modalit\`a unknown, dove il routing naturale delle
+frontiere combinato con il filtro $r_{\text{zone}} > 0{,}85$ \`e sufficiente.
 
 \section{Anti-Clustering}
 
 L'anti-clustering \`e implementato in due livelli. Il primo \`e un filtro hard: le frontiere
 che si trovano a meno di \texttt{\_ANTI\_CLUSTER\_DIST} celle (default 8) da un altro Scout
-(visibile nel raggio di comunicazione) vengono escluse completamente dall'insieme dei candidati.
-Il secondo \`e una penalizzazione soft nella funzione di utilit\`a:
-
-$$U(f) = \frac{\text{cluster\_size}}{d(f)^{0.4} + 1} - 0{,}5 \cdot n_{\text{agenti}}(f)$$
-
-dove $n_{\text{agenti}}(f)$ \`e il numero di agenti entro 10 celle dalla frontiera $f$.
-Se il filtro hard elimina tutte le frontiere (caso raro, ad esempio con molti Scout su
-una griglia piccola), si ricade sull'insieme completo applicando solo la penalizzazione soft.
-Il risultato pratico \`e una divisione organica del territorio senza alcuna coordinazione esplicita.
+vengono escluse. Il secondo \`e la penalizzazione soft nella funzione di utilit\`a
+($P_{\text{locale}}$ e $P_{\text{globale}}$). Il risultato pratico \`e una divisione
+organica del territorio senza coordinazione esplicita.
 
 \section{Pattugliamento Ciclico (Stale Coverage)}
 
 Ogni Scout mantiene una matrice privata \texttt{\_coverage\_step} che registra il
 passo del modello in cui ciascuna cella \`e stata l'ultima volta nel raggio di visione.
-Questa matrice non viene mai trasmessa.
 
 Quando non esistono frontiere inesplorate, lo Scout entra in modalit\`a di
 \textit{stale coverage patrol}: le celle non visitate per un numero configurabile di
@@ -103,23 +207,8 @@ La selezione combina et\`a e prossimit\`a:
 
 $$\text{score}(c) = \frac{\text{age}(c)}{d(c) + 1}$$
 
-I primi 50 candidati per punteggio vengono valutati; il primo raggiungibile (cella
-walkable) viene selezionato come target. In modalit\`a \texttt{map\_known}, le celle
-con \texttt{vision\_explored == 0} hanno priorit\`a assoluta rispetto al
-ri-pattugliamento di celle gi\`a scansionate.
-
-\section{Relay Passivo e Ricerca del Coordinator}
-
-Quando lo Scout ha oggetti scoperti da consegnare, valuta se la catena di relay
-passivo (via \texttt{MapDataMessage} trasmesso ad agenti vicini) \`e sufficiente.
-Se il contatto con un qualsiasi agente \`e avvenuto di recente
-(\texttt{\_last\_agent\_contact\_step}), lo Scout presume che le informazioni stiano
-gi\`a propagandosi e continua a esplorare anzich\'e cercare attivamente il Coordinator.
-
-Se il contatto \`e stale, lo Scout si dirige verso l'ultima posizione nota del
-Coordinator. All'arrivo, se il Coordinator non \`e presente, esegue una
-\textit{wide scan} fino a $4\times$ il raggio di comunicazione per localizzarlo
-senza navigazione cieca.
+In modalit\`a \texttt{map\_known}, le celle con \texttt{vision\_explored == 0}
+hanno priorit\`a assoluta rispetto al ri-pattugliamento di celle gi\`a scansionate.
 
 \section{Finestra di Rilevamento Stallo Raddoppiata}
 

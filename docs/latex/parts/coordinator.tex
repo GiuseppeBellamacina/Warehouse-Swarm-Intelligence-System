@@ -108,6 +108,17 @@ per identificare le celle non ancora scansionate visivamente. Quando ha task pen
 ed \`e gi\`a vicino al centroide, bias l'esplorazione verso le celle ignote pi\`u vicine
 al centroide. In assenza di task, tratta le celle non scansionate come frontiere normali.
 
+\subsection{Filtro Celle Boundary in Zone Esplorate}
+
+Nella strategia di esplorazione frontier-based, il Coordinator identifica le celle
+di confine (celle \texttt{UNKNOWN} adiacenti a celle esplorate) come candidati per
+il movimento. Prima della selezione, viene applicato un filtro analogo a quello
+dello Scout: per ogni cella boundary, si calcola la frazione esplorata in una
+finestra $7 \times 7$ centrata sulla cella. Se la frazione supera il 85\%, la cella
+viene scartata in quanto bordo residuo di una zona gi\`a quasi completamente coperta.
+Questo impedisce al Coordinator di sprecare passi per coprire micro-frange
+inesplorate in zone sostanzialmente mappate.
+
 \section{Sincronizzazione tra Coordinator Multipli}
 
 In configurazioni con pi\`u di un Coordinator, il rischio di doppia assegnazione aumenta.

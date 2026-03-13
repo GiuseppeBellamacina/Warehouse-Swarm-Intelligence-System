@@ -664,7 +664,8 @@ class CoordinatorAgent(BaseAgent):
             # In map_known mode, local_map is pre-filled so local_map==0 is
             # always empty.  Use vision_explored==0 to find cells not yet
             # visually scanned — objects can only be in unseen areas.
-            if getattr(self.model, "map_known", False):
+            _is_map_known = getattr(self.model, "map_known", False)
+            if _is_map_known:
                 unknown_mask = self.vision_explored == 0
             else:
                 unknown_mask = self.local_map == 0
@@ -682,17 +683,55 @@ class CoordinatorAgent(BaseAgent):
                 boundary = unknown_mask & has_explored
                 b_ys, b_xs = _np.where(boundary)
                 if len(b_ys) > 0:
+                    # Filter out boundary cells in mostly-explored zones
+                    # (ratio > 0.85) — they're residual edges, not real
+                    # frontiers worth travelling to.
+                    _cH, _cW = self.local_map.shape
+                    _keep = []
+                    for _i in range(len(b_ys)):
+                        _bx, _by = int(b_xs[_i]), int(b_ys[_i])
+                        _r = 3
+                        _y0, _y1 = max(0, _by - _r), min(_cH, _by + _r + 1)
+                        _x0, _x1 = max(0, _bx - _r), min(_cW, _bx + _r + 1)
+                        if _is_map_known:
+                            _p = self.vision_explored[_y0:_y1, _x0:_x1]
+                        else:
+                            _p = self.local_map[_y0:_y1, _x0:_x1]
+                        if _p.size == 0 or int(_np.count_nonzero(_p)) / _p.size <= 0.85:
+                            _keep.append(_i)
+                    if _keep:
+                        _keep_arr = _np.array(_keep)
+                        b_xs = b_xs[_keep_arr]
+                        b_ys = b_ys[_keep_arr]
+
                     dists = _np.abs(b_xs - my_pos[0]) + _np.abs(b_ys - my_pos[1])  # type: ignore[operator]
+
+                    # Global deconfliction: penalise boundary cells near any
+                    # peer's exploration target so the coordinator doesn't
+                    # redundantly explore the same zone as a scout/retriever.
+                    _cs_now = self.model.current_step
+                    _peer_pts = [
+                        pos
+                        for aid, pos in self.peer_explore_targets.items()
+                        if _cs_now - self.peer_explore_targets_step.get(aid, 0)
+                        <= self._explore_target_ttl
+                    ]
+                    peer_penalty = _np.zeros(len(b_ys), dtype=_np.float64)
+                    for pt in _peer_pts:
+                        pt_d = _np.abs(b_xs - pt[0]) + _np.abs(b_ys - pt[1])
+                        peer_penalty += _np.maximum(0, 10 - pt_d).astype(_np.float64) * 0.8
+
                     if has_work and centroid is not None:
-                        # Has work: bias toward centroid so coordinator stays reachable
                         centroid_dists = _np.abs(b_xs - centroid[0]) + _np.abs(b_ys - centroid[1])  # type: ignore[operator]
-                        scores = dists.astype(_np.float64) + 0.5 * centroid_dists.astype(
-                            _np.float64
+                        scores = (
+                            dists.astype(_np.float64)
+                            + 0.5 * centroid_dists.astype(_np.float64)
+                            + peer_penalty
                         )
                         best_idx = int(_np.argmin(scores))
                     else:
-                        # No work: pure exploration — pick nearest frontier
-                        best_idx = int(_np.argmin(dists))
+                        scores = dists.astype(_np.float64) + peer_penalty
+                        best_idx = int(_np.argmin(scores))
                     target = (int(b_xs[best_idx]), int(b_ys[best_idx]))  # type: ignore[index]
                     if self.model.grid.is_walkable(*target):
                         self._explore_target = target

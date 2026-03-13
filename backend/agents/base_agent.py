@@ -125,6 +125,13 @@ class BaseAgent(Agent):
         self.coordinator_positions: Dict[int, Tuple[int, int]] = {}
         self.coordinator_positions_step: Dict[int, int] = {}
 
+        # Last-known exploration targets of ALL agents, learned via message relay.
+        # {agent_id: (x, y)} — used for global area division / deconfliction.
+        self.peer_explore_targets: Dict[int, Tuple[int, int]] = {}
+        self.peer_explore_targets_step: Dict[int, int] = {}
+        _EXPLORE_TARGET_TTL: int = 40  # entries older than this are pruned
+        self._explore_target_ttl = _EXPLORE_TARGET_TTL
+
         # Known warehouse locations
         self.known_warehouses: List[Tuple[int, int]] = []
 
@@ -161,8 +168,12 @@ class BaseAgent(Agent):
 
     @property
     def tag(self) -> str:
-        """Colored terminal label for this agent, e.g. \033[1;32m[SCOUT 0]\033[0m."""
-        return agent_tag(self.role, self.unique_id)
+        """Colored terminal label with step, e.g. [SCOUT 0 @42]."""
+        color = _AGENT_COLORS.get(self.role, "")
+        name = "COORD" if self.role == "coordinator" else self.role.upper()
+        reset = _RESET if color else ""
+        step = self.model.current_step
+        return f"{color}[{name} {self.unique_id} @{step}]{reset}"
 
     @property
     def energy_percentage(self) -> float:
@@ -381,6 +392,17 @@ class BaseAgent(Agent):
         # Create message — carry full knowledge with Stamped timestamps so every
         # recipient can apply "newest wins" and use this agent as a relay node.
         cs = self.model.current_step
+
+        # Build explore_targets dict: own target + relayed peers (TTL-filtered).
+        _et: Dict = {}
+        _own_target = getattr(self, "_explore_target", None)
+        if _own_target is not None:
+            _et[self.unique_id or 0] = Stamped(tuple(_own_target), cs)
+        for aid, pos in self.peer_explore_targets.items():
+            step = self.peer_explore_targets_step.get(aid, 0)
+            if cs - step <= self._explore_target_ttl:
+                _et[aid] = Stamped(tuple(pos), step)
+
         message = MapDataMessage(
             sender_id=self.unique_id or 0,
             timestamp=cs,
@@ -403,6 +425,7 @@ class BaseAgent(Agent):
                 for cid, p in self.coordinator_positions.items()
                 if p
             },
+            explore_targets=_et,
         )
 
         # Send to all nearby agents
@@ -506,6 +529,16 @@ class BaseAgent(Agent):
                     if step > self.coordinator_positions_step.get(cid, -1):
                         self.coordinator_positions[cid] = tuple(pos_val)
                         self.coordinator_positions_step[cid] = step
+
+                # --- explore_targets relay: Stamped(value=(x,y), step), newest wins ---
+                for aid, stamped in message.explore_targets.items():
+                    if aid == (self.unique_id or 0):
+                        continue  # skip own entry
+                    pos_val = stamped.value if isinstance(stamped, Stamped) else stamped[0]
+                    step = stamped.step if isinstance(stamped, Stamped) else stamped[1]
+                    if step > self.peer_explore_targets_step.get(aid, -1):
+                        self.peer_explore_targets[aid] = tuple(pos_val)
+                        self.peer_explore_targets_step[aid] = step
 
             elif isinstance(message, ObjectLocationMessage):
                 # Accept only if newer, not tombstoned, and not currently being collected
@@ -1093,13 +1126,17 @@ class BaseAgent(Agent):
         my_pos: Tuple[int, int],
         blocking_agent: "BaseAgent",
     ) -> bool:
-        """Swap positions with *blocking_agent* when both agents face each
-        other (head-on deadlock).
+        """Swap positions with *blocking_agent* when both agents would
+        benefit from trading places.
 
-        A swap is performed only when:
-        1. The blocker's desired direction points back toward *us*.
-        2. Both resulting positions satisfy warehouse negotiation rules.
-        3. The move does not cut through obstacle corners (diagonal case).
+        A swap is performed when ANY of these conditions hold:
+        1. **Head-on**: blocker's desired direction points back toward us.
+        2. **Mutual benefit**: swapping moves *both* agents closer to their
+           respective targets (or at least one closer and the other no worse).
+
+        Additional guards:
+        - Both resulting positions satisfy warehouse negotiation rules.
+        - The move does not cut through obstacle corners (diagonal case).
 
         Returns True if the swap was executed.
         """
@@ -1108,7 +1145,7 @@ class BaseAgent(Agent):
 
         b_pos = pos_to_tuple(blocking_agent.pos)
 
-        # ── Does the blocker want to come our way? ───────────────────────
+        # ── Determine blocker's desired cell ─────────────────────────────
         b_desired = None
         if hasattr(blocking_agent, "path") and blocking_agent.path:
             b_desired = blocking_agent.path[0]
@@ -1118,8 +1155,23 @@ class BaseAgent(Agent):
             dy = 0 if t[1] == b_pos[1] else (1 if t[1] > b_pos[1] else -1)
             b_desired = (b_pos[0] + dx, b_pos[1] + dy)
 
-        if b_desired != my_pos:
-            return False
+        head_on = b_desired == my_pos
+
+        # ── Mutual-benefit check (fallback when not head-on) ─────────────
+        if not head_on:
+            my_target = getattr(self, "target_position", None)
+            b_target = getattr(blocking_agent, "target_position", None)
+            if my_target is None or b_target is None:
+                return False
+            # Current distances
+            my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+            b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+            # After-swap distances
+            my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+            b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+            # Accept if total distance decreases (at least one improves, none worsens)
+            if (my_dist_after + b_dist_after) >= (my_dist_now + b_dist_now):
+                return False
 
         # ── Diagonal corner-cutting guard ────────────────────────────────
         dx = b_pos[0] - my_pos[0]
@@ -1192,7 +1244,10 @@ class BaseAgent(Agent):
             )
         )
 
-        # ── 3. Detect and resolve head-on pairs via swap ─────────────────
+        # ── 3. Detect and resolve swappable pairs ─────────────────────────
+        # Swap when either (a) exact head-on (a wants b's cell AND vice
+        # versa), or (b) mutual benefit (both get closer to their respective
+        # targets after swapping).
         swapped: set = set()  # agent unique_ids already swapped this round
         moved_self = False
         desires: dict = {}
@@ -1211,46 +1266,69 @@ class BaseAgent(Agent):
                 continue
             a_pos = pos_to_tuple(a.pos)
             a_want = desires.get(a.unique_id)
-            if a_want is None:
-                continue
+            a_target = getattr(a, "target_position", None)
             for j in range(i + 1, len(cluster)):
                 b = cluster[j]
                 if b.unique_id in swapped:
                     continue
                 b_pos = pos_to_tuple(b.pos)
-                b_want = desires.get(b.unique_id)
-                if b_want is None:
+                # Only consider adjacent agents (incl. diagonal ≤ Manhattan 2)
+                mdist = abs(a_pos[0] - b_pos[0]) + abs(a_pos[1] - b_pos[1])
+                if mdist > 2 or mdist == 0:
                     continue
-                if a_want == b_pos and b_want == a_pos:
-                    # Validate swap
-                    ddx = b_pos[0] - a_pos[0]
-                    ddy = b_pos[1] - a_pos[1]
-                    corner_ok = True
-                    if abs(ddx) == 1 and abs(ddy) == 1:
-                        if not self.model.grid.is_walkable(
-                            a_pos[0] + ddx, a_pos[1]
-                        ) or not self.model.grid.is_walkable(a_pos[0], a_pos[1] + ddy):
-                            corner_ok = False
-                    if (
-                        corner_ok
-                        and self._is_valid_cell_for_negotiation(a, b_pos)
-                        and self._is_valid_cell_for_negotiation(b, a_pos)
-                    ):
-                        self.model.grid.swap_agents(a, b)
-                        a.path = []
-                        a.stuck_counter = 0
-                        a.wait_counter = 0
-                        b.path = []
-                        b.stuck_counter = 0
-                        b.wait_counter = 0
-                        a.consume_energy(a.energy_consumption["move"])
-                        b.consume_energy(b.energy_consumption["move"])
-                        swapped.add(a.unique_id)
-                        swapped.add(b.unique_id)
-                        print(f"{a.tag} NEGOTIATE-SWAP: {a_pos} <-> {b_pos} with {b.tag}")
-                        if a.unique_id == self.unique_id or b.unique_id == self.unique_id:
-                            moved_self = True
-                        break
+                b_want = desires.get(b.unique_id)
+                b_target = getattr(b, "target_position", None)
+
+                # Condition (a): exact head-on
+                head_on = (
+                    a_want is not None
+                    and b_want is not None
+                    and a_want == b_pos
+                    and b_want == a_pos
+                )
+
+                # Condition (b): mutual benefit — swap reduces total distance
+                mutual_benefit = False
+                if not head_on and a_target is not None and b_target is not None:
+                    a_d_now = abs(a_pos[0] - a_target[0]) + abs(a_pos[1] - a_target[1])
+                    b_d_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+                    a_d_aft = abs(b_pos[0] - a_target[0]) + abs(b_pos[1] - a_target[1])
+                    b_d_aft = abs(a_pos[0] - b_target[0]) + abs(a_pos[1] - b_target[1])
+                    if (a_d_aft + b_d_aft) < (a_d_now + b_d_now):
+                        mutual_benefit = True
+
+                if not head_on and not mutual_benefit:
+                    continue
+
+                # Validate swap
+                ddx = b_pos[0] - a_pos[0]
+                ddy = b_pos[1] - a_pos[1]
+                corner_ok = True
+                if abs(ddx) == 1 and abs(ddy) == 1:
+                    if not self.model.grid.is_walkable(
+                        a_pos[0] + ddx, a_pos[1]
+                    ) or not self.model.grid.is_walkable(a_pos[0], a_pos[1] + ddy):
+                        corner_ok = False
+                if (
+                    corner_ok
+                    and self._is_valid_cell_for_negotiation(a, b_pos)
+                    and self._is_valid_cell_for_negotiation(b, a_pos)
+                ):
+                    self.model.grid.swap_agents(a, b)
+                    a.path = []
+                    a.stuck_counter = 0
+                    a.wait_counter = 0
+                    b.path = []
+                    b.stuck_counter = 0
+                    b.wait_counter = 0
+                    a.consume_energy(a.energy_consumption["move"])
+                    b.consume_energy(b.energy_consumption["move"])
+                    swapped.add(a.unique_id)
+                    swapped.add(b.unique_id)
+                    print(f"{a.tag} NEGOTIATE-SWAP: {a_pos} <-> {b_pos} with {b.tag}")
+                    if a.unique_id == self.unique_id or b.unique_id == self.unique_id:
+                        moved_self = True
+                    break
 
         # If this agent was already swapped, we're done
         if self.unique_id in swapped:
@@ -1427,6 +1505,10 @@ class BaseAgent(Agent):
         Execute one step of the agent's behavior
 
         Cycle: SENSE -> COMMUNICATE (receive) -> DECIDE -> ACT (move OR send)
+
+        When speed > 1 the agent performs multiple move sub-steps per tick.
+        Sense/Communicate/Decide run once; Act runs int(speed) times so
+        faster agents cover more ground per simulation step.
         """
         if self.energy <= 0:
             return  # Agent is out of energy
@@ -1439,4 +1521,11 @@ class BaseAgent(Agent):
         self.step_sense()
         self.step_communicate()
         self.step_decide()
-        self.step_act()
+
+        # Agents with speed > 1 get additional act (move) sub-steps.
+        # Sense/Communicate/Decide are NOT repeated — only movement benefits.
+        moves = max(1, int(self.speed))
+        for _ in range(moves):
+            if self.energy <= 0:
+                break
+            self.step_act()

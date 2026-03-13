@@ -181,6 +181,7 @@ export interface ScoutBehaviorParams {
   stale_coverage_patrol: boolean;
   anti_clustering: boolean;
   seek_coordinator: boolean;
+  zone_divisions: number;
 }
 
 export interface CoordinatorBehaviorParams {
@@ -208,6 +209,7 @@ export interface RetrieverBehaviorParams {
   warehouse_congestion_reroute: boolean;
   warehouse_congestion_threshold: number;
   jam_priority: boolean;
+  autonomous_pickup: boolean;
 }
 
 export interface SimulationAgentsConfig {
