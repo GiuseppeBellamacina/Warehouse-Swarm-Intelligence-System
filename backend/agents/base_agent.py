@@ -170,6 +170,11 @@ class BaseAgent(Agent):
         # Optional A* pathfinder — set by subclasses that support it (e.g. RetrieverAgent)
         self.pathfinder: Optional["AStarPathfinder"] = None
 
+        # Map version counter — incremented whenever local_map changes so
+        # cached A* paths can be invalidated.
+        self._map_version: int = 0
+        self._path_map_version: int = -1  # version when path was last computed
+
         # Decision making
         self.decision_maker = DecisionMaker()
 
@@ -275,8 +280,11 @@ class BaseAgent(Agent):
         Args:
             visible_cells: List of visible (x, y, cell_type) tuples
         """
+        changed = False
         for x, y, cell_type in visible_cells:
             if 0 <= y < self.local_map.shape[0] and 0 <= x < self.local_map.shape[1]:
+                if self.local_map[y, x] != cell_type:
+                    changed = True
                 self.local_map[y, x] = cell_type
                 self.vision_explored[y, x] = 1
 
@@ -314,6 +322,8 @@ class BaseAgent(Agent):
                             self.known_warehouses.append((wx, wy))
                         if 0 <= wy < self.local_map.shape[0] and 0 <= wx < self.local_map.shape[1]:
                             self.local_map[wy, wx] = wt
+        if changed:
+            self._map_version += 1
 
     def get_closest_warehouse(self) -> Optional[Tuple[int, int]]:
         """
@@ -475,6 +485,7 @@ class BaseAgent(Agent):
                 self.local_map = MapSharingSystem.apply_shared_map_data(
                     self.local_map, message.explored_cells
                 )
+                self._map_version += 1
                 _WH_CELL_TYPES = (
                     CellType.WAREHOUSE,
                     CellType.WAREHOUSE_ENTRANCE,
@@ -852,32 +863,52 @@ class BaseAgent(Agent):
 
         # Try to use A* pathfinding if agent has it
         if self.pathfinder is not None:
+            # A* treats unexplored cells optimistically (assumed walkable)
+            # in BOTH unknown and map_known modes.  This ensures identical
+            # exploration paths — the only map_known advantage is warehouse
+            # knowledge for faster delivery.  When the agent discovers
+            # obstacles via vision, the path is invalidated only if it
+            # passes through a now-known blocked cell.
+            _known_mask = self.local_map
+
             # Recompute path if:
             # - we don't have one yet
             # - stuck too long
             # - cached path leads somewhere other than the current target
             #   (target changed since path was computed, e.g. new task assigned)
+            # - a cell on the current path is now known to be blocked
             cached_destination = self.path[-1] if self.path else None
             if cached_destination != target:
                 self.path = []  # stale — destination changed
-            if not self.path or self.stuck_counter > 3:
+
+            path_blocked = False
+            if self.path and _known_mask is not None:
+                for px, py in self.path:
+                    if (0 <= py < _known_mask.shape[0] and 0 <= px < _known_mask.shape[1]
+                            and _known_mask[py, px] != 0
+                            and not self.model.grid.is_walkable(px, py)):
+                        path_blocked = True
+                        break
+
+            if not self.path or self.stuck_counter > 3 or path_blocked:
                 new_path = self.pathfinder.find_path(
                     pos_tuple,
                     target,
                     other_agent_positions,
                     forbidden_types=forbidden_types,
+                    known_mask=_known_mask,
                 )
 
-                # If no path found, target is unreachable
                 if new_path is None:
+                    # With optimistic A*, None means truly unreachable
+                    # (even assuming unknown cells are walkable).
                     print(f"{self.tag} PATH: No path found to {target}, target unreachable")
-                    # Blacklist this target for 100 steps
                     self.unreachable_targets[target] = self.model.current_step
                     self.target_position = None
                     self.stuck_counter = 0
                     return False
-
-                self.path = new_path
+                else:
+                    self.path = new_path
 
                 # Remove first element (current position) if path exists
                 if self.path and len(self.path) > 1 and self.path[0] == pos_tuple:
@@ -970,8 +1001,9 @@ class BaseAgent(Agent):
                     # Path is permanently blocked (obstacle), replan
                     self.path = []
                     # stuck_counter incremented at the bottom when moved==False
-        else:
-            # Fallback: Simple greedy movement if no pathfinder
+
+        # Greedy movement fallback — used when no pathfinder is available
+        if not moved and self.pathfinder is None:
             current_x, current_y = pos_tuple
             target_x, target_y = target
 

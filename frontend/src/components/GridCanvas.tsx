@@ -346,14 +346,19 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
         });
 
         // ── Fog-of-war overlay ──
-        // Two modes:
-        // 1. Normal: heavy dark fog on unexplored cells.
-        // 2. map_known: terrain is always visible. Light scan-fog shows
-        //    where agents haven't yet looked for objects.
+        // Two visual modes for the fog:
+        // 1. map_known: terrain cells are always visible; a light amber
+        //    tint marks cells not yet scanned by agent vision (objects may
+        //    still be hiding there).
+        // 2. unknown: heavy dark fog on truly unexplored cells.
+        // NOTE: in both modes the *exploration heuristics* are identical
+        // (frontier detection uses local_map==0).  The only backend
+        // difference is that map_known gives A* full-grid access and
+        // pre-fills warehouse knowledge.
         const mapKnown = !!state.map_known;
 
         if (mapKnown) {
-          // In map_known mode, use the object-scan mask instead
+          // Use the object-scan mask (vision_explored) for amber tint
           const scanMask: number[] | undefined = selectedAgent
             ? selectedAgent.object_explored
             : state.global_object_explored;
@@ -370,11 +375,9 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
                 const py = gy * cellHeight;
 
                 if (!isScanned(gx, gy)) {
-                  // Not yet scanned — subtle amber tint + dot pattern
                   ctx.fillStyle = "rgba(180, 140, 60, 0.18)";
                   ctx.fillRect(px, py, cellWidth, cellHeight);
 
-                  // Small central dot to suggest "unscanned"
                   ctx.fillStyle = "rgba(250, 200, 50, 0.15)";
                   ctx.beginPath();
                   ctx.arc(
