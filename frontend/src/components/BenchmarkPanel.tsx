@@ -241,30 +241,72 @@ const SVGChart: React.FC<ChartProps> = ({
         );
       })}
 
-      {/* Legend */}
-      {series.length > 0 && (
-        <g>
-          {series.map((s, si) => {
-            const lx = pad.left + 8;
-            const ly = pad.top + 10 + si * 14;
-            return (
-              <g key={si}>
-                <line
-                  x1={lx}
-                  x2={lx + 16}
-                  y1={ly}
-                  y2={ly}
-                  stroke={s.color}
-                  strokeWidth={2}
-                />
-                <text x={lx + 20} y={ly + 3} fill={t.legend} fontSize={9}>
-                  {s.label}
-                </text>
-              </g>
-            );
-          })}
-        </g>
-      )}
+      {/* Legend — auto-placed in the corner with fewest data points */}
+      {series.length > 0 &&
+        (() => {
+          const legendH = series.length * 14 + 6;
+          const legendW = 120;
+          const margin = 8;
+          const corners: Record<string, { x: number; y: number }> = {
+            tl: { x: pad.left + margin, y: pad.top + margin },
+            tr: { x: pad.left + w - legendW - margin, y: pad.top + margin },
+            bl: {
+              x: pad.left + margin,
+              y: pad.top + h - legendH - margin,
+            },
+            br: {
+              x: pad.left + w - legendW - margin,
+              y: pad.top + h - legendH - margin,
+            },
+          };
+          // Collect all pixel-space data points
+          const pts: { px: number; py: number }[] = [];
+          for (const s of series) {
+            for (const d of s.data) {
+              pts.push({ px: sx(d.x), py: sy(d.y) });
+            }
+          }
+          // Pick the corner with the fewest overlapping points
+          let bestKey = "tl";
+          let bestCount = Infinity;
+          for (const [key, c] of Object.entries(corners)) {
+            const count = pts.filter(
+              (p) =>
+                p.px >= c.x &&
+                p.px <= c.x + legendW &&
+                p.py >= c.y &&
+                p.py <= c.y + legendH,
+            ).length;
+            if (count < bestCount) {
+              bestCount = count;
+              bestKey = key;
+            }
+          }
+          const origin = corners[bestKey];
+          return (
+            <g>
+              {series.map((s, si) => {
+                const lx = origin.x;
+                const ly = origin.y + si * 14;
+                return (
+                  <g key={si}>
+                    <line
+                      x1={lx}
+                      x2={lx + 16}
+                      y1={ly}
+                      y2={ly}
+                      stroke={s.color}
+                      strokeWidth={2}
+                    />
+                    <text x={lx + 20} y={ly + 3} fill={t.legend} fontSize={9}>
+                      {s.label}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
+          );
+        })()}
     </svg>
   );
 };

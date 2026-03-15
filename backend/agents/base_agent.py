@@ -154,10 +154,16 @@ class BaseAgent(Agent):
         self.last_position: Optional[Tuple[int, int]] = None
         self.wait_counter: int = 0  # Counter for waiting when path blocked by other agents
         self.position_history: List[Tuple[int, int]] = []  # Track recent positions to detect loops
-        self.max_history_length: int = 15  # Keep last 15 positions
+        self.max_history_length: int = 25  # Keep last 25 positions
         self.unreachable_targets: dict[Tuple[int, int], int] = (
             {}
         )  # Track unreachable targets {position: step}
+        # Distance-progress tracking: detect agents that move laterally
+        # without ever getting closer to their target.
+        self._progress_best_dist: int = 999999  # best Manhattan dist seen
+        self._progress_steps: int = 0  # steps since last improvement
+        _NO_PROGRESS_LIMIT: int = 12  # abandon after this many steps w/o progress
+        self._no_progress_limit = _NO_PROGRESS_LIMIT
         # Cells yielded via ClearWay — avoid routing back for a few steps
         self._yield_cooldown: dict[Tuple[int, int], int] = {}
 
@@ -769,6 +775,12 @@ class BaseAgent(Agent):
         if pos_tuple == target:
             return True  # Already at target
 
+        # Reset distance-progress tracking when the target changes
+        if not hasattr(self, "_progress_last_target") or self._progress_last_target != target:
+            self._progress_last_target = target
+            self._progress_best_dist = abs(pos_tuple[0] - target[0]) + abs(pos_tuple[1] - target[1])
+            self._progress_steps = 0
+
         # Determine whether warehouse doors may be used as transit nodes.
         #
         # Rules enforce strict door directionality:
@@ -928,7 +940,14 @@ class BaseAgent(Agent):
                                     self.model.grid.move_agent(self, side)
                                     self.consume_energy(self.energy_consumption["move"])
                                     self.path = []  # replan from new position
-                                    moved = True
+                                    # Sidestep is lateral, NOT forward progress.
+                                    # Don't set moved=True so stuck_counter keeps
+                                    # incrementing, preventing infinite sidestep loops.
+                                    # But do record position for loop detection.
+                                    current_pos = pos_to_tuple(self.pos) if self.pos else pos_tuple
+                                    self.position_history.append(current_pos)
+                                    if len(self.position_history) > self.max_history_length:
+                                        self.position_history.pop(0)
 
                         if not moved:
                             if self.stuck_counter <= 2:
@@ -1001,11 +1020,38 @@ class BaseAgent(Agent):
             if len(self.position_history) > self.max_history_length:
                 self.position_history.pop(0)
 
-            # Detect loop: if we're oscillating between 2-3 positions
+            # ── Distance-progress check ──
+            # Even when moving (including sidesteps recorded above), verify
+            # the agent is actually getting closer to its target.  If not,
+            # abandon after _no_progress_limit steps.
+            if self.target_position is not None:
+                cur_dist = abs(current_pos[0] - self.target_position[0]) + abs(
+                    current_pos[1] - self.target_position[1]
+                )
+                if cur_dist < self._progress_best_dist:
+                    self._progress_best_dist = cur_dist
+                    self._progress_steps = 0
+                else:
+                    self._progress_steps += 1
+                if self._progress_steps >= self._no_progress_limit:
+                    print(
+                        f"{self.tag} NO-PROGRESS: no distance improvement in "
+                        f"{self._progress_steps} steps at {current_pos}, "
+                        f"abandoning target {self.target_position}"
+                    )
+                    if self.target_position is not None:
+                        self.unreachable_targets[self.target_position] = self.model.current_step
+                    self.target_position = None
+                    self.path = []
+                    self.stuck_counter = 0
+                    self._progress_best_dist = 999999
+                    self._progress_steps = 0
+                    return moved
+
+            # Detect loop: if oscillating between few positions
             if len(self.position_history) >= 10:
-                # Count unique positions in recent history
                 recent_positions = set(self.position_history[-10:])
-                if len(recent_positions) <= 3:
+                if len(recent_positions) <= 5:
                     # Oscillating between few positions - clear target
                     print(
                         f"{self.tag} LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}"
@@ -1020,6 +1066,30 @@ class BaseAgent(Agent):
                     self.position_history = []
         else:
             self.stuck_counter += 1
+            # Track distance progress even when not moving
+            if self.target_position is not None and self.pos:
+                cp = pos_to_tuple(self.pos)
+                cur_dist = abs(cp[0] - self.target_position[0]) + abs(
+                    cp[1] - self.target_position[1]
+                )
+                if cur_dist < self._progress_best_dist:
+                    self._progress_best_dist = cur_dist
+                    self._progress_steps = 0
+                else:
+                    self._progress_steps += 1
+                if self._progress_steps >= self._no_progress_limit:
+                    print(
+                        f"{self.tag} NO-PROGRESS: no distance improvement in "
+                        f"{self._progress_steps} steps at {cp}, "
+                        f"abandoning target {self.target_position}"
+                    )
+                    self.unreachable_targets[self.target_position] = self.model.current_step
+                    self.target_position = None
+                    self.path = []
+                    self.stuck_counter = 0
+                    self._progress_best_dist = 999999
+                    self._progress_steps = 0
+                    return moved
             # If stuck for too long, clear target and path to find alternative
             if self.stuck_counter > 20:
                 print(
