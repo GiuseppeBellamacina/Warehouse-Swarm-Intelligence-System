@@ -98,6 +98,7 @@ class RetrieverAgent(BaseAgent):
 
         self.carrying_capacity = carrying_capacity
         self.carrying_objects = 0
+        self.total_delivered = 0
         self.state = AgentState.IDLE
         self.pathfinder = AStarPathfinder(model.grid)
 
@@ -1397,6 +1398,7 @@ class RetrieverAgent(BaseAgent):
                 # Deliver objects
                 delivered = self.carrying_objects
                 self.model.objects_retrieved += delivered
+                self.total_delivered += delivered
                 self.carrying_objects = 0
                 self._fruitless_explore_steps = 0
                 self.energy_consumption["move"] = 0.6  # normal move cost

@@ -415,13 +415,11 @@ def _save_grid_snapshot(
     cp = cell_px * S  # pixels per cell
     gw, gh = model.grid.width, model.grid.height
     grid_w, grid_h = gw * cp, gh * cp
-    panel_w = 220 * S
-    W, H = grid_w + panel_w, grid_h
-    img = Image.new("RGBA", (W, H), _hex("#0c0e14") + (255,))
+    panel_w = 260 * S
+    W, H = grid_w + panel_w, max(grid_h, 400 * S)
+    img = Image.new("RGBA", (W, H), _hex("#0f1117") + (255,))
     draw = ImageDraw.Draw(img)
-    ft = _font(12 * S)
-    fsm = _font(9 * S)
-    fm = _font(9 * S, mono=True)
+    fsm = _font(9 * S)  # used for carrying label
 
     # ── Draw cells ──
     cell_types = model.grid.cell_types  # ndarray [width, height]
@@ -555,55 +553,99 @@ def _save_grid_snapshot(
                 font=fsm,
             )
 
-    # ── Info panel ──
-    px0 = grid_w + 8 * S
-    ly = 10 * S
-    draw.text((px0, ly), title, fill=_hex(THEME["title"]), font=ft)
-    ly += 18 * S
-    draw.line([(px0, ly), (W - 8 * S, ly)], fill=_hex(THEME["grid"]), width=1)
-    ly += 8 * S
+    # ── Info panel (matches frontend exportSnapshot layout) ──
+    padding = 16 * S
+    px0 = grid_w + padding
+    line_h = 18 * S
+    ly = padding
 
-    info_lines = [
-        f"Step: {model.current_step}",
-        f"Objects: {model.objects_retrieved}/{model.total_objects}",
-        f"Messages: {model.comm_manager.messages_sent}",
-        "",
-    ]
-    for agent in model.agents:
-        if not agent.pos:
+    f_title = _font(16 * S)
+    f_section = _font(11 * S)
+    f_label = _font(12 * S, mono=True)
+    f_value = _font(12 * S, mono=True)
+    f_small = _font(10 * S)
+
+    label_off = 130 * S  # value column offset
+
+    def _draw_label(label: str, value: str, color: str = "#e5e7eb") -> None:
+        nonlocal ly
+        draw.text((px0, ly), label, fill=_hex("#9ca3af"), font=f_label)
+        draw.text((px0 + label_off, ly), value, fill=_hex(color), font=f_value)
+        ly += line_h
+
+    def _draw_section(section_title: str) -> None:
+        nonlocal ly
+        ly += 6 * S
+        draw.text((px0, ly), section_title.upper(), fill=_hex("#6b7280"), font=f_section)
+        ly += 4 * S
+        draw.line([(px0, ly), (W - padding, ly)], fill=_hex("#374151"), width=S)
+        ly += line_h - 4 * S
+
+    # Title
+    draw.text((px0, ly + 4 * S), "Warehouse Swarm Intelligence", fill=_hex("#f3f4f6"), font=f_title)
+    ly += 28 * S
+
+    # Simulation section
+    _draw_section("Simulation")
+    _draw_label("Step", str(model.current_step), "#60a5fa")
+    _draw_label(
+        "Retrieved",
+        f"{model.objects_retrieved} / {model.total_objects}",
+        "#34d399",
+    )
+    progress = model.objects_retrieved / model.total_objects if model.total_objects > 0 else 0
+    _draw_label(
+        "Progress",
+        f"{progress * 100:.1f}%",
+        "#34d399" if progress > 0.5 else "#fbbf24",
+    )
+    avg_energy = (
+        float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
+        if model.agents
+        else 0.0
+    )
+    _draw_label("Avg Energy", f"{avg_energy:.1f}")
+    active = len([a for a in model.agents if getattr(a, "energy", 0) > 0])
+    _draw_label("Active Agents", str(active))
+    _draw_label("Messages", str(model.comm_manager.messages_sent))
+
+    # Agents section
+    _draw_section("Agents")
+    role_colors = {"scout": "#22c55e", "coordinator": "#3b82f6", "retriever": "#f97316"}
+    for role in ("scout", "coordinator", "retriever"):
+        group = [a for a in model.agents if getattr(a, "role", "") == role]
+        if not group:
             continue
-        role = getattr(agent, "role", "?")
-        ti = getattr(agent, "type_index", "")
-        short = _ROLE_SHORT.get(role, "?")
-        energy = getattr(agent, "energy", 0)
-        state_raw = getattr(agent, "state", "")
-        state_str = getattr(state_raw, "value", str(state_raw))
-        carrying = getattr(agent, "carrying_objects", 0)
-        info_lines.append(f"{short} {ti}  E={energy:.0f}  C={carrying}  {state_str}")
-
-    for line in info_lines:
-        draw.text((px0, ly), line, fill=_hex(THEME["legend"]), font=fm)
-        ly += 12 * S
-
-    # Legend
-    ly += 6 * S
-    for role, col in _ROLE_COLORS.items():
-        draw.ellipse(
-            [(px0, ly + 1 * S), (px0 + 8 * S, ly + 9 * S)], fill=_hex(col)
+        short = _ROLE_SHORT[role]
+        draw.text(
+            (px0, ly),
+            f"{short} \u00d7{len(group)}",
+            fill=_hex(role_colors[role]),
+            font=f_label,
         )
-        draw.text((px0 + 12 * S, ly), role.capitalize(), fill=_hex(THEME["legend"]), font=fsm)
-        ly += 14 * S
-    ly += 4 * S
-    # Object marker
-    draw.ellipse(
-        [(px0, ly + 1 * S), (px0 + 8 * S, ly + 9 * S)], fill=_hex("#facc15")
+        # Show total delivered for this role group
+        total_del = sum(getattr(a, "total_delivered", 0) for a in group)
+        if total_del > 0:
+            draw.text(
+                (px0 + label_off, ly),
+                f"delivered {total_del}",
+                fill=_hex("#34d399"),
+                font=f_value,
+            )
+        ly += line_h
+
+    # Config name
+    ly += 6 * S
+    draw.text((px0, ly), title, fill=_hex("#6b7280"), font=f_small)
+    ly += line_h
+
+    # Watermark
+    draw.text(
+        (px0, H - padding),
+        f"Step {model.current_step}",
+        fill=_hex("#4b5563"),
+        font=f_small,
     )
-    draw.text((px0 + 12 * S, ly), "Object", fill=_hex(THEME["legend"]), font=fsm)
-    ly += 14 * S
-    draw.ellipse(
-        [(px0, ly + 1 * S), (px0 + 8 * S, ly + 9 * S)], fill=_hex("#22c55e")
-    )
-    draw.text((px0 + 12 * S, ly), "Retrieved", fill=_hex(THEME["legend"]), font=fsm)
 
     img = img.convert("RGB")
     img.save(path, "PNG")

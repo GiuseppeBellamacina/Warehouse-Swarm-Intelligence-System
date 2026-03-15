@@ -340,7 +340,7 @@ function App() {
     drawLabel("Active Agents", String(displayState.metrics.active_agents));
     drawLabel("Messages", String(displayState.metrics.messages_sent));
 
-    // Agent summary
+    // Agent summary — per-agent detail
     drawSection("Agents");
     const roles = ["scout", "coordinator", "retriever"] as const;
     const roleColors: Record<string, string> = {
@@ -351,10 +351,20 @@ function App() {
     for (const role of roles) {
       const group = displayState.agents.filter((a) => a.role === role);
       if (group.length === 0) continue;
-      ctx.fillStyle = roleColors[role];
-      ctx.font = "bold 12px monospace";
-      ctx.fillText(`${ROLE_SHORT[role]} ×${group.length}`, px, py);
-      py += lineH;
+      for (const agent of group) {
+        ctx.fillStyle = roleColors[role];
+        ctx.font = "bold 12px monospace";
+        const tag = `${ROLE_SHORT[role]} ${agent.type_index}`;
+        ctx.fillText(tag, px, py);
+        // Show delivered count
+        const del = agent.delivered ?? 0;
+        if (del > 0) {
+          ctx.fillStyle = "#34d399";
+          ctx.font = "12px monospace";
+          ctx.fillText(`delivered ${del}`, px + 80, py);
+        }
+        py += lineH;
+      }
     }
 
     // Selected agent detail
@@ -372,6 +382,7 @@ function App() {
           : "#ef4444",
       );
       drawLabel("Carrying", String(selectedAgent.carrying));
+      drawLabel("Delivered", String(selectedAgent.delivered ?? 0), "#34d399");
       drawLabel("Vision", `${selectedAgent.vision_radius} cells`);
       drawLabel("Comm Range", `${selectedAgent.communication_radius} cells`);
 
@@ -500,12 +511,12 @@ function App() {
   );
 
   // Panel widths in pixels — initialised as % of viewport.
-  // Agents 15.5% | Map 39% (flex-1) | Metrics 23% | Controls 20%
+  // Agents 16% | Map 48% (flex-1) | Metrics 20% | Controls 20%
   const [agentsW, setAgentsW] = useState(() =>
-    Math.round(window.innerWidth * 0.155),
+    Math.round(window.innerWidth * 0.18),
   );
   const [metricsW, setMetricsW] = useState(() =>
-    Math.round(window.innerWidth * 0.23),
+    Math.round(window.innerWidth * 0.2),
   );
   const [controlsW, setControlsW] = useState(() =>
     Math.round(window.innerWidth * 0.2),
@@ -723,7 +734,7 @@ function App() {
                   <button
                     onClick={exportSnapshot}
                     title="Export snapshot as PNG"
-                    className="ml-0.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border bg-gray-800/60 text-gray-500 border-gray-700/40 hover:text-gray-300 hover:border-gray-600/50"
+                    className="ml-0.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border bg-cyan-800/40 text-cyan-400 border-cyan-600/40 hover:bg-cyan-700/50 hover:text-cyan-300 hover:border-cyan-500/50"
                   >
                     📷
                   </button>
@@ -1127,7 +1138,7 @@ function App() {
               <button
                 onClick={exportSnapshot}
                 title="Export snapshot as PNG"
-                className="ml-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border bg-gray-800/60 text-gray-500 border-gray-700/40 hover:text-gray-300 hover:border-gray-600/50"
+                className="ml-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border bg-cyan-800/40 text-cyan-400 border-cyan-600/40 hover:bg-cyan-700/50 hover:text-cyan-300 hover:border-cyan-500/50"
               >
                 📷
               </button>
