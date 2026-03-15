@@ -824,7 +824,11 @@ class RetrieverAgent(BaseAgent):
                                 # Each retriever picks a different corner
                                 # based on its index within the retriever list.
                                 ret_ids = sorted(a.unique_id for a in self.model.retrievers)
-                                my_idx = ret_ids.index(self.unique_id) if self.unique_id in ret_ids else 0
+                                my_idx = (
+                                    ret_ids.index(self.unique_id)
+                                    if self.unique_id in ret_ids
+                                    else 0
+                                )
                                 corners.sort(
                                     key=lambda c: abs(c[0] - pos_tuple[0])
                                     + abs(c[1] - pos_tuple[1]),
