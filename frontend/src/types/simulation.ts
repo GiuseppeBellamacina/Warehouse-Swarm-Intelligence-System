@@ -15,6 +15,7 @@ export interface AgentMessage {
 
 export interface Agent {
   id: number;
+  type_index: number;
   role: "scout" | "coordinator" | "retriever";
   x: number;
   y: number;

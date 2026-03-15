@@ -839,6 +839,7 @@ class WarehouseModel(Model):
 
                 agent_data = {
                     "id": agent.unique_id,
+                    "type_index": getattr(agent, "type_index", agent.unique_id + 1),
                     "role": getattr(agent, "role", "unknown"),
                     "x": agent.pos[0],
                     "y": agent.pos[1],

@@ -141,12 +141,6 @@ async def get_config(config_name: str):
     try:
         config_file = configs_path / config_name
 
-        # Log the path for debugging
-        print(f"[DEBUG] Looking for config file at: {config_file}")
-        print(f"[DEBUG] Config file exists: {config_file.exists()}")
-        print(f"[DEBUG] Configs path: {configs_path}")
-        print(f"[DEBUG] Configs path exists: {configs_path.exists()}")
-
         if not config_file.exists():
             raise HTTPException(
                 status_code=404,
