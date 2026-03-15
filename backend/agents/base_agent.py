@@ -863,12 +863,12 @@ class BaseAgent(Agent):
 
         # Try to use A* pathfinding if agent has it
         if self.pathfinder is not None:
-            # A* treats unexplored cells optimistically (assumed walkable)
-            # in BOTH unknown and map_known modes.  This ensures identical
-            # exploration paths — the only map_known advantage is warehouse
-            # knowledge for faster delivery.  When the agent discovers
-            # obstacles via vision, the path is invalidated only if it
-            # passes through a now-known blocked cell.
+            # A* uses optimistic mode in both unknown and map_known:
+            # unexplored cells (local_map == 0) are assumed walkable,
+            # path replanned only when a cell on it is discovered as blocked.
+            # This ensures identical exploration dynamics.  The advantage of
+            # map_known comes from pre-known warehouse locations, not
+            # different pathfinding behaviour.
             _known_mask = self.local_map
 
             # Recompute path if:
@@ -876,7 +876,8 @@ class BaseAgent(Agent):
             # - stuck too long
             # - cached path leads somewhere other than the current target
             #   (target changed since path was computed, e.g. new task assigned)
-            # - a cell on the current path is now known to be blocked
+            # - (unknown mode) a cell on the current path is now known to
+            #   be blocked — discovered via vision since last A* call
             cached_destination = self.path[-1] if self.path else None
             if cached_destination != target:
                 self.path = []  # stale — destination changed
@@ -884,9 +885,12 @@ class BaseAgent(Agent):
             path_blocked = False
             if self.path and _known_mask is not None:
                 for px, py in self.path:
-                    if (0 <= py < _known_mask.shape[0] and 0 <= px < _known_mask.shape[1]
-                            and _known_mask[py, px] != 0
-                            and not self.model.grid.is_walkable(px, py)):
+                    if (
+                        0 <= py < _known_mask.shape[0]
+                        and 0 <= px < _known_mask.shape[1]
+                        and _known_mask[py, px] != 0
+                        and not self.model.grid.is_walkable(px, py)
+                    ):
                         path_blocked = True
                         break
 
