@@ -129,7 +129,6 @@ class RetrieverAgent(BaseAgent):
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 30
-        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 15
 
     # ------------------------------------------------------------------
     # Sense
@@ -697,14 +696,7 @@ class RetrieverAgent(BaseAgent):
             # coordinator (or any other agent) to exchange map data.
             # Once within communication range the normal MapDataMessage
             # exchange delivers discoveries that self-assign can use.
-            # In map_known mode use a much shorter interval: terrain is
-            # already known so frontier exploration adds little value —
-            # finding objects depends almost entirely on communication.
-            _seek_interval = (
-                self._SEEK_INFO_INTERVAL_MAP_KNOWN
-                if getattr(self.model, "map_known", False)
-                else self._SEEK_INFO_INTERVAL
-            )
+            _seek_interval = self._SEEK_INFO_INTERVAL
 
             # Gather nearby agent positions AND target positions for anti-clustering.
             # Include ALL agent types so two idle retrievers near each other are
@@ -785,18 +777,9 @@ class RetrieverAgent(BaseAgent):
             if self._SMART_EXPLORE:
                 from backend.algorithms.exploration import FrontierExplorer
 
-                # In map_known mode, local_map is pre-filled so local_map==0
-                # is always empty.  Use vision_explored==0 to find cells not
-                # yet visually scanned — objects can only be in unseen areas.
-                if getattr(self.model, "map_known", False):
-                    _unexp_mask = self.vision_explored == 0
-                else:
-                    _unexp_mask = None
-
                 frontiers = FrontierExplorer.find_frontiers(
                     self.local_map,
                     min_cluster_size=1,
-                    unexplored_mask=_unexp_mask,
                 )
                 if frontiers:
                     # Filter out warehouse cells, unwalkable centroids,
@@ -910,7 +893,6 @@ class RetrieverAgent(BaseAgent):
                         import numpy as np
 
                         _H, _W = self.local_map.shape
-                        _map_known = getattr(self.model, "map_known", False)
                         _has_scouts = len(self.model.scouts) > 0
                         _comm_weight = 0.6 if _has_scouts else 1.0
 
@@ -918,10 +900,6 @@ class RetrieverAgent(BaseAgent):
                             r = 5
                             y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
                             x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
-                            if _map_known:
-                                patch = self.vision_explored[y0:y1, x0:x1]
-                                total = patch.size
-                                return float(np.count_nonzero(patch) / total) if total else 1.0
                             vis = self.vision_explored[y0:y1, x0:x1]
                             comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
                             blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
@@ -973,10 +951,7 @@ class RetrieverAgent(BaseAgent):
             # retriever naturally drifts toward the least-covered region of the map.
             import numpy as np
 
-            if getattr(self.model, "map_known", False):
-                _unk_mask = self.vision_explored == 0
-            else:
-                _unk_mask = self.local_map == 0
+            _unk_mask = self.local_map == 0
 
             unk_coords = np.argwhere(_unk_mask)
             # Compute centroid of unknown area (or map centre if fully explored)
