@@ -671,9 +671,7 @@ class RetrieverAgent(BaseAgent):
                 # doesn't immediately re-pick it (agent would camp there
                 # doing nothing while the centroid barely shifts).
                 if arrived or very_close:
-                    self.unreachable_targets[self._explore_target] = (
-                        self.model.current_step
-                    )
+                    self.unreachable_targets[self._explore_target] = self.model.current_step
                 self._explore_target = None
 
         # Force immediate retarget when stuck next to another agent that is
@@ -798,8 +796,7 @@ class RetrieverAgent(BaseAgent):
                         and self.model.grid.get_cell_type(*f[0]) not in _WH
                         and (
                             f[0] not in self.unreachable_targets
-                            or _cs - self.unreachable_targets[f[0]]
-                            > _FRONTIER_COOLDOWN
+                            or _cs - self.unreachable_targets[f[0]] > _FRONTIER_COOLDOWN
                         )
                     ]
                     if valid:

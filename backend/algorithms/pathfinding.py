@@ -172,7 +172,9 @@ class AStarPathfinder:
                 return self._reconstruct_path(came_from, current)
 
             # Explore neighbors
-            for neighbor, move_cost in self.get_neighbors(current, forbidden_pos or None, known_mask):
+            for neighbor, move_cost in self.get_neighbors(
+                current, forbidden_pos or None, known_mask
+            ):
                 # Add penalty for positions to avoid (other agents)
                 penalty = 10.0 if neighbor in avoid_positions else 0.0
 
