@@ -847,6 +847,7 @@ class WarehouseModel(Model):
                     "max_energy": getattr(agent, "max_energy", 100),
                     "state": state,
                     "carrying": getattr(agent, "carrying_objects", 0),
+                    "delivered": getattr(agent, "total_delivered", 0),
                     "vision_radius": getattr(agent, "vision_radius", 5),
                     "communication_radius": getattr(agent, "communication_radius", 10),
                     "recent_messages": getattr(agent, "recent_messages", []),

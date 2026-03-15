@@ -201,6 +201,11 @@ export function AgentList({
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
+                    {agent.delivered > 0 && (
+                      <span className="text-[9px] bg-green-600/60 text-green-200 px-1.5 py-0.5 rounded-full font-medium">
+                        ✅{agent.delivered}
+                      </span>
+                    )}
                     {agent.carrying > 0 && (
                       <span className="text-[9px] bg-purple-600/60 text-purple-200 px-1.5 py-0.5 rounded-full font-medium">
                         📦{agent.carrying}
@@ -247,6 +252,12 @@ export function AgentList({
                       <span className="text-gray-500 text-[10px]">Comm.</span>
                       <span className="text-right text-[10px]">
                         {agent.communication_radius} cells
+                      </span>
+                      <span className="text-gray-500 text-[10px]">
+                        Delivered
+                      </span>
+                      <span className="text-right text-[10px] text-green-400">
+                        {agent.delivered ?? 0}
                       </span>
                     </div>
 

@@ -23,6 +23,7 @@ export interface Agent {
   max_energy: number;
   state: string;
   carrying: number;
+  delivered: number;
   vision_radius: number;
   communication_radius: number;
   recent_messages: AgentMessage[];
