@@ -8,11 +8,14 @@ Generates PNG charts (same visual style as the frontend BenchmarkPanel) and
 saves them to docs/benchmarks/<map>/.
 
 Usage:
-    python test_configs.py              # quick summary
-    python test_configs.py -v           # verbose (agent log lines)
+    python evaluation.py                      # quick summary, no images
+    python evaluation.py -v                   # verbose (agent log lines)
+    python evaluation.py --bench-imgs         # generate benchmark charts and snapshots
 """
 
+import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -29,6 +32,7 @@ from backend.config.schemas import (
     ScoutBehaviorParams,
     SimulationAgentsConfig,
 )
+from backend.core.grid_manager import CellType
 
 # ── PNG chart renderer (Pillow — mirrors frontend BenchmarkPanel) ────────────
 
@@ -176,18 +180,41 @@ def _save_line_chart(
     draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
     draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
 
-    # Data lines
+    # Data lines — collect pixel points for legend placement
+    all_pts: list[tuple[int, int]] = []
     for sr in series:
         if len(sr["data"]) < 2:
             continue
         pts = [(sx(d["x"]), sy(d["y"])) for d in sr["data"]]
+        all_pts.extend(pts)
         draw.line(pts, fill=_hex(sr["color"]), width=S + 1)
 
-    # Legend
+    # Legend — auto-place in the corner with fewest data points
+    legend_h = len(series) * 14 * S + 6 * S
+    legend_w = 120 * S  # approximate legend width
+    margin = 8 * S
+    corners = {
+        "tl": (pl + margin, pt + margin),
+        "tr": (pl + cw - legend_w - margin, pt + margin),
+        "bl": (pl + margin, pt + ch - legend_h - margin),
+        "br": (pl + cw - legend_w - margin, pt + ch - legend_h - margin),
+    }
+    best_corner = "tl"
+    best_count = float("inf")
+    for key, (cx0, cy0) in corners.items():
+        count = sum(
+            1 for px_, py_ in all_pts
+            if cx0 <= px_ <= cx0 + legend_w and cy0 <= py_ <= cy0 + legend_h
+        )
+        if count < best_count:
+            best_count = count
+            best_corner = key
+    leg_x, leg_y = corners[best_corner]
+
     lc = _hex(THEME["legend"])
     for i, sr in enumerate(series):
-        lx = pl + 8 * S
-        ly = pt + 10 * S + i * 14 * S
+        lx = leg_x
+        ly = leg_y + i * 14 * S
         draw.line([(lx, ly), (lx + 16 * S, ly)], fill=_hex(sr["color"]), width=S + 1)
         draw.text((lx + 20 * S, ly - 5 * S), sr["label"], fill=lc, font=fl)
 
@@ -345,20 +372,267 @@ def _save_table(
     img.save(path, "PNG")
 
 
+# ── Grid snapshot renderer ────────────────────────────────────────────────────
+
+# Agent colors matching the frontend GridCanvas
+_ROLE_COLORS = {
+    "scout": "#22c55e",
+    "coordinator": "#3b82f6",
+    "retriever": "#f97316",
+}
+_ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
+
+# Cell → colour map
+_CELL_COLORS = {
+    CellType.FREE: "#0c0e14",
+    CellType.OBSTACLE: "#4a4a4a",
+    CellType.WAREHOUSE: "#1e3a5f",          # rgba(59,130,246,0.3) on bg
+    CellType.WAREHOUSE_ENTRANCE: "#10b981",
+    CellType.WAREHOUSE_EXIT: "#ef4444",
+    CellType.OBJECT_ZONE: "#0c0e14",
+    CellType.OBJECT: "#0c0e14",
+    CellType.UNKNOWN: "#0c0e14",
+}
+
+
+def _save_grid_snapshot(
+    path: str,
+    model,
+    title: str,
+    trail_history: dict[int, list[tuple[int, int]]],
+    cell_px: int = 20,
+    scale: int = 2,
+) -> None:
+    """
+    Render the final simulation state as a PNG grid snapshot.
+
+    Matches the frontend GridCanvas rendering: cells, fog-of-war,
+    objects, trails (semi-transparent role-coloured dots with overlap
+    offsets), agents (shape by role), energy bars, carrying count,
+    and an info panel on the right.
+    """
+    S = scale
+    cp = cell_px * S  # pixels per cell
+    gw, gh = model.grid.width, model.grid.height
+    grid_w, grid_h = gw * cp, gh * cp
+    panel_w = 220 * S
+    W, H = grid_w + panel_w, grid_h
+    img = Image.new("RGBA", (W, H), _hex("#0c0e14") + (255,))
+    draw = ImageDraw.Draw(img)
+    ft = _font(12 * S)
+    fsm = _font(9 * S)
+    fm = _font(9 * S, mono=True)
+
+    # ── Draw cells ──
+    cell_types = model.grid.cell_types  # ndarray [width, height]
+    for x in range(gw):
+        for y in range(gh):
+            ct = CellType(cell_types[x, y])
+            colour = _CELL_COLORS.get(ct, "#0c0e14")
+            px, py = x * cp, y * cp
+            draw.rectangle([(px, py), (px + cp - 1, py + cp - 1)], fill=_hex(colour))
+
+    # Grid lines
+    grid_col = (255, 255, 255, 10)  # rgba matching frontend 0.04 alpha
+    for x in range(gw + 1):
+        draw.line([(x * cp, 0), (x * cp, grid_h)], fill=grid_col, width=1)
+    for y in range(gh + 1):
+        draw.line([(0, y * cp), (grid_w, y * cp)], fill=grid_col, width=1)
+
+    # ── Draw remaining objects (yellow circle) ──
+    for ox, oy in model.grid.objects:
+        cx = int((ox + 0.5) * cp)
+        cy = int((oy + 0.5) * cp)
+        r = int(cp * 0.3)
+        draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=_hex("#facc15"))
+
+    # ── Draw retrieved objects (dimmed green dot) ──
+    for ox, oy in model.grid.retrieved_objects:
+        cx = int((ox + 0.5) * cp)
+        cy = int((oy + 0.5) * cp)
+        r = int(cp * 0.18)
+        draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=_hex("#22c55e"))
+
+    # ── Draw agent trails ──
+    # Offset patterns for overlapping dots (matching frontend)
+    _offset_patterns = [
+        (0.0, 0.0),
+        (-0.2, -0.2),
+        (0.2, -0.2),
+        (-0.2, 0.2),
+        (0.2, 0.2),
+        (0.0, -0.25),
+        (0.0, 0.25),
+        (-0.25, 0.0),
+        (0.25, 0.0),
+    ]
+
+    # Build per-cell visitor list for offset computation
+    cell_visitors: dict[tuple[int, int], list[int]] = {}
+    for aid, positions in trail_history.items():
+        for pos in positions:
+            key = pos
+            arr = cell_visitors.setdefault(key, [])
+            if aid not in arr:
+                arr.append(aid)
+
+    # Build agent id → role lookup
+    agent_roles: dict[int, str] = {}
+    for agent in model.agents:
+        agent_roles[agent.unique_id] = getattr(agent, "role", "unknown")
+
+    # Draw trail dots (semi-transparent, role-coloured)
+    trail_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    trail_draw = ImageDraw.Draw(trail_overlay)
+    dot_r = max(1, int(cp * 0.12))
+    trail_alpha = 89  # ~0.35 * 255
+
+    for aid, positions in trail_history.items():
+        role = agent_roles.get(aid, "unknown")
+        base_col = _hex(_ROLE_COLORS.get(role, "#ffffff"))
+        fill_col = base_col + (trail_alpha,)
+
+        for pos in positions:
+            visitors = cell_visitors.get(pos, [aid])
+            idx = visitors.index(aid) if aid in visitors else 0
+            if len(visitors) > 1:
+                ox, oy = _offset_patterns[idx % len(_offset_patterns)]
+            else:
+                ox, oy = 0.0, 0.0
+
+            cx = int((pos[0] + 0.5 + ox) * cp)
+            cy = int((pos[1] + 0.5 + oy) * cp)
+            trail_draw.ellipse(
+                [(cx - dot_r, cy - dot_r), (cx + dot_r, cy + dot_r)],
+                fill=fill_col,
+            )
+
+    img = Image.alpha_composite(img, trail_overlay)
+    draw = ImageDraw.Draw(img)
+
+    # ── Draw agents ──
+    for agent in model.agents:
+        if not agent.pos:
+            continue
+        ax, ay = agent.pos
+        cx = int((ax + 0.5) * cp)
+        cy = int((ay + 0.5) * cp)
+        r = int(cp * 0.4)
+        role = getattr(agent, "role", "unknown")
+        colour = _hex(_ROLE_COLORS.get(role, "#ffffff"))
+
+        if role == "scout":
+            draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=colour)
+        elif role == "coordinator":
+            pts = []
+            for i in range(6):
+                angle = math.pi / 3 * i
+                pts.append((cx + int(r * math.cos(angle)), cy + int(r * math.sin(angle))))
+            draw.polygon(pts, fill=colour)
+        else:
+            draw.rectangle([(cx - r, cy - r), (cx + r, cy + r)], fill=colour)
+
+        # Energy bar
+        bar_w = int(cp * 0.8)
+        bar_h = max(2 * S, 3)
+        bx = ax * cp + int(cp * 0.1)
+        by_ = int((ay + 0.9) * cp)
+        draw.rectangle([(bx, by_), (bx + bar_w, by_ + bar_h)], fill=_hex("#334155"))
+        max_e = getattr(agent, "max_energy", 100)
+        ep = min(getattr(agent, "energy", 0) / max_e, 1.0) if max_e else 0
+        e_col = "#22c55e" if ep > 0.5 else ("#facc15" if ep > 0.25 else "#ef4444")
+        draw.rectangle([(bx, by_), (bx + int(bar_w * ep), by_ + bar_h)], fill=_hex(e_col))
+
+        # Carrying count (above agent, matching frontend)
+        carrying = getattr(agent, "carrying_objects", 0)
+        if carrying > 0:
+            ct_label = str(carrying)
+            ct_w = _tw(draw, ct_label, fsm)
+            draw.text(
+                (cx - ct_w // 2, cy - int(r * 1.5) - 2 * S),
+                ct_label,
+                fill=_hex("#facc15"),
+                font=fsm,
+            )
+
+    # ── Info panel ──
+    px0 = grid_w + 8 * S
+    ly = 10 * S
+    draw.text((px0, ly), title, fill=_hex(THEME["title"]), font=ft)
+    ly += 18 * S
+    draw.line([(px0, ly), (W - 8 * S, ly)], fill=_hex(THEME["grid"]), width=1)
+    ly += 8 * S
+
+    info_lines = [
+        f"Step: {model.current_step}",
+        f"Objects: {model.objects_retrieved}/{model.total_objects}",
+        f"Messages: {model.comm_manager.messages_sent}",
+        "",
+    ]
+    for agent in model.agents:
+        if not agent.pos:
+            continue
+        role = getattr(agent, "role", "?")
+        ti = getattr(agent, "type_index", "")
+        short = _ROLE_SHORT.get(role, "?")
+        energy = getattr(agent, "energy", 0)
+        state_raw = getattr(agent, "state", "")
+        state_str = getattr(state_raw, "value", str(state_raw))
+        carrying = getattr(agent, "carrying_objects", 0)
+        info_lines.append(f"{short} {ti}  E={energy:.0f}  C={carrying}  {state_str}")
+
+    for line in info_lines:
+        draw.text((px0, ly), line, fill=_hex(THEME["legend"]), font=fm)
+        ly += 12 * S
+
+    # Legend
+    ly += 6 * S
+    for role, col in _ROLE_COLORS.items():
+        draw.ellipse(
+            [(px0, ly + 1 * S), (px0 + 8 * S, ly + 9 * S)], fill=_hex(col)
+        )
+        draw.text((px0 + 12 * S, ly), role.capitalize(), fill=_hex(THEME["legend"]), font=fsm)
+        ly += 14 * S
+    ly += 4 * S
+    # Object marker
+    draw.ellipse(
+        [(px0, ly + 1 * S), (px0 + 8 * S, ly + 9 * S)], fill=_hex("#facc15")
+    )
+    draw.text((px0 + 12 * S, ly), "Object", fill=_hex(THEME["legend"]), font=fsm)
+    ly += 14 * S
+    draw.ellipse(
+        [(px0, ly + 1 * S), (px0 + 8 * S, ly + 9 * S)], fill=_hex("#22c55e")
+    )
+    draw.text((px0 + 12 * S, ly), "Retrieved", fill=_hex(THEME["legend"]), font=fsm)
+
+    img = img.convert("RGB")
+    img.save(path, "PNG")
+
+
 # ── Snapshot collection ──────────────────────────────────────────────────────
+
+# Type alias for trail data
+TrailHistory = dict[int, list[tuple[int, int]]]
 
 
 def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsConfig):
-    """Run a single simulation, collect per-step snapshots."""
+    """Run a single simulation, collect per-step snapshots.  Returns (steps, snapshots, model, trails)."""
     mgr = SimulationManager()
     mgr.initialize_from_grid(grid_cfg, agents_cfg)
     assert mgr.model is not None, "initialize_from_grid failed to create model"
     model = mgr.model
 
     snapshots: list[dict] = []
+    trails: TrailHistory = {}
     t0 = time.perf_counter()
     while model.running:
         model.step()
+        # Record agent positions for trail rendering
+        for agent in model.agents:
+            if agent.pos:
+                trails.setdefault(agent.unique_id, []).append(
+                    (agent.pos[0], agent.pos[1])
+                )
         snapshots.append(
             {
                 "step": model.current_step,
@@ -382,7 +656,7 @@ def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsCo
         f"[{name:30s}]  {model.objects_retrieved}/{model.total_objects}"
         f"  in {steps:4d} steps  ({elapsed:.2f}s){tag}"
     )
-    return steps, snapshots
+    return steps, snapshots, model, trails
 
 
 # ── Test configurations ─────────────────────────────────────────────────────
@@ -472,14 +746,18 @@ def _downsample(data: list[dict], max_pts: int = 300) -> list[dict]:
     return out
 
 
-def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], out_dir: str):
-    """Generate PNG charts + table for one map and save to out_dir."""
+def _generate_charts(
+    map_name: str,
+    results: list[tuple[str, int, list[dict], object, TrailHistory]],
+    out_dir: str,
+):
+    """Generate PNG charts + table + final snapshots for one map and save to out_dir."""
     os.makedirs(out_dir, exist_ok=True)
 
     # 1) Line charts (one per metric, all configs overlaid)
     for cdef in CHART_DEFS:
         series = []
-        for i, (name, _steps, snapshots) in enumerate(results):
+        for i, (name, _steps, snapshots, _mdl, _trails) in enumerate(results):
             ds = _downsample(snapshots)
             series.append(
                 {
@@ -496,8 +774,8 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
         )
 
     # 2) Bar chart — total steps comparison
-    labels = [name for name, _, _ in results]
-    values = [steps for _, steps, _ in results]
+    labels = [name for name, _, _, _, _ in results]
+    values = [steps for _, steps, _, _, _ in results]
     colors = [_pick_color(i) for i in range(len(results))]
     _save_bar_chart(
         os.path.join(out_dir, "steps_comparison.png"),
@@ -510,7 +788,7 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
     # 3) Summary table
     headers = ["Config", "Steps", "Retrieved", "Completion", "Efficiency", "Avg Energy", "Messages"]
     rows = []
-    for name, steps, snapshots in results:
+    for name, steps, snapshots, _model, _trails in results:
         last = snapshots[-1] if snapshots else {}
         retrieved = last.get("objects_retrieved", 0)
         total = last.get("total_objects", 0)
@@ -527,12 +805,33 @@ def _generate_charts(map_name: str, results: list[tuple[str, int, list[dict]]], 
         colors,
     )
 
+    # 4) Final grid snapshots (one per config)
+    for i, (name, _steps, _snapshots, mdl, tr) in enumerate(results):
+        safe = name.replace("/", "-").replace(" ", "_").strip("_")
+        _save_grid_snapshot(
+            os.path.join(out_dir, f"snapshot_{safe}.png"),
+            mdl,
+            f"{name}  \u2014  {map_name}",
+            tr,
+        )
+
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
 def main():
-    verbose = "-v" in sys.argv
+    parser = argparse.ArgumentParser(
+        description="Run benchmark test suite with optional image export.",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show agent log lines")
+    parser.add_argument(
+        "--bench-imgs",
+        action="store_true",
+        help="Generate benchmark charts and final grid snapshots",
+    )
+    args = parser.parse_args()
+    verbose = args.verbose
+    generate_images = args.bench_imgs
     import builtins
 
     _real_print = builtins.print
@@ -552,23 +851,26 @@ def main():
         )
         _real_print("=" * 80)
 
-        results: list[tuple[str, int, list[dict]]] = []
+        results: list[tuple[str, int, list[dict], object, TrailHistory]] = []
         for name, agents_cfg in CONFIGS:
             if not verbose:
                 builtins.print = lambda *a, **kw: None
-            steps, snapshots = _run(name, grid_cfg, agents_cfg)
+            steps, snapshots, model, trails = _run(name, grid_cfg, agents_cfg)
             if not verbose:
                 builtins.print = _real_print
                 _real_print(f"  [{name:30s}]  => {steps:4d} steps")
-            results.append((name, steps, snapshots))
+            results.append((name, steps, snapshots, model, trails))
 
         _real_print("-" * 80)
-        _real_print(f"  Total steps: {sum(s for _, s, _ in results)}")
+        _real_print(f"  Total steps: {sum(s for _, s, _, _, _ in results)}")
 
-        # Generate charts
-        out_dir = os.path.join("docs", "benchmarks", map_name)
-        _generate_charts(map_name, results, out_dir)
-        _real_print(f"  Charts saved to {out_dir}/")
+        # Generate charts & snapshots
+        if generate_images:
+            out_dir = os.path.join("docs", "benchmarks", map_name)
+            _generate_charts(map_name, results, out_dir)
+            _real_print(f"  Charts & snapshots saved to {out_dir}/")
+        else:
+            _real_print("  Image generation skipped (use --bench-imgs to enable)")
         _real_print("=" * 80)
         _real_print()
 

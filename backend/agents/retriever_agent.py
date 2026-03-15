@@ -920,6 +920,14 @@ class RetrieverAgent(BaseAgent):
                             <= self._explore_target_ttl
                         ]
 
+                        # Dampen momentum after 6 steps on the same target
+                        # so stale unreachable targets lose their bonus and
+                        # other frontiers can win on raw utility.
+                        _momentum_target = (
+                            self._explore_target
+                            if self._explore_steps <= 6
+                            else None
+                        )
                         best = FrontierExplorer.select_best_frontier(
                             valid,
                             pos_tuple,
@@ -927,7 +935,7 @@ class RetrieverAgent(BaseAgent):
                             grid_size=(self.model.grid.width, self.model.grid.height),
                             explored_ratio_at=_explored_ratio,
                             all_peer_targets=_global_targets,
-                            current_target=self._explore_target,
+                            current_target=_momentum_target,
                         )
                         if best:
                             old_target = self._explore_target
