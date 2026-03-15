@@ -129,7 +129,7 @@ class RetrieverAgent(BaseAgent):
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 30
-        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 40
+        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 15
 
     # ------------------------------------------------------------------
     # Sense
@@ -671,12 +671,7 @@ class RetrieverAgent(BaseAgent):
                 # Blacklist the frontier centroid so select_best_frontier
                 # doesn't immediately re-pick it (agent would camp there
                 # doing nothing while the centroid barely shifts).
-                # In map_known mode, skip blacklisting: the agent needs to
-                # stay near frontiers to scan with vision, and frontier
-                # centroids shift naturally as cells get scanned.
-                if (arrived or very_close) and not getattr(
-                    self.model, "map_known", False
-                ):
+                if arrived or very_close:
                     self.unreachable_targets[self._explore_target] = (
                         self.model.current_step
                     )
@@ -920,7 +915,7 @@ class RetrieverAgent(BaseAgent):
                         _comm_weight = 0.6 if _has_scouts else 1.0
 
                         def _explored_ratio(fx: int, fy: int) -> float:
-                            r = 3 if _map_known else 5
+                            r = 5
                             y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
                             x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
                             if _map_known:
