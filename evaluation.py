@@ -203,7 +203,8 @@ def _save_line_chart(
     best_count = float("inf")
     for key, (cx0, cy0) in corners.items():
         count = sum(
-            1 for px_, py_ in all_pts
+            1
+            for px_, py_ in all_pts
             if cx0 <= px_ <= cx0 + legend_w and cy0 <= py_ <= cy0 + legend_h
         )
         if count < best_count:
@@ -382,18 +383,6 @@ _ROLE_COLORS = {
 }
 _ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
 
-# Cell → colour map
-_CELL_COLORS = {
-    CellType.FREE: "#0c0e14",
-    CellType.OBSTACLE: "#4a4a4a",
-    CellType.WAREHOUSE: "#1e3a5f",          # rgba(59,130,246,0.3) on bg
-    CellType.WAREHOUSE_ENTRANCE: "#10b981",
-    CellType.WAREHOUSE_EXIT: "#ef4444",
-    CellType.OBJECT_ZONE: "#0c0e14",
-    CellType.OBJECT: "#0c0e14",
-    CellType.UNKNOWN: "#0c0e14",
-}
-
 
 def _save_grid_snapshot(
     path: str,
@@ -406,10 +395,9 @@ def _save_grid_snapshot(
     """
     Render the final simulation state as a PNG grid snapshot.
 
-    Matches the frontend GridCanvas rendering: cells, fog-of-war,
-    objects, trails (semi-transparent role-coloured dots with overlap
-    offsets), agents (shape by role), energy bars, carrying count,
-    and an info panel on the right.
+    Faithfully replicates the frontend GridCanvas + exportSnapshot rendering:
+    same layer order, same colours, same fog-of-war, same semi-transparent
+    warehouse cells, same trail dots, same agent shapes / energy bars.
     """
     S = scale
     cp = cell_px * S  # pixels per cell
@@ -417,42 +405,147 @@ def _save_grid_snapshot(
     grid_w, grid_h = gw * cp, gh * cp
     panel_w = 260 * S
     W, H = grid_w + panel_w, max(grid_h, 400 * S)
-    img = Image.new("RGBA", (W, H), _hex("#0f1117") + (255,))
-    draw = ImageDraw.Draw(img)
-    fsm = _font(9 * S)  # used for carrying label
+    fsm = _font(9 * S)
 
-    # ── Draw cells ──
-    cell_types = model.grid.cell_types  # ndarray [width, height]
+    # ── 1. Classify cells ──
+    cell_types = model.grid.cell_types  # ndarray [width, height], indexed [x, y]
+    wh_cells: list[tuple[int, int]] = []
+    ent_cells: list[tuple[int, int]] = []
+    exit_cells: list[tuple[int, int]] = []
+    obs_cells: list[tuple[int, int]] = []
     for x in range(gw):
         for y in range(gh):
             ct = CellType(cell_types[x, y])
-            colour = _CELL_COLORS.get(ct, "#0c0e14")
-            px, py = x * cp, y * cp
-            draw.rectangle([(px, py), (px + cp - 1, py + cp - 1)], fill=_hex(colour))
+            if ct == CellType.WAREHOUSE:
+                wh_cells.append((x, y))
+            elif ct == CellType.WAREHOUSE_ENTRANCE:
+                ent_cells.append((x, y))
+            elif ct == CellType.WAREHOUSE_EXIT:
+                exit_cells.append((x, y))
+            elif ct == CellType.OBSTACLE:
+                obs_cells.append((x, y))
 
-    # Grid lines
-    grid_col = (255, 255, 255, 10)  # rgba matching frontend 0.04 alpha
+    # ── 2. Build global explored masks ──
+    # local_map / vision_explored are shaped [height, width], indexed [y, x]
+    is_map_known = getattr(model, "map_known", False)
+    g_explored: np.ndarray | None = None
+    g_obj_explored: np.ndarray | None = None
+    for agent in model.agents:
+        lm = getattr(agent, "local_map", None)
+        if lm is not None:
+            m = (lm != 0).astype(np.uint8)
+            g_explored = m if g_explored is None else (g_explored | m)
+        ve = getattr(agent, "vision_explored", None)
+        if ve is not None:
+            g_obj_explored = ve.copy() if g_obj_explored is None else (g_obj_explored | ve)
+
+    # ── 3. Base image — panel bg #0f1117, grid bg #0c0e14 ──
+    img = Image.new("RGBA", (W, H), (15, 17, 23, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([(0, 0), (grid_w - 1, grid_h - 1)], fill=(12, 14, 20, 255))
+
+    # ── 4. Grid lines (semi-transparent white, matching Canvas) ──
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(ov)
+    lc = (255, 255, 255, 10)  # ~rgba(255,255,255,0.04)
     for x in range(gw + 1):
-        draw.line([(x * cp, 0), (x * cp, grid_h)], fill=grid_col, width=1)
+        od.line([(x * cp, 0), (x * cp, grid_h)], fill=lc, width=1)
     for y in range(gh + 1):
-        draw.line([(0, y * cp), (grid_w, y * cp)], fill=grid_col, width=1)
+        od.line([(0, y * cp), (grid_w, y * cp)], fill=lc, width=1)
+    img = Image.alpha_composite(img, ov)
 
-    # ── Draw remaining objects (yellow circle) ──
+    # ── 5. Warehouse cells — semi-transparent blue fill + stroke ──
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(ov)
+    wh_fill = (59, 130, 246, 77)  # rgba(59,130,246,0.3)
+    wh_stroke = (59, 130, 246, 128)  # rgba(59,130,246,0.5)
+    for x, y in wh_cells:
+        px, py = x * cp, y * cp
+        od.rectangle([(px, py), (px + cp - 1, py + cp - 1)], fill=wh_fill)
+        od.rectangle([(px, py), (px + cp - 1, py + cp - 1)], outline=wh_stroke, width=1)
+    img = Image.alpha_composite(img, ov)
+
+    # Entrances (solid #10b981)
+    draw = ImageDraw.Draw(img)
+    for x, y in ent_cells:
+        draw.rectangle(
+            [(x * cp, y * cp), (x * cp + cp - 1, y * cp + cp - 1)],
+            fill=(16, 185, 129, 255),
+        )
+    # Exits (solid #ef4444)
+    for x, y in exit_cells:
+        draw.rectangle(
+            [(x * cp, y * cp), (x * cp + cp - 1, y * cp + cp - 1)],
+            fill=(239, 68, 68, 255),
+        )
+    # Obstacles (solid #4a4a4a)
+    for x, y in obs_cells:
+        draw.rectangle(
+            [(x * cp, y * cp), (x * cp + cp - 1, y * cp + cp - 1)],
+            fill=(74, 74, 74, 255),
+        )
+
+    # ── 6. Fog-of-war ──
+    if is_map_known and g_obj_explored is not None:
+        # map_known mode: amber tint + dot on unscanned cells
+        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        od = ImageDraw.Draw(ov)
+        for gy in range(gh):
+            for gx in range(gw):
+                if g_obj_explored[gy, gx] == 0:
+                    px, py = gx * cp, gy * cp
+                    od.rectangle(
+                        [(px, py), (px + cp - 1, py + cp - 1)],
+                        fill=(180, 140, 60, 46),  # rgba(180,140,60,0.18)
+                    )
+                    cx, cy = px + cp // 2, py + cp // 2
+                    r = max(1, int(cp * 0.12))
+                    od.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=(250, 200, 50, 38))
+        img = Image.alpha_composite(img, ov)
+
+    elif not is_map_known and g_explored is not None:
+        # Normal mode: dark fog on unexplored, bright tint on explored
+        fog_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        fd = ImageDraw.Draw(fog_ov)
+        fog_a = 166  # ~0.65 * 255 (global view)
+        for gy in range(gh):
+            for gx in range(gw):
+                px, py = gx * cp, gy * cp
+                if g_explored[gy, gx] == 0:
+                    fd.rectangle(
+                        [(px, py), (px + cp - 1, py + cp - 1)],
+                        fill=(0, 0, 0, fog_a),
+                    )
+                else:
+                    fd.rectangle(
+                        [(px, py), (px + cp - 1, py + cp - 1)],
+                        fill=(200, 220, 255, 18),  # rgba(200,220,255,0.07)
+                    )
+        img = Image.alpha_composite(img, fog_ov)
+
+        # Diagonal hash pattern on unexplored cells
+        hash_step = max(4 * S, cp // 3)
+        hash_tile = Image.new("RGBA", (cp, cp), (0, 0, 0, 0))
+        hd = ImageDraw.Draw(hash_tile)
+        hc = (255, 255, 255, 15)  # rgba(255,255,255,0.06)
+        for d in range(-cp, 2 * cp, hash_step):
+            hd.line([(d, 0), (d - cp, cp)], fill=hc, width=max(1, S // 2))
+        hash_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        for gy in range(gh):
+            for gx in range(gw):
+                if g_explored[gy, gx] == 0:
+                    hash_ov.paste(hash_tile, (gx * cp, gy * cp))
+        img = Image.alpha_composite(img, hash_ov)
+
+    # ── 7. Objects (not retrieved — yellow circles, matching Canvas) ──
+    draw = ImageDraw.Draw(img)
     for ox, oy in model.grid.objects:
         cx = int((ox + 0.5) * cp)
         cy = int((oy + 0.5) * cp)
         r = int(cp * 0.3)
         draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=_hex("#facc15"))
 
-    # ── Draw retrieved objects (dimmed green dot) ──
-    for ox, oy in model.grid.retrieved_objects:
-        cx = int((ox + 0.5) * cp)
-        cy = int((oy + 0.5) * cp)
-        r = int(cp * 0.18)
-        draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=_hex("#22c55e"))
-
-    # ── Draw agent trails ──
-    # Offset patterns for overlapping dots (matching frontend)
+    # ── 8. Agent trails ──
     _offset_patterns = [
         (0.0, 0.0),
         (-0.2, -0.2),
@@ -465,23 +558,18 @@ def _save_grid_snapshot(
         (0.25, 0.0),
     ]
 
-    # Build per-cell visitor list for offset computation
     cell_visitors: dict[tuple[int, int], list[int]] = {}
-    for aid, positions in trail_history.items():
-        for pos in positions:
-            key = pos
-            arr = cell_visitors.setdefault(key, [])
-            if aid not in arr:
-                arr.append(aid)
-
-    # Build agent id → role lookup
     agent_roles: dict[int, str] = {}
     for agent in model.agents:
         agent_roles[agent.unique_id] = getattr(agent, "role", "unknown")
+    for aid, positions in trail_history.items():
+        for pos in positions:
+            arr = cell_visitors.setdefault(pos, [])
+            if aid not in arr:
+                arr.append(aid)
 
-    # Draw trail dots (semi-transparent, role-coloured)
-    trail_overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    trail_draw = ImageDraw.Draw(trail_overlay)
+    trail_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    td = ImageDraw.Draw(trail_ov)
     dot_r = max(1, int(cp * 0.12))
     trail_alpha = 89  # ~0.35 * 255
 
@@ -489,7 +577,6 @@ def _save_grid_snapshot(
         role = agent_roles.get(aid, "unknown")
         base_col = _hex(_ROLE_COLORS.get(role, "#ffffff"))
         fill_col = base_col + (trail_alpha,)
-
         for pos in positions:
             visitors = cell_visitors.get(pos, [aid])
             idx = visitors.index(aid) if aid in visitors else 0
@@ -497,18 +584,17 @@ def _save_grid_snapshot(
                 ox, oy = _offset_patterns[idx % len(_offset_patterns)]
             else:
                 ox, oy = 0.0, 0.0
-
             cx = int((pos[0] + 0.5 + ox) * cp)
             cy = int((pos[1] + 0.5 + oy) * cp)
-            trail_draw.ellipse(
+            td.ellipse(
                 [(cx - dot_r, cy - dot_r), (cx + dot_r, cy + dot_r)],
                 fill=fill_col,
             )
 
-    img = Image.alpha_composite(img, trail_overlay)
+    img = Image.alpha_composite(img, trail_ov)
     draw = ImageDraw.Draw(img)
 
-    # ── Draw agents ──
+    # ── 9. Agents — shapes, energy bars, carrying count ──
     for agent in model.agents:
         if not agent.pos:
             continue
@@ -522,10 +608,13 @@ def _save_grid_snapshot(
         if role == "scout":
             draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=colour)
         elif role == "coordinator":
-            pts = []
-            for i in range(6):
-                angle = math.pi / 3 * i
-                pts.append((cx + int(r * math.cos(angle)), cy + int(r * math.sin(angle))))
+            pts = [
+                (
+                    cx + int(r * math.cos(math.pi / 3 * i)),
+                    cy + int(r * math.sin(math.pi / 3 * i)),
+                )
+                for i in range(6)
+            ]
             draw.polygon(pts, fill=colour)
         else:
             draw.rectangle([(cx - r, cy - r), (cx + r, cy + r)], fill=colour)
@@ -541,7 +630,7 @@ def _save_grid_snapshot(
         e_col = "#22c55e" if ep > 0.5 else ("#facc15" if ep > 0.25 else "#ef4444")
         draw.rectangle([(bx, by_), (bx + int(bar_w * ep), by_ + bar_h)], fill=_hex(e_col))
 
-        # Carrying count (above agent, matching frontend)
+        # Carrying count
         carrying = getattr(agent, "carrying_objects", 0)
         if carrying > 0:
             ct_label = str(carrying)
@@ -553,7 +642,7 @@ def _save_grid_snapshot(
                 font=fsm,
             )
 
-    # ── Info panel (matches frontend exportSnapshot layout) ──
+    # ── 10. Info panel (matches frontend exportSnapshot) ──
     padding = 16 * S
     px0 = grid_w + padding
     line_h = 18 * S
@@ -565,7 +654,7 @@ def _save_grid_snapshot(
     f_value = _font(12 * S, mono=True)
     f_small = _font(10 * S)
 
-    label_off = 130 * S  # value column offset
+    label_off = 130 * S
 
     def _draw_label(label: str, value: str, color: str = "#e5e7eb") -> None:
         nonlocal ly
@@ -600,16 +689,14 @@ def _save_grid_snapshot(
         "#34d399" if progress > 0.5 else "#fbbf24",
     )
     avg_energy = (
-        float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
-        if model.agents
-        else 0.0
+        float(np.mean([getattr(a, "energy", 0) for a in model.agents])) if model.agents else 0.0
     )
     _draw_label("Avg Energy", f"{avg_energy:.1f}")
     active = len([a for a in model.agents if getattr(a, "energy", 0) > 0])
     _draw_label("Active Agents", str(active))
     _draw_label("Messages", str(model.comm_manager.messages_sent))
 
-    # Agents section
+    # Agents section — per-agent listing (matches frontend exportSnapshot)
     _draw_section("Agents")
     role_colors = {"scout": "#22c55e", "coordinator": "#3b82f6", "retriever": "#f97316"}
     for role in ("scout", "coordinator", "retriever"):
@@ -617,22 +704,18 @@ def _save_grid_snapshot(
         if not group:
             continue
         short = _ROLE_SHORT[role]
-        draw.text(
-            (px0, ly),
-            f"{short} \u00d7{len(group)}",
-            fill=_hex(role_colors[role]),
-            font=f_label,
-        )
-        # Show total delivered for this role group
-        total_del = sum(getattr(a, "total_delivered", 0) for a in group)
-        if total_del > 0:
-            draw.text(
-                (px0 + label_off, ly),
-                f"delivered {total_del}",
-                fill=_hex("#34d399"),
-                font=f_value,
-            )
-        ly += line_h
+        for a in group:
+            tag = f"{short} {getattr(a, 'type_index', a.unique_id + 1)}"
+            draw.text((px0, ly), tag, fill=_hex(role_colors[role]), font=f_label)
+            dl = getattr(a, "total_delivered", 0)
+            if dl > 0:
+                draw.text(
+                    (px0 + 80 * S, ly),
+                    f"delivered {dl}",
+                    fill=_hex("#34d399"),
+                    font=f_value,
+                )
+            ly += line_h
 
     # Config name
     ly += 6 * S
@@ -672,9 +755,7 @@ def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsCo
         # Record agent positions for trail rendering
         for agent in model.agents:
             if agent.pos:
-                trails.setdefault(agent.unique_id, []).append(
-                    (agent.pos[0], agent.pos[1])
-                )
+                trails.setdefault(agent.unique_id, []).append((agent.pos[0], agent.pos[1]))
         snapshots.append(
             {
                 "step": model.current_step,
