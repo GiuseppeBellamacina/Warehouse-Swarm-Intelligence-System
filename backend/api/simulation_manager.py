@@ -8,6 +8,7 @@ import time
 import traceback
 from typing import Optional, Set, Tuple
 
+from backend.agents.base_agent import _type_index_map, register_type_index
 from backend.agents.coordinator_agent import CoordinatorAgent
 from backend.agents.retriever_agent import RetrieverAgent
 from backend.agents.scout_agent import ScoutAgent
@@ -190,6 +191,9 @@ class SimulationManager:
         # Create model
         self.model = WarehouseModel(config)
 
+        # Reset per-type index registry
+        _type_index_map.clear()
+
         # Reset occupied spawn positions
         self.occupied_spawn_positions = set()
 
@@ -209,6 +213,7 @@ class SimulationManager:
                 max_energy=coord_config.parameters.max_energy,
                 speed=coord_config.parameters.speed,
             )
+            register_type_index(i, i + 1)
 
             if coord_config.spawn_location is None:
                 free_pos = self._find_tl_spawn_position()
@@ -235,6 +240,7 @@ class SimulationManager:
                 speed=retr_config.parameters.speed,
                 carrying_capacity=retr_config.parameters.carrying_capacity,
             )
+            register_type_index(base_id + i, i + 1)
 
             if retr_config.spawn_location is None:
                 free_pos = self._find_tl_spawn_position()
@@ -260,6 +266,7 @@ class SimulationManager:
                 max_energy=scout_config.parameters.max_energy,
                 speed=scout_config.parameters.speed,
             )
+            register_type_index(base_id + i, i + 1)
 
             if scout_config.spawn_location is None:
                 free_pos = self._find_tl_spawn_position()
@@ -326,6 +333,9 @@ class SimulationManager:
         # Build model from grid
         self.model = WarehouseModel.from_grid(grid_config)
 
+        # Reset per-type index registry
+        _type_index_map.clear()
+
         # Reset occupied spawn positions
         self.occupied_spawn_positions = set()
 
@@ -352,6 +362,7 @@ class SimulationManager:
                 speed=co.speed,
                 behavior=coord_beh,
             )
+            register_type_index(i, i + 1)
             free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
@@ -373,6 +384,7 @@ class SimulationManager:
                 carrying_capacity=re.carrying_capacity,
                 behavior=retr_beh,
             )
+            register_type_index(base_id + i, i + 1)
             free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
@@ -393,6 +405,7 @@ class SimulationManager:
                 speed=sc.speed,
                 behavior=scout_beh,
             )
+            register_type_index(base_id + i, i + 1)
             free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)

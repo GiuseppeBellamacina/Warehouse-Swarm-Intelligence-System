@@ -38,12 +38,24 @@ _AGENT_COLORS: Dict[str, str] = {
 _RESET = "\033[0m"
 
 
+_ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
+
+# Mapping from unique_id → per-type 1-based index, populated at spawn time
+_type_index_map: dict[int, int] = {}
+
+
+def register_type_index(uid: int, idx: int) -> None:
+    """Register the per-type 1-based index for an agent."""
+    _type_index_map[uid] = idx
+
+
 def agent_tag(role: str, uid: int) -> str:
-    """Return a colored terminal label, e.g. \033[1;32m[SCOUT 0]\033[0m."""
+    """Return a colored terminal label, e.g. \033[1;32m[SCO 1]\033[0m."""
     color = _AGENT_COLORS.get(role, "")
-    name = "COORD" if role == "coordinator" else role.upper()
+    short = _ROLE_SHORT.get(role, role.upper())
+    idx = _type_index_map.get(uid, uid)
     reset = _RESET if color else ""
-    return f"{color}[{name} {uid}]{reset}"
+    return f"{color}[{short} {idx}]{reset}"
 
 
 class AgentState(Enum):
@@ -167,13 +179,18 @@ class BaseAgent(Agent):
         self._last_clearway_sent: int = -99
 
     @property
+    def type_index(self) -> int:
+        """1-based index within this agent's role type."""
+        return _type_index_map.get(self.unique_id, self.unique_id + 1)
+
+    @property
     def tag(self) -> str:
-        """Colored terminal label with step, e.g. [SCOUT 0 @42]."""
+        """Colored terminal label with step, e.g. [SCO 1 @42]."""
         color = _AGENT_COLORS.get(self.role, "")
-        name = "COORD" if self.role == "coordinator" else self.role.upper()
+        short = _ROLE_SHORT.get(self.role, self.role.upper())
         reset = _RESET if color else ""
         step = self.model.current_step
-        return f"{color}[{name} {self.unique_id} @{step}]{reset}"
+        return f"{color}[{short} {self.type_index} @{step}]{reset}"
 
     @property
     def energy_percentage(self) -> float:
