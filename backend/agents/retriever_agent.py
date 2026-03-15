@@ -128,7 +128,7 @@ class RetrieverAgent(BaseAgent):
         # _SEEK_INFO_INTERVAL the retriever heads toward the nearest known
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
-        self._SEEK_INFO_INTERVAL: int = 40
+        self._SEEK_INFO_INTERVAL: int = 30
         self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 40
 
     # ------------------------------------------------------------------
@@ -660,7 +660,26 @@ class RetrieverAgent(BaseAgent):
         # blocks re-evaluation for up to _EXPLORE_RETARGET steps, during
         # which the agent is completely frozen.
         if self._explore_target:
-            if pos_tuple == self._explore_target or self.target_position is None:
+            arrived = pos_tuple == self._explore_target
+            very_close = (
+                abs(pos_tuple[0] - self._explore_target[0])
+                + abs(pos_tuple[1] - self._explore_target[1])
+                <= 1
+            )
+            abandoned = self.target_position is None
+            if arrived or very_close or abandoned:
+                # Blacklist the frontier centroid so select_best_frontier
+                # doesn't immediately re-pick it (agent would camp there
+                # doing nothing while the centroid barely shifts).
+                # In map_known mode, skip blacklisting: the agent needs to
+                # stay near frontiers to scan with vision, and frontier
+                # centroids shift naturally as cells get scanned.
+                if (arrived or very_close) and not getattr(
+                    self.model, "map_known", False
+                ):
+                    self.unreachable_targets[self._explore_target] = (
+                        self.model.current_step
+                    )
                 self._explore_target = None
 
         # Force immediate retarget when stuck next to another agent that is
@@ -785,17 +804,25 @@ class RetrieverAgent(BaseAgent):
                     unexplored_mask=_unexp_mask,
                 )
                 if frontiers:
-                    # Filter out warehouse cells and unwalkable centroids
+                    # Filter out warehouse cells, unwalkable centroids,
+                    # and recently-blacklisted frontier centroids.
                     _WH = (
                         CellType.WAREHOUSE,
                         CellType.WAREHOUSE_ENTRANCE,
                         CellType.WAREHOUSE_EXIT,
                     )
+                    _FRONTIER_COOLDOWN = 10
+                    _cs = self.model.current_step
                     valid = [
                         f
                         for f in frontiers
                         if self.model.grid.is_walkable(*f[0])
                         and self.model.grid.get_cell_type(*f[0]) not in _WH
+                        and (
+                            f[0] not in self.unreachable_targets
+                            or _cs - self.unreachable_targets[f[0]]
+                            > _FRONTIER_COOLDOWN
+                        )
                     ]
                     if valid:
                         # Early game: spread retrievers to different map
