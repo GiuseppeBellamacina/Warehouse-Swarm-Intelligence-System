@@ -925,9 +925,7 @@ class RetrieverAgent(BaseAgent):
                         # so stale unreachable targets lose their bonus and
                         # other frontiers can win on raw utility.
                         _momentum_target = (
-                            self._explore_target
-                            if self._explore_steps <= 6
-                            else None
+                            self._explore_target if self._explore_steps <= 6 else None
                         )
                         best = FrontierExplorer.select_best_frontier(
                             valid,
