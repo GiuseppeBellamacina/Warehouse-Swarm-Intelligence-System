@@ -355,15 +355,15 @@ function App() {
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-xs md:text-sm text-gray-200">
               {backendStatus === "waking"
-                ? "Avvio del backend in corso\u2026"
-                : "Il backend \u00e8 in sleep"}
+                ? "Connecting to backend\u2026"
+                : "Not connected to backend"}
             </p>
             <p className="text-[10px] md:text-xs mt-0.5 text-gray-500 hidden sm:block">
               {backendStatus === "waking"
                 ? wakeLoopActive
-                  ? `Tentativo ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 prossima richiesta tra ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
-                  : "Il server si sta riavviando, attendi 30\u201360 secondi\u2026"
-                : "Dopo un periodo di inattivit\u00e0 il server va in sleep. Risveglialo per continuare."}
+                  ? `Attempt ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 next request in ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
+                  : "The server is starting up, please wait 30\u201360 seconds\u2026"
+                : "Press Connect to reach the server."}
             </p>
           </div>
 
@@ -377,7 +377,7 @@ function App() {
                 onClick={() => stopWakeLoop(false)}
                 className="text-xs px-2.5 md:px-3 py-1.5 rounded-md bg-gray-800/80 border border-gray-700/50 hover:bg-gray-700/80 text-gray-400 hover:text-gray-300 transition-colors"
               >
-                Annulla
+                Cancel
               </button>
             </div>
           ) : backendStatus === "offline" || backendStatus === "unknown" ? (
@@ -400,7 +400,7 @@ function App() {
                   d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
                 />
               </svg>
-              <span>Wake up</span>
+              <span>Connect</span>
             </button>
           ) : null}
         </div>
