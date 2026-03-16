@@ -10,7 +10,11 @@ saves them to docs/benchmarks/<map>/.
 Usage:
     python evaluation.py                      # quick summary, no images
     python evaluation.py -v                   # verbose (agent log lines)
-    python evaluation.py --bench-imgs         # generate benchmark charts and snapshots
+    python evaluation.py --imgs               # generate benchmark charts and snapshots
+    python evaluation.py --seed 42            # set random seed for reproducibility
+    python evaluation.py --maps A B           # specify which maps to run (defaults to all)
+    python evaluation.py --mode known unknown # specify map mode(s) to test (defaults to all)
+    python evaluation.py --help               # show all options
 """
 
 import argparse
@@ -961,9 +965,28 @@ def main():
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show agent log lines")
     parser.add_argument(
-        "--bench-imgs",
+        "--imgs",
         action="store_true",
         help="Generate benchmark charts and final grid snapshots",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        metavar="N",
+        help="Override the random seed for all maps",
+    )
+    parser.add_argument(
+        "--maps",
+        nargs="+",
+        metavar="MAP",
+        help="Maps to run, e.g. A B (defaults to all)",
+    )
+    parser.add_argument(
+        "--mode",
+        nargs="+",
+        choices=["known", "unknown"],
+        metavar="MODE",
+        help="Map modes to test: known and/or unknown (defaults to all)",
     )
     parser.add_argument(
         "--seed-mine",
@@ -973,10 +996,35 @@ def main():
     )
     args = parser.parse_args()
     verbose = args.verbose
-    generate_images = args.bench_imgs
+    generate_images = args.imgs
     import builtins
 
     _real_print = builtins.print
+
+    # ── Apply --maps filter ───────────────────────────────────────────────
+    grid_files = GRID_FILES
+    if args.maps:
+        requested = {m.upper() for m in args.maps}
+        grid_files = [
+            f for f in GRID_FILES if os.path.splitext(os.path.basename(f))[0].upper() in requested
+        ]
+        if not grid_files:
+            _real_print(f"ERROR: no matching maps found for {args.maps}. Available: A, B")
+            sys.exit(1)
+
+    # ── Apply --mode filter ───────────────────────────────────────────────
+    configs = CONFIGS
+    if args.mode:
+        modes = set(args.mode)
+
+        def _matches_mode(cfg_name: str) -> bool:
+            is_known = "map_known" in cfg_name
+            return ("known" in modes and is_known) or ("unknown" in modes and not is_known)
+
+        configs = [(n, a) for n, a in CONFIGS if _matches_mode(n)]
+        if not configs:
+            _real_print(f"ERROR: no configs match mode(s) {args.mode}")
+            sys.exit(1)
 
     # ── Seed mining mode ─────────────────────────────────────────────────
     if args.seed_mine:
@@ -992,13 +1040,13 @@ def main():
         seed_totals: dict[int, int] = {}
         seed_details: dict[int, dict[str, dict[str, int]]] = {}
 
-        total_runs = (s_end - s_start + 1) * len(GRID_FILES) * len(CONFIGS)
+        total_runs = (s_end - s_start + 1) * len(grid_files) * len(configs)
         pbar = tqdm(total=total_runs, desc="Seed mining", unit="run")
 
         for seed in range(s_start, s_end + 1):
             grand_total = 0
             seed_details[seed] = {}
-            for grid_file in GRID_FILES:
+            for grid_file in grid_files:
                 with open(grid_file) as f:
                     grid_cfg = GridScenarioConfig(**json.load(f))
                 grid_cfg_s = copy.deepcopy(grid_cfg)
@@ -1007,7 +1055,7 @@ def main():
                 seed_details[seed][map_name] = {}
 
                 builtins.print = lambda *a, **kw: None
-                for name, agents_cfg in CONFIGS:
+                for name, agents_cfg in configs:
                     steps, _, _, _ = _run(name, grid_cfg_s, agents_cfg)
                     seed_details[seed][map_name][name] = steps
                     grand_total += steps
@@ -1059,9 +1107,12 @@ def main():
         return
 
     # ── Normal evaluation mode ───────────────────────────────────────────
-    for grid_file in GRID_FILES:
+    for grid_file in grid_files:
         with open(grid_file) as f:
             grid_cfg = GridScenarioConfig(**json.load(f))
+
+        if args.seed is not None:
+            grid_cfg.metadata.seed = args.seed
 
         map_name = os.path.splitext(os.path.basename(grid_file))[0]  # "A" or "B"
         meta = grid_cfg.metadata
@@ -1075,7 +1126,7 @@ def main():
         _real_print("=" * 80)
 
         results: list[tuple[str, int, list[dict], object, TrailHistory]] = []
-        for name, agents_cfg in CONFIGS:
+        for name, agents_cfg in configs:
             if not verbose:
                 builtins.print = lambda *a, **kw: None
             steps, snapshots, model, trails = _run(name, grid_cfg, agents_cfg)
@@ -1093,7 +1144,7 @@ def main():
             _generate_charts(map_name, results, out_dir)
             _real_print(f"  Charts & snapshots saved to {out_dir}/")
         else:
-            _real_print("  Image generation skipped (use --bench-imgs to enable)")
+            _real_print("  Image generation skipped (use --imgs to enable)")
         _real_print("=" * 80)
         _real_print()
 

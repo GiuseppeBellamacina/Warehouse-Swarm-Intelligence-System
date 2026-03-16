@@ -69,6 +69,3 @@ simulation_logs/
 *.gz
 *.toc
 *.lof
-
-# Temp
-*.png

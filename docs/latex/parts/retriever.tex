@@ -23,7 +23,8 @@ in sequenza ad ogni passo della fase \texttt{STAGE\_DECIDE}:
           dal Coordinator, preleva il prossimo oggetto dalla coda e si dirige verso di esso.
           La coda viene riordinata per distanza Manhattan dalla posizione corrente ad ogni
           passo (\texttt{\_TASK\_QUEUE\_REORDER}), garantendo che il task pi\`u vicino sia
-          sempre il primo.
+          sempre il primo. Un task viene invalidato e rimosso se la sua posizione non \`e
+          presente n\'e in \texttt{known\_objects} n\'e in \texttt{dubious\_objects}.
     \item \textbf{P3b — Pickup opportunistico}: Dopo aver selezionato il task primario, il
           Retriever scansiona \texttt{known\_objects} alla ricerca di oggetti non reclamati
           entro il raggio di visione. Se la capacit\`a residua lo consente, reclama
@@ -31,15 +32,17 @@ in sequenza ad ogni passo della fase \texttt{STAGE\_DECIDE}:
           il fattore di utilizzo del carico durante il transito verso il task primario.
     \item \textbf{P4 — Auto-assegnazione (modalit\`a hive-mind)}: In assenza di compiti
           assegnati, il Retriever scansiona l'intero \texttt{known\_objects} accumulato
-          (non solo le celle visibili) e si auto-assegna l'oggetto pi\`u conveniente
-          tramite \texttt{try\_claim\_object} atomico. Questo meccanismo elimina i tempi
-          morti tra un'assegnazione e l'altra, sfruttando la conoscenza condivisa tramite
-          le mappe ricevute dagli altri agenti.
-    \item \textbf{P5 — Mini-esplorazione}: Se non ha n\'e compiti n\'e oggetti noti,
-          il Retriever esegue una breve frontier-based exploration locale per scoprire oggetti
-          nell'area circostante. In modalit\`a \texttt{map\_known} usa
-          \texttt{vision\_explored == 0} per identificare celle non scansionate, con
-          anti-clustering rispetto ai Coordinator vicini.
+          (solo oggetti confermati dalla propria visione diretta) e si auto-assegna
+          l'oggetto pi\`u conveniente tramite \texttt{try\_claim\_object} atomico. Questo
+          meccanismo elimina i tempi morti tra un'assegnazione e l'altra.
+    \item \textbf{P4b — Verifica oggetti dubbi}: Se P4 non produce candidati, il Retriever
+          consulta \texttt{dubious\_objects} (Sezione~\ref{sec:dubious}) e si dirige verso
+          l'oggetto dubbio pi\`u vicino per verificarne la presenza. All'arrivo, se
+          l'oggetto esiste viene confermato in \texttt{known\_objects}; altrimenti viene
+          creato un tombstone. Questa verifica avviene solo a mani vuote.
+    \item \textbf{P5 — Mini-esplorazione}: Se non ha n\'e compiti n\'e oggetti da
+          verificare, il Retriever esegue una frontier-based exploration per scoprire
+          oggetti nell'area circostante (Sezione~\ref{sec:retriever-explore}).
 \end{enumerate}
 
 \section{Auto-Assegnazione con Quattro Livelli di Sicurezza}
@@ -160,10 +163,14 @@ sono rare e vengono risolte entro uno-due passi di comunicazione.
 
 I Retriever possono comunicare direttamente tra loro tramite
 \texttt{RetrieverEventMessage} con eventi \texttt{object\_spotted} e
-\texttt{cargo\_dropped}. Alla ricezione, il peer aggiunge l'oggetto a
-\texttt{known\_objects} se non gi\`a noto e non contrassegnato da tombstone. Questo
-crea catene di scoperta opportunistiche che propagano la conoscenza degli oggetti
-peer-to-peer, senza intermediazione del Coordinator.
+\texttt{cargo\_dropped}. Alla ricezione, la posizione dell'oggetto segnalato non
+viene inserita direttamente in \texttt{known\_objects} — poich\'e il peer non ha
+visione diretta — ma in \texttt{dubious\_objects} (Sezione~\ref{sec:dubious}).
+L'oggetto verr\`a verificato dal Retriever ricevente quando idle (P4b), oppure
+sar\`a promosso a \texttt{known\_objects} non appena sar\`a avvistato direttamente.
+Questo crea catene di scoperta opportunistiche che propagano la conoscenza degli
+oggetti peer-to-peer senza intermediazione del Coordinator, contenendo al tempo
+stesso i falsi positivi.
 
 \subsection{Relay delle Posizioni}
 
@@ -181,3 +188,107 @@ degli oggetti rilasciati vengono trasmesse ai vicini tramite
 \texttt{RetrieverEventMessage} con evento \texttt{cargo\_dropped}, permettendo
 ad altri Retriever di recuperarli. Questo meccanismo impedisce che un guasto
 energetico causi la perdita permanente degli oggetti gi\`a raccolti.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Sistema degli Oggetti Dubbi}
+\label{sec:dubious}
+
+Il Retriever mantiene due strutture parallele a \texttt{known\_objects}:
+
+\begin{itemize}
+    \item \texttt{dubious\_objects}: dizionario posizione $\to$ valore dell'oggetto.
+    \item \texttt{dubious\_objects\_step}: dizionario posizione $\to$ passo in cui
+          l'informazione dubbia \`e stata registrata.
+\end{itemize}
+
+Una posizione viene classificata come \textit{dubbia} — anziché confermata — in
+quattro circostanze:
+
+\begin{enumerate}
+    \item \textbf{Relay MapDataMessage}: ogni oggetto che la classe base aggiunge a
+          \texttt{known\_objects} tramite il merge di un \texttt{MapDataMessage} viene
+          immediatamente spostato in \texttt{dubious\_objects}. Il Retriever non fiducia
+          le informazioni di seconda mano sulla presenza di oggetti: solo la propria
+          visione diretta costituisce conferma.
+    \item \textbf{Invecchiamento} (\textit{stale-demote}): ogni oggetto in
+          \texttt{known\_objects} non re-confermato dalla visione diretta entro
+          30~passi viene demoted a dubious. Gli oggetti nella \texttt{task\_queue}
+          attiva sono esentati da questa politica.
+    \item \textbf{Segnalazione peer} (\texttt{RetrieverEventMessage}): oggetti
+          comunicati da altri Retriever vanno in \texttt{dubious\_objects} per default.
+    \item \textbf{TaskAssignmentMessage sconosciuto}: se il Coordinator assegna un
+          target che il Retriever non ha mai visto, la posizione viene inserita in
+          \texttt{dubious\_objects} e poi accodata in \texttt{task\_queue} per la
+          verifica all'arrivo.
+\end{enumerate}
+
+\subsection{Potatura con Confronto Timestamp}
+
+Un tombstone in \texttt{known\_objects\_cleared} cancella una voce dubbia
+\textit{solo se il tombstone \`e almeno altrettanto recente} della segnalazione
+dubbia stessa:
+
+$$\texttt{known\_objects\_cleared.get}(p, -1) \geq \texttt{dubious\_objects\_step.get}(p, 0)$$
+
+Questa condizione impedisce che tombstone vecchi (registrati \textit{prima} di
+ricevere un'informazione dubbia aggiornata) invalidino erroneamente la voce pi\`u
+nuova, evitando la perdita di leads validi.  La potatura avviene in tre punti:
+durante \texttt{step\_sense}, al termine di \texttt{process\_received\_messages},
+e all'inizio della fase P4b.
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Frontiere di Esplorazione}
+\label{sec:retriever-explore}
+
+Quando il Retriever non ha n\'e task n\'e oggetti da verificare, invoca
+\texttt{\_update\_explore\_target} per selezionare una frontiera di esplorazione
+tramite \texttt{FrontierExplorer.select\_best\_frontier}.
+
+\subsection{Persistenza del Momento alla Frontiera}
+
+In precedenza, al momento di raggiungere una frontiera l'agente azzerava
+\texttt{\_explore\_target = None}.  Al passo successivo, l'algoritmo di selezione
+non aveva pi\`u un baricentro direzionale e poteva scegliere frontiere nella
+direzione opposta, causando un immediato \textit{backtracking} verso zone gi\`a
+note.
+
+\paragraph{Correzione.} Prima di azzerare il target raggiunto, il valore viene
+salvato in \texttt{\_last\_explore\_target}.  Nella funzione di utilit\`a, il
+bonus momento viene calcolato usando \texttt{\_last\_explore\_target} come
+direzione di riferimento se \texttt{\_explore\_target} \`e \texttt{None}:
+
+$$B_{\text{mom}}(f) = \max(0,\;\cos\theta) \cdot 3{,}0, \quad
+  \theta = \angle(\overrightarrow{p_{\text{last}} \to p}, \; \overrightarrow{p \to f})$$
+
+In questo modo l'agente mantiene la spinta nella direzione gi\`a intrapresa anche
+dopo aver toccato la frontiera, evitando oscillazioni su zone gi\`a coperte.
+
+\subsection{Esplorazione in Modalit\`a \texttt{map\_known}}
+
+In \texttt{map\_known} la \texttt{local\_map} \`e pre-caricata con la topologia
+reale: non esistono celle UNKNOWN, e dunque la ricerca classica di frontiere
+(bordi tra UNKNOWN e FREE) non trova nulla.  L'algoritmo usa invece
+\texttt{vision\_explored == 0} come maschera di inesplorato.
+
+\paragraph{Rapporto di esplorazione obstacle-aware.}
+Il termine $r_{\text{exp}}(f)$ nella funzione di utilit\`a quantifica quante celle
+attorno alla frontiera siano gi\`a state scansionate.  Una formula ingenua che
+divida per tutte le celle della finestra sovrastima il progresso vicino alle pareti,
+poich\'e le celle ostacolo vengono marcate come ``esplorate'' dalla pre-caricatura
+della mappa.  La versione corretta usa solo le celle walkable:
+
+$$r_{\text{exp}}(f) = \frac{\sum_{c \in W_f} \mathbf{1}[\texttt{vision\_explored}(c) = 1]}{|W_f|}, \quad W_f = \{c : \texttt{nav\_map}(c) = 0\}$$
+
+dove $\texttt{nav\_map}(c) = 0$ identifica celle percorribili (non ostacolo,
+non magazzino).
+
+\paragraph{Stima della massa inesplorata.}
+In modalit\`a \texttt{map\_known}, viene fornita a \texttt{select\_best\_frontier}
+una callback \texttt{unknown\_mass\_at} che conta le celle walkable e non ancora
+scansionate entro raggio~8 attorno a ciascuna frontiera:
+
+$$M(f) = |\{c : \|c - f\|_\infty \leq 8,\; \texttt{nav\_map}(c) = 0,\; \texttt{vision\_explored}(c) = 0\}|$$
+
+Questo sostituisce la semplice dimensione del cluster di frontiera con una stima
+pi\`u fedele del territorio realmente da scandire, orientando il Retriever verso
+regioni con la maggiore densit\`a di oggetti potenzialmente non ancora scoperti.
