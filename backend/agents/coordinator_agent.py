@@ -336,6 +336,24 @@ class CoordinatorAgent(BaseAgent):
         self._identify_available_retrievers()
         self._plan_task_assignments()
 
+        if self.tasks_to_assign:
+            print(
+                f"{self.tag} PLAN: assigning {len(self.tasks_to_assign)} tasks "
+                f"({len(self.known_objects)} known objs, "
+                f"{len(self.available_retrievers)} available retrievers)"
+            )
+        else:
+            import numpy as _np_cd
+
+            _unk = int(_np_cd.count_nonzero(self.local_map == 0))
+            _total = self.local_map.size
+            _pct = 100.0 * (1 - _unk / _total) if _total else 100.0
+            print(
+                f"{self.tag} IDLE: no tasks to assign "
+                f"(map {_pct:.0f}% explored, "
+                f"{len(self.known_objects)} known objs)"
+            )
+
         # Priority 1: Communicate (send tasks OR sync)
         if self.tasks_to_assign:
             self.should_communicate_this_step = True
@@ -370,6 +388,12 @@ class CoordinatorAgent(BaseAgent):
             cap = getattr(agent, "carrying_capacity", 2)
             self.retriever_capacity[rid] = cap
 
+            # Refresh position data — agent is physically nearby now
+            agent_pos = getattr(agent, "pos", None)
+            if agent_pos is not None:
+                self.retriever_positions[rid] = pos_to_tuple(agent_pos)
+                self.retriever_positions_step[rid] = self.model.current_step
+
             # Use declared task queue length (authoritative, avoids race conditions)
             declared_queue = self.retriever_task_queues.get(rid, [])
             carrying = self.retriever_carrying.get(rid, getattr(agent, "carrying_objects", 0))
@@ -398,6 +422,7 @@ class CoordinatorAgent(BaseAgent):
             return
 
         # Build retriever info from communicated positions only (no direct model access)
+        current_step = self.model.current_step
         retriever_info = {}
         for rid in self.available_retrievers:
             pos = self.retriever_positions.get(rid)
@@ -728,6 +753,11 @@ class CoordinatorAgent(BaseAgent):
                         self.target_position = target
                         self.path = []
                         self.state = AgentState.EXPLORING
+                        _work_str = "yes" if has_work else "no"
+                        print(
+                            f"{self.tag} EXPLORE: frontier target {target} "
+                            f"(boundary cells={len(b_ys)}, work={_work_str})"
+                        )
                         return
 
         # ── Strategy 3: random walkable cell (fallback) ──
@@ -746,9 +776,11 @@ class CoordinatorAgent(BaseAgent):
             self.target_position = self._explore_target
             self.path = []
             self.state = AgentState.EXPLORING
+            print(f"{self.tag} EXPLORE: random fallback target {self._explore_target}")
         else:
             self.state = AgentState.IDLE
             self.target_position = None
+            print(f"{self.tag} EXPLORE: no candidates — going IDLE")
 
     def _snap_to_walkable(
         self,

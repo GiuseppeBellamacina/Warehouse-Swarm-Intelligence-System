@@ -204,6 +204,7 @@ def _save_line_chart(
     for key, (cx0, cy0) in corners.items():
         count = sum(
             1
+           
             for px_, py_ in all_pts
             if cx0 <= px_ <= cx0 + legend_w and cy0 <= py_ <= cy0 + legend_h
         )
@@ -382,6 +383,18 @@ _ROLE_COLORS = {
     "retriever": "#f97316",
 }
 _ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
+
+# Cell → colour map
+_CELL_COLORS = {
+    CellType.FREE: "#0c0e14",
+    CellType.OBSTACLE: "#4a4a4a",
+    CellType.WAREHOUSE: "#1e3a5f",  # rgba(59,130,246,0.3) on bg
+    CellType.WAREHOUSE_ENTRANCE: "#10b981",
+    CellType.WAREHOUSE_EXIT: "#ef4444",
+    CellType.OBJECT_ZONE: "#0c0e14",
+    CellType.OBJECT: "#0c0e14",
+    CellType.UNKNOWN: "#0c0e14",
+}
 
 
 def _save_grid_snapshot(
