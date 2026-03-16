@@ -497,6 +497,37 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
           });
         }
 
+        // ── Per-agent dubious objects (when an agent is selected) ──
+        if (selectedAgent && selectedAgent.dubious_objects) {
+          selectedAgent.dubious_objects.forEach((obj) => {
+            const ox = (obj.x + 0.5) * cellWidth;
+            const oy = (obj.y + 0.5) * cellHeight;
+            const r = Math.min(cellWidth, cellHeight) * 0.38;
+
+            // Dashed red circle (uncertain — high contrast on yellow)
+            ctx.setLineDash([3, 3]);
+            ctx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(ox, oy, r, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            // Semi-transparent fill
+            ctx.fillStyle = "rgba(220, 38, 38, 0.2)";
+            ctx.fill();
+
+            // Reset dash
+            ctx.setLineDash([]);
+
+            // "?" marker in center
+            ctx.fillStyle = "rgba(220, 38, 38, 1.0)";
+            ctx.font = `bold ${Math.round(r * 1.2)}px sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("?", ox, oy + 1);
+          });
+        }
+
         // Draw selected agent vision / comm radii
         if (selectedAgent && selectedLerp) {
           const centerX = (selectedLerp.x + 0.5) * cellWidth;

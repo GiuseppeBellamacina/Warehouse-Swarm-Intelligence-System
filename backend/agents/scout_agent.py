@@ -1168,6 +1168,14 @@ class ScoutAgent(BaseAgent):
         if not coordinators:
             return False
 
+        # Filter out stale discoveries — only broadcast objects still in known_objects.
+        # Objects removed by tombstone propagation or OBC should not be re-sent.
+        self.newly_discovered_objects = [
+            (pos, val) for pos, val in self.newly_discovered_objects if pos in self.known_objects
+        ]
+        if not self.newly_discovered_objects:
+            return True  # had coordinators, just nothing valid to send
+
         coordinator_ids = [
             getattr(c, "unique_id", 0) for c in coordinators if hasattr(c, "unique_id")
         ]
@@ -1179,9 +1187,13 @@ class ScoutAgent(BaseAgent):
 
         # Send messages about each newly discovered object
         for obj_pos, obj_value in self.newly_discovered_objects:
+            # Use the DISCOVERY step as the timestamp, not the current step.
+            # This prevents the message from bypassing tombstones created
+            # after the object was actually picked up.
+            discovery_step = self.known_objects_step.get(obj_pos, self.model.current_step)
             message = ObjectLocationMessage(
                 sender_id=self.unique_id or 0,
-                timestamp=self.model.current_step,
+                timestamp=discovery_step,
                 object_position=obj_pos,
                 object_value=obj_value,
             )

@@ -34,6 +34,8 @@ export interface Agent {
   object_explored?: number[];
   /** Objects this agent knows about */
   known_objects?: Position[];
+  /** Far-away objects the retriever is unsure about (will verify only when idle) */
+  dubious_objects?: Position[];
   /** Warehouse cells this agent knows about */
   known_warehouses?: Position[];
 }
