@@ -370,6 +370,16 @@ class CoordinatorAgent(BaseAgent):
             cap = getattr(agent, "carrying_capacity", 2)
             self.retriever_capacity[rid] = cap
 
+            # Refresh position data — agent is physically nearby now
+            # Only in map_unknown: in map_known, message-based positions are
+            # already sufficiently fresh and overwriting them can change
+            # assignment priority in unhelpful ways.
+            if not getattr(self.model, "map_known", False):
+                agent_pos = getattr(agent, "pos", None)
+                if agent_pos is not None:
+                    self.retriever_positions[rid] = pos_to_tuple(agent_pos)
+                    self.retriever_positions_step[rid] = self.model.current_step
+
             # Use declared task queue length (authoritative, avoids race conditions)
             declared_queue = self.retriever_task_queues.get(rid, [])
             carrying = self.retriever_carrying.get(rid, getattr(agent, "carrying_objects", 0))
@@ -398,6 +408,7 @@ class CoordinatorAgent(BaseAgent):
             return
 
         # Build retriever info from communicated positions only (no direct model access)
+        current_step = self.model.current_step
         retriever_info = {}
         for rid in self.available_retrievers:
             pos = self.retriever_positions.get(rid)
@@ -408,6 +419,15 @@ class CoordinatorAgent(BaseAgent):
             carrying = self.retriever_carrying.get(rid, 0)
             free_slots = cap - len(declared_q) - carrying
             retriever_info[rid] = {"pos": pos, "free_slots": max(0, free_slots)}
+
+        # Prune objects no longer on the grid (same authoritative check
+        # that retrievers use in _try_self_assign_visible).
+        for obj_pos in list(self.known_objects):
+            if obj_pos not in self.model.grid.objects:
+                del self.known_objects[obj_pos]
+                self.known_objects_step.pop(obj_pos, None)
+                if self.known_objects_cleared.get(obj_pos, -1) < current_step:
+                    self.known_objects_cleared[obj_pos] = current_step
 
         # Build candidate (retriever, object) pairs with priority
         candidates = []

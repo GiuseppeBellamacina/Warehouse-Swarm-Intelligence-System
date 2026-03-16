@@ -203,7 +203,8 @@ def _save_line_chart(
     best_count = float("inf")
     for key, (cx0, cy0) in corners.items():
         count = sum(
-            1 for px_, py_ in all_pts
+            1
+            for px_, py_ in all_pts
             if cx0 <= px_ <= cx0 + legend_w and cy0 <= py_ <= cy0 + legend_h
         )
         if count < best_count:
@@ -386,7 +387,7 @@ _ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
 _CELL_COLORS = {
     CellType.FREE: "#0c0e14",
     CellType.OBSTACLE: "#4a4a4a",
-    CellType.WAREHOUSE: "#1e3a5f",          # rgba(59,130,246,0.3) on bg
+    CellType.WAREHOUSE: "#1e3a5f",  # rgba(59,130,246,0.3) on bg
     CellType.WAREHOUSE_ENTRANCE: "#10b981",
     CellType.WAREHOUSE_EXIT: "#ef4444",
     CellType.OBJECT_ZONE: "#0c0e14",
@@ -600,9 +601,7 @@ def _save_grid_snapshot(
         "#34d399" if progress > 0.5 else "#fbbf24",
     )
     avg_energy = (
-        float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
-        if model.agents
-        else 0.0
+        float(np.mean([getattr(a, "energy", 0) for a in model.agents])) if model.agents else 0.0
     )
     _draw_label("Avg Energy", f"{avg_energy:.1f}")
     active = len([a for a in model.agents if getattr(a, "energy", 0) > 0])
@@ -672,9 +671,7 @@ def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsCo
         # Record agent positions for trail rendering
         for agent in model.agents:
             if agent.pos:
-                trails.setdefault(agent.unique_id, []).append(
-                    (agent.pos[0], agent.pos[1])
-                )
+                trails.setdefault(agent.unique_id, []).append((agent.pos[0], agent.pos[1]))
         snapshots.append(
             {
                 "step": model.current_step,
