@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -204,7 +205,6 @@ def _save_line_chart(
     for key, (cx0, cy0) in corners.items():
         count = sum(
             1
-           
             for px_, py_ in all_pts
             if cx0 <= px_ <= cx0 + legend_w and cy0 <= py_ <= cy0 + legend_h
         )
@@ -965,6 +965,12 @@ def main():
         action="store_true",
         help="Generate benchmark charts and final grid snapshots",
     )
+    parser.add_argument(
+        "--seed-mine",
+        type=str,
+        metavar="N1-N2",
+        help="Search best seed in range N1-N2 (e.g. 0-99)",
+    )
     args = parser.parse_args()
     verbose = args.verbose
     generate_images = args.bench_imgs
@@ -972,6 +978,87 @@ def main():
 
     _real_print = builtins.print
 
+    # ── Seed mining mode ─────────────────────────────────────────────────
+    if args.seed_mine:
+        from tqdm import tqdm
+
+        parts = args.seed_mine.split("-")
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            _real_print("ERROR: --seed-mine expects N1-N2 (e.g. 0-99)")
+            sys.exit(1)
+        s_start, s_end = int(parts[0]), int(parts[1])
+
+        # Collect per-seed results: {seed: {map: {config: steps}}}
+        seed_totals: dict[int, int] = {}
+        seed_details: dict[int, dict[str, dict[str, int]]] = {}
+
+        total_runs = (s_end - s_start + 1) * len(GRID_FILES) * len(CONFIGS)
+        pbar = tqdm(total=total_runs, desc="Seed mining", unit="run")
+
+        for seed in range(s_start, s_end + 1):
+            grand_total = 0
+            seed_details[seed] = {}
+            for grid_file in GRID_FILES:
+                with open(grid_file) as f:
+                    grid_cfg = GridScenarioConfig(**json.load(f))
+                grid_cfg_s = copy.deepcopy(grid_cfg)
+                grid_cfg_s.metadata.seed = seed
+                map_name = os.path.splitext(os.path.basename(grid_file))[0]
+                seed_details[seed][map_name] = {}
+
+                builtins.print = lambda *a, **kw: None
+                for name, agents_cfg in CONFIGS:
+                    steps, _, _, _ = _run(name, grid_cfg_s, agents_cfg)
+                    seed_details[seed][map_name][name] = steps
+                    grand_total += steps
+                    pbar.update(1)
+                builtins.print = _real_print
+
+            seed_totals[seed] = grand_total
+
+        pbar.close()
+
+        # ── Rank seeds ───────────────────────────────────────────────────
+        def _known_better(seed: int) -> bool:
+            """True when every map_known config beats its unknown counterpart."""
+            det = seed_details[seed]
+            for m in det:
+                for name_k, steps_k in det[m].items():
+                    if "map_known" not in name_k:
+                        continue
+                    name_u = name_k.replace("map_known", "unknown")
+                    steps_u = det[m].get(name_u)
+                    if steps_u is not None and steps_k >= steps_u:
+                        return False
+            return True
+
+        ranked = sorted(
+            seed_totals.keys(),
+            key=lambda s: (not _known_better(s), seed_totals[s]),
+        )
+
+        _real_print("\n" + "=" * 80)
+        _real_print("  SEED MINING RESULTS")
+        _real_print("=" * 80)
+        _real_print(f"  {'Seed':>6s}  {'Total':>7s}  {'known<unknown':>14s}")
+        _real_print("-" * 80)
+        for s in ranked[:20]:
+            flag = "  ✓" if _known_better(s) else "  ✗"
+            _real_print(f"  {s:6d}  {seed_totals[s]:7d} {flag}")
+        _real_print("-" * 80)
+        best = ranked[0]
+        _real_print(f"  ★ Best seed: {best}  (total steps: {seed_totals[best]})")
+
+        # Detail for best seed
+        _real_print()
+        for m in sorted(seed_details[best]):
+            _real_print(f"  Map {m}:")
+            for cfg_name, st in seed_details[best][m].items():
+                _real_print(f"    {cfg_name:30s}  {st:4d} steps")
+        _real_print("=" * 80)
+        return
+
+    # ── Normal evaluation mode ───────────────────────────────────────────
     for grid_file in GRID_FILES:
         with open(grid_file) as f:
             grid_cfg = GridScenarioConfig(**json.load(f))

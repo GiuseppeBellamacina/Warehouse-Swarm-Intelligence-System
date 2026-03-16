@@ -42,15 +42,18 @@ class AStarPathfinder:
         y: int,
         agent_local_map: Optional[np.ndarray] = None,
     ) -> bool:
-        """Check walkability using the agent's local map when available.
+        """Check walkability using the agent's navigation map.
 
-        In fog-of-war mode (map_unknown), the agent's local map treats
-        UNKNOWN cells as *potentially walkable* so A* can plan paths
-        through unexplored territory.  When the agent later discovers
-        an obstacle, the path is invalidated and recomputed.
+        Accepts either the agent's local_map (fog-of-war / unknown mode)
+        or the full-grid nav_map (map_known mode).
 
-        Falls back to the global ``grid.is_walkable()`` when no local
-        map is provided (map_known mode or legacy callers).
+        - UNKNOWN (0) cells are treated as walkable so A* can plan through
+          unexplored territory (optimistic assumption).
+        - OBSTACLE cells block.
+        - All other cell types (FREE, WAREHOUSE, …) are walkable.
+
+        Falls back to the global ``grid.is_walkable()`` when no map is
+        provided (legacy callers).
         """
         if not (0 <= x < self.grid.width and 0 <= y < self.grid.height):
             return False

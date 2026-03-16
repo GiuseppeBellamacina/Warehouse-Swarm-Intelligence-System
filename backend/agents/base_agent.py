@@ -119,6 +119,12 @@ class BaseAgent(Agent):
         # Cells actually seen via vision (for object-scan fog when map is pre-known)
         self.vision_explored = np.zeros((grid_height, grid_width), dtype=np.uint8)
 
+        # Navigation map for A* pathfinding.
+        # - map_unknown: None → A* uses self.local_map (optimistic about unknowns).
+        # - map_known: full grid cell types → A* knows all obstacles/walls.
+        # Either way, exploration (frontier detection via local_map) is identical.
+        self.nav_map: Optional[np.ndarray] = None
+
         # Known object locations (position -> value)
         self.known_objects: Dict[Tuple, float] = {}
         # Step at which each known_objects entry was last confirmed
@@ -858,6 +864,11 @@ class BaseAgent(Agent):
             # different pathfinding behaviour.
             _known_mask = self.local_map
 
+            # Choose the map that A* uses for walkability:
+            # - map_known: nav_map (full grid) → avoids all real walls
+            # - map_unknown: local_map → optimistic about UNKNOWN cells
+            _astar_map = self.nav_map if self.nav_map is not None else self.local_map
+
             # Recompute path if:
             # - we don't have one yet
             # - stuck too long
@@ -876,7 +887,7 @@ class BaseAgent(Agent):
                         0 <= py < _known_mask.shape[0]
                         and 0 <= px < _known_mask.shape[1]
                         and _known_mask[py, px] != 0
-                        and not self.model.grid.is_walkable(px, py)
+                        and int(_known_mask[py, px]) == CellType.OBSTACLE
                     ):
                         path_blocked = True
                         break
@@ -894,8 +905,7 @@ class BaseAgent(Agent):
                     target,
                     other_agent_positions,
                     forbidden_types=forbidden_types,
-                    agent_local_map=self.local_map,
-                    known_mask=_known_mask,
+                    agent_local_map=_astar_map,
                 )
 
                 if new_path is None:
@@ -1248,9 +1258,14 @@ class BaseAgent(Agent):
         benefit from trading places.
 
         A swap is performed when ANY of these conditions hold:
-        1. **Head-on**: blocker's desired direction points back toward us.
-        2. **Mutual benefit**: swapping moves *both* agents closer to their
-           respective targets (or at least one closer and the other no worse).
+        1. **Head-on**: blocker's desired direction points back toward us,
+           OR the blocker's overall target lies behind us (opposite
+           directions in a corridor).
+        2. **Mutual benefit**: swapping moves the pair closer to (or at
+           least no farther from) their respective targets.
+        3. **Stuck escalation**: this agent has been stuck long enough that
+           the swap is accepted even without strict mutual benefit — as
+           long as it moves *this* agent closer to its target.
 
         Additional guards:
         - Both resulting positions satisfy warehouse negotiation rules.
@@ -1275,21 +1290,55 @@ class BaseAgent(Agent):
 
         head_on = b_desired == my_pos
 
+        # Extended head-on: blocker's target is *behind* us (opposite
+        # direction).  In a 1-wide corridor this means they need to pass
+        # through us.  Detect by checking if the swap moves the blocker
+        # closer to its target.
+        if not head_on:
+            b_target = getattr(blocking_agent, "target_position", None)
+            if b_target is not None:
+                b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+                b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+                if b_dist_after < b_dist_now:
+                    # Blocker wants to go past us
+                    my_target = getattr(self, "target_position", None)
+                    if my_target is not None:
+                        my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+                        my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                        if my_dist_after < my_dist_now:
+                            head_on = True  # both improve
+
         # ── Mutual-benefit check (fallback when not head-on) ─────────────
         if not head_on:
             my_target = getattr(self, "target_position", None)
             b_target = getattr(blocking_agent, "target_position", None)
             if my_target is None or b_target is None:
-                return False
-            # Current distances
-            my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
-            b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
-            # After-swap distances
-            my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
-            b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
-            # Accept if total distance decreases (at least one improves, none worsens)
-            if (my_dist_after + b_dist_after) >= (my_dist_now + b_dist_now):
-                return False
+                # Stuck escalation: no target on one side — swap if I'm
+                # stuck enough and the swap moves ME closer.
+                if self.stuck_counter >= 3 and my_target is not None:
+                    my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+                    my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                    if my_dist_after >= my_dist_now:
+                        return False
+                    # Accept — stuck escalation override
+                else:
+                    return False
+            else:
+                # Current distances
+                my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+                b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+                # After-swap distances
+                my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+                total_now = my_dist_now + b_dist_now
+                total_after = my_dist_after + b_dist_after
+                if total_after > total_now:
+                    # Strictly worse — reject unless stuck escalation
+                    if self.stuck_counter >= 3 and my_dist_after < my_dist_now:
+                        pass  # accept: I improve, stuck long enough
+                    else:
+                        return False
+                # total_after <= total_now: at least neutral — accept
 
         # ── Diagonal corner-cutting guard ────────────────────────────────
         dx = b_pos[0] - my_pos[0]
@@ -1405,14 +1454,15 @@ class BaseAgent(Agent):
                     and b_want == a_pos
                 )
 
-                # Condition (b): mutual benefit — swap reduces total distance
+                # Condition (b): mutual benefit — swap reduces or preserves
+                # total distance (at least neutral).
                 mutual_benefit = False
                 if not head_on and a_target is not None and b_target is not None:
                     a_d_now = abs(a_pos[0] - a_target[0]) + abs(a_pos[1] - a_target[1])
                     b_d_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
                     a_d_aft = abs(b_pos[0] - a_target[0]) + abs(b_pos[1] - a_target[1])
                     b_d_aft = abs(a_pos[0] - b_target[0]) + abs(a_pos[1] - b_target[1])
-                    if (a_d_aft + b_d_aft) < (a_d_now + b_d_now):
+                    if (a_d_aft + b_d_aft) <= (a_d_now + b_d_now):
                         mutual_benefit = True
 
                 if not head_on and not mutual_benefit:

@@ -422,7 +422,6 @@ class CoordinatorAgent(BaseAgent):
             return
 
         # Build retriever info from communicated positions only (no direct model access)
-        current_step = self.model.current_step
         retriever_info = {}
         for rid in self.available_retrievers:
             pos = self.retriever_positions.get(rid)

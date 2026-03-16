@@ -430,14 +430,15 @@ class SimulationManager:
         self.model.snapshot_rng()
 
     def _apply_map_knowledge(self) -> None:
-        """Pre-fill obstacles and warehouse cells into every agent's
-        local_map so A* correctly avoids walls from the start.
+        """Pre-fill warehouse knowledge and provide full-grid nav_map for A*.
 
-        Only non-walkable cells (OBSTACLE, WALL) and warehouse structure
-        cells are written.  FREE and OBJECT cells are left as UNKNOWN
-        (value 0) so that frontier-based exploration still works —
-        agents must explore to discover objects, but they already know
-        where walls are (like navigating your own city).
+        local_map is NOT modified — exploration heuristics (frontier
+        detection via local_map==0) remain identical to unknown mode.
+        Agents still explore to discover objects.  The only advantages
+        of map_known are:
+          1) nav_map: A* knows every wall/obstacle from the start,
+             producing optimal paths without optimistic re-planning.
+          2) known_warehouses: delivery routing is immediate.
         """
         if not self.model:
             return
@@ -446,7 +447,6 @@ class SimulationManager:
 
         # Build a mask with ONLY obstacle/wall cells
         # cell_types is indexed [x, y]; local_map is [y, x]
-        _OBSTACLE_TYPES = {CellType.OBSTACLE}
         _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
 
         wh_cells = [
@@ -458,17 +458,10 @@ class SimulationManager:
         for agent in self.model.agents:
             if not isinstance(agent, BaseAgent):
                 continue
-            lm = getattr(agent, "local_map", None)
-            if lm is None:
-                continue
-            # Write obstacle cells so A* avoids them
-            for x in range(w):
-                for y in range(h):
-                    ct = CellType(grid.cell_types[x, y])
-                    if ct in _OBSTACLE_TYPES:
-                        lm[y, x] = int(ct)
-                    elif ct in _WH:
-                        lm[y, x] = int(ct)
+            # Give each agent a nav_map — transposed copy of the full grid
+            # cell_types so A* knows all obstacles from the start.
+            # cell_types is [x, y]; nav_map must be [y, x] like local_map.
+            agent.nav_map = grid.cell_types.T.copy()
             # Populate known_warehouses (avoid duplicates)
             existing = set(agent.known_warehouses)
             for wc in wh_cells:
