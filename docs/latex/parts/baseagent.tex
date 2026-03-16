@@ -46,12 +46,13 @@ oppure non corrisponde a un oggetto realmente presente sulla griglia viene decla
 \texttt{FREE} nel messaggio e nella propria mappa locale. Questo interrompe la catena di
 ritrasmissione di informazioni obsolete attraverso lo sciame.
 
-\subsection{Redirect Relay $\to$ Dubious (solo Retriever)}
+\subsection{Redirect Relay \texorpdfstring{$\to$}{->} Dubious (solo Retriever)}
 
 Il \texttt{MapDataMessage} trasporta anche gli oggetti noti del mittente. Quando il
 BaseAgent li integra in \texttt{known\_objects}, il Retriever — nella propria
 implementazione di \texttt{process\_received\_messages} — intercetta questa operazione:
-prima di invocare \texttt{super()}, salva \texttt{\_known\_before = set(known\_objects)};
+prima di invocare \texttt{super()}, memorizza lo snapshot
+\texttt{\_known\_before}\,\texttt{=}\,\texttt{set(known\_objects)};
 subito dopo, sposta tutte le posizioni \textit{nuove} (aggiunte dal relay ma non viste
 direttamente) in \texttt{dubious\_objects}.  In questo modo solo la visione diretta
 costituisce conoscenza confermata, mentre le informazioni di relay sono trattate come

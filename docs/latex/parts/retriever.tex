@@ -271,13 +271,14 @@ reale: non esistono celle UNKNOWN, e dunque la ricerca classica di frontiere
 \texttt{vision\_explored == 0} come maschera di inesplorato.
 
 \paragraph{Rapporto di esplorazione obstacle-aware.}
-Il termine $r_{\text{exp}}(f)$ nella funzione di utilit\`a quantifica quante celle
-attorno alla frontiera siano gi\`a state scansionate.  Una formula ingenua che
-divida per tutte le celle della finestra sovrastima il progresso vicino alle pareti,
-poich\'e le celle ostacolo vengono marcate come ``esplorate'' dalla pre-caricatura
-della mappa.  La versione corretta usa solo le celle walkable:
+In modalit\`a \texttt{map\_known}, la formula generica di $r_{\text{exp}}$ non pu\`o
+usare \texttt{UNKNOWN} come maschera (la mappa \`e gi\`a interamente nota), n\'e pu\`o
+dividere per tutte le celle della finestra, poich\'e le celle ostacolo sono pre-marcate
+come esplorate gonfiando artificialmente il rapporto vicino alle pareti.  La versione
+obstacle-aware restringe sia il numeratore (celle visivamente scansionate) sia il
+denominatore alle sole celle walkable:
 
-$$r_{\text{exp}}(f) = \frac{\sum_{c \in W_f} \mathbf{1}[\texttt{vision\_explored}(c) = 1]}{|W_f|}, \quad W_f = \{c : \texttt{nav\_map}(c) = 0\}$$
+$$r_{\text{exp,mk}}(f) = \frac{\sum_{c \in W_f} \mathbf{1}[\texttt{vision\_explored}(c) = 1]}{|W_f|}, \quad W_f = \{c : \texttt{nav\_map}(c) = 0\}$$
 
 dove $\texttt{nav\_map}(c) = 0$ identifica celle percorribili (non ostacolo,
 non magazzino).

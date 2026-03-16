@@ -305,7 +305,7 @@ Or run the helper script:
 
 `evaluation.py` runs all reference configurations and reports results. It mirrors the same `SimulationManager` / `SimulationAgentsConfig` defaults used by the backend API.
 
-```
+```text
 python evaluation.py                        # quick summary, no images
 python evaluation.py -v                     # verbose (agent log lines)
 python evaluation.py --imgs                 # generate benchmark charts and snapshots
