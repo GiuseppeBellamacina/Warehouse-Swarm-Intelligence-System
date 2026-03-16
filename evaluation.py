@@ -88,6 +88,18 @@ def _font(size: int, mono: bool = False):
     return ImageFont.load_default()
 
 
+def _font_bold(size: int):
+    """Load a bold TrueType font — mirrors Canvas `bold Xpx sans-serif`."""
+    names = ["arialbd.ttf", "Arial Bold.ttf", "Arial_Bold.ttf", "DejaVuSans-Bold.ttf"]
+    for n in names:
+        try:
+            return ImageFont.truetype(n, size)
+        except OSError:
+            pass
+    # Fallback: regular font (still renders, just not bold)
+    return _font(size)
+
+
 def _tw(draw: ImageDraw.ImageDraw, text: str, font) -> int:
     """Measure text width."""
     bb = draw.textbbox((0, 0), text, font=font)
@@ -647,7 +659,25 @@ def _save_grid_snapshot(
         e_col = "#22c55e" if ep > 0.5 else ("#facc15" if ep > 0.25 else "#ef4444")
         draw.rectangle([(bx, by_), (bx + int(bar_w * ep), by_ + bar_h)], fill=_hex(e_col))
 
-        # Carrying count
+        # Agent number label (type_index) — centred on the agent body
+        # Matches the GridCanvas: bold sans-serif, white, dark shadow.
+        type_index = getattr(model, "_frozen_type_index", {}).get(
+            agent.unique_id, getattr(agent, "type_index", agent.unique_id + 1)
+        )
+        lbl = str(type_index)
+        label_size = max(int(r * 0.9), 7 * S)
+        f_lbl = _font_bold(label_size)
+        bb = draw.textbbox((0, 0), lbl, font=f_lbl)
+        lbl_w, lbl_h = bb[2] - bb[0], bb[3] - bb[1]
+        # Precise vertical centre: account for top bearing
+        lx = cx - lbl_w // 2 - bb[0]
+        ly_ = cy - lbl_h // 2 - bb[1]
+        # Shadow pass (1px offset, ~70% opacity)
+        draw.text((lx + S, ly_ + S), lbl, fill=(0, 0, 0, 178), font=f_lbl)
+        # White text
+        draw.text((lx, ly_), lbl, fill=(255, 255, 255, 255), font=f_lbl)
+
+        # Carrying count (yellow, above the agent)
         carrying = getattr(agent, "carrying_objects", 0)
         if carrying > 0:
             ct_label = str(carrying)
@@ -683,7 +713,8 @@ def _save_grid_snapshot(
         nonlocal ly
         ly += 6 * S
         draw.text((px0, ly), section_title.upper(), fill=_hex("#6b7280"), font=f_section)
-        ly += 4 * S
+        bb = draw.textbbox((px0, ly), section_title.upper(), font=f_section)
+        ly = bb[3] + 4 * S  # line starts below the actual text bottom
         draw.line([(px0, ly), (W - padding, ly)], fill=_hex("#374151"), width=S)
         ly += line_h - 4 * S
 
@@ -788,6 +819,15 @@ def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsCo
             }
         )
     elapsed = time.perf_counter() - t0
+
+    # Freeze each agent's type_index NOW, while _type_index_map still belongs
+    # to this run.  By the time _generate_charts renders snapshots, subsequent
+    # simulations will have cleared the module-level map and the values would
+    # be wrong without this snapshot.
+    frozen: dict[int, int] = {
+        a.unique_id: getattr(a, "type_index", a.unique_id + 1) for a in model.agents
+    }
+    setattr(model, "_frozen_type_index", frozen)
 
     steps = model.current_step
     done = model.objects_retrieved >= model.total_objects
