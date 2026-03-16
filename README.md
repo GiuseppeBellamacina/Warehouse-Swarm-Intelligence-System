@@ -45,20 +45,27 @@ A real-time swarm intelligence simulation where autonomous agents cooperate to e
 
 #### Retrieval (Retriever)
 
-- Hive-mind self-assignment with 4-layer safety (grid truth → claim age → peer queue → atomic claim)
+- Priority chain: P1 deliver → P2 recharge → P3 execute task → P3b opportunistic pickup → P4 self-assign → **P4b verify dubious** → P5 explore
+- Hive-mind self-assignment with 4-layer safety (grid truth → claim age → peer queue → atomic claim); P4 now only considers vision-confirmed objects
 - Stale claim takeover — claims older than 50 steps can be acquired by another retriever
 - P3b opportunistic pickup — retriever claims extra objects within vision radius during transit
-- Task queue reordering by Manhattan distance at every step
+- Task queue reordering by Manhattan distance at every step; invalid tasks (absent from both `known_objects` and `dubious_objects`) are dropped immediately
 - Stale task cancellation on map share — tasks for missing objects are dropped immediately
 - Peer yield via `TaskStatusMessage` and peer-to-peer object/cargo broadcast via `RetrieverEventMessage`
 - Cargo drop on energy depletion — objects are released on adjacent cells and broadcast to peers
+- **Dubious objects** (`dubious_objects` + `dubious_objects_step`) — two-tier knowledge model where only direct ray-cast vision confirms an object; relay/peer/coordinator-assigned unknowns are demoted to _dubious_ and verified lazily at P4b
+  - Four demotion paths: relay `MapDataMessage` merge, age-based stale-demote after 30 steps (active task-queue entries exempt), peer `RetrieverEventMessage`, unknown `TaskAssignment` target
+  - Timestamp-aware tombstone pruning: a tombstone clears a dubious entry only if it is at least as recent as the dubious record, preventing old tombstones from invalidating newer leads
+- **Exploration momentum fix** — `_last_explore_target` is saved before clearing a reached frontier; used as directional fallback in `select_best_frontier` so the retriever keeps pushing into unexplored territory instead of immediately backtracking
+- **`map_known` exploration** — `_explored_ratio` uses only walkable cells (`nav_map == 0`) as denominator, eliminating the obstacle-inflation artifact near walls; `unknown_mass_at` callback counts walkable+unscanned cells in radius 8 around each frontier for accurate scoring
 
 #### Communication
 
 - Radius-based inter-agent communication (scout → coordinator → retriever)
 - Timestamped message wrappers with "newest wins" merge
 - Atomic `try_claim_object` protocol with age-based takeover and energy preemption
-- Tombstone mechanism for stale objects — prevents re-propagation of already-collected objects
+- Tombstone mechanism for stale objects — prevents re-propagation of already-collected objects; `_confirmed_gone` set tracks cells directly observed as empty for pre-scrubbing outgoing `MapDataMessage`
+- **Relay → dubious redirect** — the retriever intercepts base-class relay merges: objects added to `known_objects` by a `MapDataMessage` are immediately moved to `dubious_objects`; only the agent's own vision can promote an entry to confirmed, preventing the relay from reintroducing demoted objects every step
 - `messages_sent` counter per recipient for communication cost metrics
 
 ### Real-time interface
@@ -291,6 +298,25 @@ Or run the helper script:
 ```powershell
 .\format.ps1
 ```
+
+---
+
+## Evaluation script
+
+`evaluation.py` runs all reference configurations and reports results. It mirrors the same `SimulationManager` / `SimulationAgentsConfig` defaults used by the backend API.
+
+```
+python evaluation.py                        # quick summary, no images
+python evaluation.py -v                     # verbose (agent log lines)
+python evaluation.py --imgs                 # generate benchmark charts and snapshots
+python evaluation.py --seed 42              # override random seed for all maps
+python evaluation.py --maps A B             # run only the specified map(s)
+python evaluation.py --mode known           # run only map_known configs
+python evaluation.py --mode unknown         # run only unknown configs
+python evaluation.py --seed-mine 0-199      # find the best seed in a range
+```
+
+`--maps` and `--mode` filters are applied to both normal evaluation and `--seed-mine` mode. Charts and per-config PNG snapshots are saved to `docs/benchmarks/<map>/`.
 
 ---
 
