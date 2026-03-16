@@ -430,19 +430,25 @@ class SimulationManager:
         self.model.snapshot_rng()
 
     def _apply_map_knowledge(self) -> None:
-        """Pre-fill every agent's known_warehouses with all warehouse
-        locations.  local_map is NOT pre-filled so exploration heuristics
-        (frontier detection via local_map==0) remain identical to unknown
-        mode — agents are still incentivised to explore and find objects.
-        The only advantage is warehouse knowledge for efficient delivery
-        pathfinding (A* already uses the real grid)."""
+        """Pre-fill obstacles and warehouse cells into every agent's
+        local_map so A* correctly avoids walls from the start.
+
+        Only non-walkable cells (OBSTACLE, WALL) and warehouse structure
+        cells are written.  FREE and OBJECT cells are left as UNKNOWN
+        (value 0) so that frontier-based exploration still works —
+        agents must explore to discover objects, but they already know
+        where walls are (like navigating your own city).
+        """
         if not self.model:
             return
         grid = self.model.grid
         w, h = grid.width, grid.height
 
-        # Collect all warehouse cells
+        # Build a mask with ONLY obstacle/wall cells
+        # cell_types is indexed [x, y]; local_map is [y, x]
+        _OBSTACLE_TYPES = {CellType.OBSTACLE}
         _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+
         wh_cells = [
             (x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH
         ]
@@ -452,6 +458,17 @@ class SimulationManager:
         for agent in self.model.agents:
             if not isinstance(agent, BaseAgent):
                 continue
+            lm = getattr(agent, "local_map", None)
+            if lm is None:
+                continue
+            # Write obstacle cells so A* avoids them
+            for x in range(w):
+                for y in range(h):
+                    ct = CellType(grid.cell_types[x, y])
+                    if ct in _OBSTACLE_TYPES:
+                        lm[y, x] = int(ct)
+                    elif ct in _WH:
+                        lm[y, x] = int(ct)
             # Populate known_warehouses (avoid duplicates)
             existing = set(agent.known_warehouses)
             for wc in wh_cells:
