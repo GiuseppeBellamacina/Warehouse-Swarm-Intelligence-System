@@ -848,31 +848,20 @@ class BaseAgent(Agent):
             if cached_destination != target:
                 self.path = []  # stale — destination changed
             if not self.path or self.stuck_counter > 3:
-                # Pathfinding strategy depends on map knowledge:
-                #   map_known  → A* uses global grid (agent knows all
-                #                streets, like navigating your own city).
-                #   map_unknown → A* uses agent's local_map only;
-                #                 UNKNOWN cells are treated as walkable
-                #                 so routes can pass through unexplored
-                #                 territory.
-                _is_map_known = getattr(self.model, "map_known", False)
-                if _is_map_known:
-                    # Full terrain knowledge — optimal routing
-                    new_path = self.pathfinder.find_path(
-                        pos_tuple,
-                        target,
-                        other_agent_positions,
-                        forbidden_types=forbidden_types,
-                    )
-                else:
-                    # Fog-of-war — route through personal knowledge only
-                    new_path = self.pathfinder.find_path(
-                        pos_tuple,
-                        target,
-                        other_agent_positions,
-                        forbidden_types=forbidden_types,
-                        agent_local_map=self.local_map,
-                    )
+                # Unified fog-of-war pathfinding:
+                # A* uses the agent's local_map in BOTH modes.  UNKNOWN
+                # cells (value 0) are treated as walkable so paths can
+                # pass through unexplored territory.  In map_known mode
+                # the local_map has obstacles pre-filled, so A* avoids
+                # walls from the start (like knowing your city's streets).
+                # In map_unknown the agent discovers walls at runtime.
+                new_path = self.pathfinder.find_path(
+                    pos_tuple,
+                    target,
+                    other_agent_positions,
+                    forbidden_types=forbidden_types,
+                    agent_local_map=self.local_map,
+                )
 
                 # If no path found, target is unreachable
                 if new_path is None:
