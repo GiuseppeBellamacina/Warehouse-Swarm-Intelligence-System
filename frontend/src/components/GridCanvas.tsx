@@ -775,10 +775,23 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
             ep > 0.5 ? "#22c55e" : ep > 0.25 ? "#facc15" : "#ef4444";
           ctx.fillRect(barX, barY, barWidth * ep, 3);
 
+          // Agent number label (type_index) drawn on the agent body
+          const labelSize = Math.max(radius * 0.9, 7);
+          ctx.shadowColor = "rgba(0,0,0,0.7)";
+          ctx.shadowBlur = 3;
+          ctx.fillStyle = "#fff";
+          ctx.font = `bold ${labelSize}px sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(`${agent.type_index}`, centerX, centerY);
+          ctx.shadowColor = "transparent";
+          ctx.shadowBlur = 0;
+
           if (agent.carrying > 0) {
             ctx.fillStyle = "#facc15";
             ctx.font = `${cellHeight * 0.3}px Arial`;
             ctx.textAlign = "center";
+            ctx.textBaseline = "alphabetic";
             ctx.fillText(`${agent.carrying}`, centerX, centerY - radius * 1.5);
           }
         });
