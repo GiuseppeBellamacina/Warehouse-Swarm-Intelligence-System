@@ -504,27 +504,73 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
             const oy = (obj.y + 0.5) * cellHeight;
             const r = Math.min(cellWidth, cellHeight) * 0.38;
 
-            // Dashed red circle (uncertain — high contrast on yellow)
+            // Dashed purple circle (uncertain)
             ctx.setLineDash([3, 3]);
-            ctx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+            ctx.strokeStyle = "rgba(147, 51, 234, 0.95)";
             ctx.lineWidth = 2.5;
             ctx.beginPath();
             ctx.arc(ox, oy, r, 0, 2 * Math.PI);
             ctx.stroke();
 
             // Semi-transparent fill
-            ctx.fillStyle = "rgba(220, 38, 38, 0.2)";
+            ctx.fillStyle = "rgba(147, 51, 234, 0.2)";
             ctx.fill();
 
             // Reset dash
             ctx.setLineDash([]);
 
             // "?" marker in center
-            ctx.fillStyle = "rgba(220, 38, 38, 1.0)";
+            ctx.fillStyle = "rgba(147, 51, 234, 1.0)";
             ctx.font = `bold ${Math.round(r * 1.2)}px sans-serif`;
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
             ctx.fillText("?", ox, oy + 1);
+          });
+        }
+
+        // ── Per-agent verifying objects (dubious promoted to task queue) ──
+        if (selectedAgent && selectedAgent.verifying_objects) {
+          selectedAgent.verifying_objects.forEach((obj) => {
+            const ox = (obj.x + 0.5) * cellWidth;
+            const oy = (obj.y + 0.5) * cellHeight;
+            const r = Math.min(cellWidth, cellHeight) * 0.38;
+
+            // Outer glow — red
+            ctx.shadowColor = "#dc2626";
+            ctx.shadowBlur = 8;
+
+            // Semi-transparent red fill
+            ctx.fillStyle = "rgba(220, 38, 38, 0.25)";
+            ctx.beginPath();
+            ctx.arc(ox, oy, r, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // Dashed red border
+            ctx.setLineDash([4, 3]);
+            ctx.strokeStyle = "rgba(220, 38, 38, 0.95)";
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            ctx.shadowColor = "transparent";
+            ctx.shadowBlur = 0;
+            ctx.setLineDash([]);
+
+            // Crosshair — conveys "going to check this"
+            const arm = r * 0.45;
+            ctx.strokeStyle = "rgba(220, 38, 38, 1.0)";
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.moveTo(ox - arm, oy);
+            ctx.lineTo(ox + arm, oy);
+            ctx.moveTo(ox, oy - arm);
+            ctx.lineTo(ox, oy + arm);
+            ctx.stroke();
+
+            // Small centre dot
+            ctx.fillStyle = "rgba(220, 38, 38, 1.0)";
+            ctx.beginPath();
+            ctx.arc(ox, oy, r * 0.12, 0, 2 * Math.PI);
+            ctx.fill();
           });
         }
 
