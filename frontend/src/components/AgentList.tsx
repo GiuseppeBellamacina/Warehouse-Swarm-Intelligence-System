@@ -21,6 +21,19 @@ const getRoleColor = (role: string): string => {
   }
 };
 
+const getRoleShort = (role: string): string => {
+  switch (role) {
+    case "scout":
+      return "SCO";
+    case "coordinator":
+      return "COO";
+    case "retriever":
+      return "RET";
+    default:
+      return "AGT";
+  }
+};
+
 const getRoleIcon = (role: string): string => {
   switch (role) {
     case "scout":
@@ -130,6 +143,12 @@ export function AgentList({
   selectedAgentId,
   onSelectAgent,
 }: AgentListProps) {
+  // Build lookup: unique_id → "SCO 1" style label
+  const agentLabel = new Map<number, string>();
+  for (const a of agents) {
+    agentLabel.set(a.id, `${getRoleShort(a.role)} ${a.type_index}`);
+  }
+
   // Group agents by role
   const scouts = agents.filter((a) => a.role === "scout");
   const coordinators = agents.filter((a) => a.role === "coordinator");
@@ -173,7 +192,7 @@ export function AgentList({
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm">{getRoleIcon(agent.role)}</span>
                     <span className="font-mono text-xs font-bold">
-                      #{agent.id}
+                      {getRoleShort(agent.role)} {agent.type_index}
                     </span>
                     <span
                       className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${stateBadge.cls}`}
@@ -182,6 +201,11 @@ export function AgentList({
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
+                    {agent.delivered > 0 && (
+                      <span className="text-[9px] bg-green-600/60 text-green-200 px-1.5 py-0.5 rounded-full font-medium">
+                        ✅{agent.delivered}
+                      </span>
+                    )}
                     {agent.carrying > 0 && (
                       <span className="text-[9px] bg-purple-600/60 text-purple-200 px-1.5 py-0.5 rounded-full font-medium">
                         📦{agent.carrying}
@@ -229,6 +253,12 @@ export function AgentList({
                       <span className="text-right text-[10px]">
                         {agent.communication_radius} cells
                       </span>
+                      <span className="text-gray-500 text-[10px]">
+                        Delivered
+                      </span>
+                      <span className="text-right text-[10px] text-green-400">
+                        {agent.delivered ?? 0}
+                      </span>
                     </div>
 
                     {/* Message log */}
@@ -273,8 +303,12 @@ export function AgentList({
                                     )}
                                     {msg.targets.length > 0 && (
                                       <div className="mt-0.5 text-gray-600 text-[9px]">
-                                        {msg.direction === "sent" ? "→" : "←"} #
-                                        {msg.targets.join(", #")}
+                                        {msg.direction === "sent" ? "→" : "←"}{" "}
+                                        {msg.targets
+                                          .map(
+                                            (t) => agentLabel.get(t) ?? `#${t}`,
+                                          )
+                                          .join(", ")}
                                       </div>
                                     )}
                                   </div>

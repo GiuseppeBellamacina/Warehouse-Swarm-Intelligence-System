@@ -831,6 +831,12 @@ class WarehouseModel(Model):
                     for pos in getattr(agent, "known_objects", {}).keys()
                 ]
 
+                # Dubious objects (retriever-only: too far to self-assign)
+                agent_dubious_objects = [
+                    {"x": int(pos[0]), "y": int(pos[1])}
+                    for pos in getattr(agent, "dubious_objects", {}).keys()
+                ]
+
                 # Known warehouses for this agent
                 agent_known_warehouses = [
                     {"x": int(pos[0]), "y": int(pos[1])}
@@ -839,6 +845,7 @@ class WarehouseModel(Model):
 
                 agent_data = {
                     "id": agent.unique_id,
+                    "type_index": getattr(agent, "type_index", agent.unique_id + 1),
                     "role": getattr(agent, "role", "unknown"),
                     "x": agent.pos[0],
                     "y": agent.pos[1],
@@ -846,6 +853,7 @@ class WarehouseModel(Model):
                     "max_energy": getattr(agent, "max_energy", 100),
                     "state": state,
                     "carrying": getattr(agent, "carrying_objects", 0),
+                    "delivered": getattr(agent, "total_delivered", 0),
                     "vision_radius": getattr(agent, "vision_radius", 5),
                     "communication_radius": getattr(agent, "communication_radius", 10),
                     "recent_messages": getattr(agent, "recent_messages", []),
@@ -857,6 +865,7 @@ class WarehouseModel(Model):
                     "explored": explored_flat,
                     "object_explored": vision_flat,
                     "known_objects": agent_known_objects,
+                    "dubious_objects": agent_dubious_objects,
                     "known_warehouses": agent_known_warehouses,
                 }
                 agents_data.append(agent_data)

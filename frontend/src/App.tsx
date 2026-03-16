@@ -5,7 +5,11 @@ import { useSimulation } from "./hooks/useSimulation";
 import { useBenchmark } from "./hooks/useBenchmark";
 import { useStepHistory } from "./hooks/useStepHistory";
 import { GridScenarioConfig, SimulationAgentsConfig } from "./types/simulation";
-import { GridCanvas } from "./components/GridCanvas";
+import {
+  GridCanvas,
+  TrailHistory,
+  GridCanvasHandle,
+} from "./components/GridCanvas";
 import { ControlPanel } from "./components/ControlPanel";
 import { MetricsDisplay } from "./components/MetricsDisplay";
 import { BenchmarkPanel } from "./components/BenchmarkPanel";
@@ -74,6 +78,12 @@ const DragHandle: React.FC<{ onDrag: (dx: number) => void }> = ({ onDrag }) => {
   );
 };
 
+const ROLE_SHORT: Record<string, string> = {
+  scout: "SCO",
+  coordinator: "COO",
+  retriever: "RET",
+};
+
 function App() {
   const {
     state,
@@ -101,6 +111,33 @@ function App() {
   const [metricsPanelView, setMetricsPanelView] =
     useState<MetricsPanelView>("metrics");
 
+  // ── Canvas ref (for snapshot export) ──
+  const gridCanvasRef = useRef<GridCanvasHandle>(null);
+
+  // ── Agent trails ──
+  const [showTrails, setShowTrails] = useState(true);
+  const trailHistoryRef = useRef<TrailHistory>(new Map());
+  const [trailHistory, setTrailHistory] = useState<TrailHistory>(new Map());
+
+  // Accumulate agent positions into trail history on each tick
+  useEffect(() => {
+    if (!state) return;
+    const map = trailHistoryRef.current;
+    for (const agent of state.agents) {
+      let trail = map.get(agent.id);
+      if (!trail) {
+        trail = [];
+        map.set(agent.id, trail);
+      }
+      // Only add if position changed from the last recorded
+      const last = trail.length > 0 ? trail[trail.length - 1] : null;
+      if (!last || last.x !== agent.x || last.y !== agent.y) {
+        trail.push({ x: agent.x, y: agent.y });
+      }
+    }
+    setTrailHistory(new Map(map));
+  }, [state]);
+
   // ── Step history (timeline scrubbing) ──
   const stepHistory = useStepHistory();
 
@@ -119,6 +156,8 @@ function App() {
   // Wrap resetSimulation to also clear step history
   const wrappedResetSimulation = useCallback(async () => {
     stepHistory.clear();
+    trailHistoryRef.current = new Map();
+    setTrailHistory(new Map());
     return resetSimulation();
   }, [resetSimulation, stepHistory]);
 
@@ -127,11 +166,14 @@ function App() {
 
   const wrappedLoadConfig = useCallback(
     async (scenario: GridScenarioConfig, agents?: SimulationAgentsConfig) => {
+      trailHistoryRef.current = new Map();
+      setTrailHistory(new Map());
+      stepHistory.clear();
       const result = await loadConfig(scenario, agents);
       if (agents) lastAgentsConfigRef.current = agents;
       return result;
     },
-    [loadConfig],
+    [loadConfig, stepHistory],
   );
 
   // ── Benchmark ──
@@ -212,6 +254,189 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, benchmark.startRecording]);
 
+  // ── Snapshot export ──
+
+  const exportSnapshot = useCallback(() => {
+    const srcCanvas = gridCanvasRef.current?.getCanvas();
+    if (!srcCanvas || !displayState) return;
+
+    const mapW = srcCanvas.width;
+    const mapH = srcCanvas.height;
+    const selectedAgent =
+      selectedAgentId != null
+        ? displayState.agents.find((a) => a.id === selectedAgentId)
+        : null;
+
+    // Info panel width
+    const panelW = selectedAgent ? 340 : 260;
+    const padding = 16;
+    const totalW = mapW + panelW;
+    const totalH = Math.max(mapH, 400);
+
+    const offscreen = document.createElement("canvas");
+    offscreen.width = totalW;
+    offscreen.height = totalH;
+    const ctx = offscreen.getContext("2d")!;
+
+    // Background
+    ctx.fillStyle = "#0f1117";
+    ctx.fillRect(0, 0, totalW, totalH);
+
+    // Draw the map
+    ctx.drawImage(srcCanvas, 0, 0);
+
+    // ── Info panel ──
+    const px = mapW + padding;
+    let py = padding;
+    const lineH = 18;
+
+    const drawLabel = (label: string, value: string, color = "#e5e7eb") => {
+      ctx.fillStyle = "#9ca3af";
+      ctx.font = "bold 12px monospace";
+      ctx.fillText(label, px, py);
+      ctx.fillStyle = color;
+      ctx.font = "12px monospace";
+      ctx.fillText(value, px + 130, py);
+      py += lineH;
+    };
+
+    const drawSection = (title: string) => {
+      py += 6;
+      ctx.fillStyle = "#6b7280";
+      ctx.font = "bold 11px sans-serif";
+      ctx.fillText(title.toUpperCase(), px, py);
+      py += 4;
+      ctx.strokeStyle = "#374151";
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + panelW - padding * 2, py);
+      ctx.stroke();
+      py += lineH - 4;
+    };
+
+    // Title
+    ctx.fillStyle = "#f3f4f6";
+    ctx.font = "bold 16px sans-serif";
+    ctx.fillText("Warehouse Swarm Intelligence", px, py + 4);
+    py += 28;
+
+    // Simulation info
+    drawSection("Simulation");
+    drawLabel("Step", String(displayState.step), "#60a5fa");
+    drawLabel(
+      "Retrieved",
+      `${displayState.metrics.objects_retrieved} / ${displayState.metrics.total_objects}`,
+      "#34d399",
+    );
+    drawLabel(
+      "Progress",
+      `${(displayState.metrics.retrieval_progress * 100).toFixed(1)}%`,
+      displayState.metrics.retrieval_progress > 0.5 ? "#34d399" : "#fbbf24",
+    );
+    drawLabel(
+      "Avg Energy",
+      `${displayState.metrics.average_energy.toFixed(1)}`,
+    );
+    drawLabel("Active Agents", String(displayState.metrics.active_agents));
+    drawLabel("Messages", String(displayState.metrics.messages_sent));
+
+    // Agent summary — per-agent detail
+    drawSection("Agents");
+    const roles = ["scout", "coordinator", "retriever"] as const;
+    const roleColors: Record<string, string> = {
+      scout: "#22c55e",
+      coordinator: "#3b82f6",
+      retriever: "#f97316",
+    };
+    for (const role of roles) {
+      const group = displayState.agents.filter((a) => a.role === role);
+      if (group.length === 0) continue;
+      for (const agent of group) {
+        ctx.fillStyle = roleColors[role];
+        ctx.font = "bold 12px monospace";
+        const tag = `${ROLE_SHORT[role]} ${agent.type_index}`;
+        ctx.fillText(tag, px, py);
+        // Show delivered count
+        const del = agent.delivered ?? 0;
+        if (del > 0) {
+          ctx.fillStyle = "#34d399";
+          ctx.font = "12px monospace";
+          ctx.fillText(`delivered ${del}`, px + 80, py);
+        }
+        py += lineH;
+      }
+    }
+
+    // Selected agent detail
+    if (selectedAgent) {
+      drawSection(
+        `${ROLE_SHORT[selectedAgent.role]} ${selectedAgent.type_index} — Detail`,
+      );
+      drawLabel("Position", `(${selectedAgent.x}, ${selectedAgent.y})`);
+      drawLabel("State", selectedAgent.state, "#93c5fd");
+      drawLabel(
+        "Energy",
+        `${Math.round(selectedAgent.energy)} / ${selectedAgent.max_energy}`,
+        selectedAgent.energy / selectedAgent.max_energy > 0.25
+          ? "#34d399"
+          : "#ef4444",
+      );
+      drawLabel("Carrying", String(selectedAgent.carrying));
+      drawLabel("Delivered", String(selectedAgent.delivered ?? 0), "#34d399");
+      drawLabel("Vision", `${selectedAgent.vision_radius} cells`);
+      drawLabel("Comm Range", `${selectedAgent.communication_radius} cells`);
+
+      if (
+        selectedAgent.known_objects &&
+        selectedAgent.known_objects.length > 0
+      ) {
+        drawLabel(
+          "Known Objs",
+          String(selectedAgent.known_objects.length),
+          "#fbbf24",
+        );
+      }
+
+      if (
+        selectedAgent.recent_messages &&
+        selectedAgent.recent_messages.length > 0
+      ) {
+        py += 4;
+        ctx.fillStyle = "#6b7280";
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillText("RECENT MESSAGES", px, py);
+        py += lineH - 2;
+        const msgs = selectedAgent.recent_messages.slice(-5);
+        for (const msg of msgs) {
+          const dir = msg.direction === "sent" ? "↑" : "↓";
+          ctx.fillStyle = "#9ca3af";
+          ctx.font = "11px monospace";
+          const text = `${dir} s${msg.step} ${msg.type.replace(/_/g, " ")}`;
+          ctx.fillText(text, px, py);
+          py += lineH - 3;
+        }
+      }
+    }
+
+    // Watermark
+    ctx.fillStyle = "#4b5563";
+    ctx.font = "10px sans-serif";
+    ctx.fillText(
+      `Exported step ${displayState.step} — ${new Date().toLocaleString()}`,
+      px,
+      totalH - padding,
+    );
+
+    // Download
+    const link = document.createElement("a");
+    const agentSuffix = selectedAgent
+      ? `_${ROLE_SHORT[selectedAgent.role]}${selectedAgent.type_index}`
+      : "";
+    link.download = `snapshot_step${displayState.step}${agentSuffix}.png`;
+    link.href = offscreen.toDataURL("image/png");
+    link.click();
+  }, [displayState, selectedAgentId]);
+
   // Wake-up retry loop: ping every 10 s, up to 10 attempts (100 s total)
   const MAX_WAKE_ATTEMPTS = 10;
   const WAKE_INTERVAL_SEC = 10;
@@ -286,12 +511,12 @@ function App() {
   );
 
   // Panel widths in pixels — initialised as % of viewport.
-  // Agents 15.5% | Map 39% (flex-1) | Metrics 23% | Controls 20%
+  // Agents 16% | Map 48% (flex-1) | Metrics 20% | Controls 20%
   const [agentsW, setAgentsW] = useState(() =>
-    Math.round(window.innerWidth * 0.155),
+    Math.round(window.innerWidth * 0.18),
   );
   const [metricsW, setMetricsW] = useState(() =>
-    Math.round(window.innerWidth * 0.23),
+    Math.round(window.innerWidth * 0.2),
   );
   const [controlsW, setControlsW] = useState(() =>
     Math.round(window.innerWidth * 0.2),
@@ -355,15 +580,15 @@ function App() {
           <div className="flex-1 min-w-0">
             <p className="font-semibold text-xs md:text-sm text-gray-200">
               {backendStatus === "waking"
-                ? "Avvio del backend in corso\u2026"
-                : "Il backend \u00e8 in sleep"}
+                ? "Connecting to backend\u2026"
+                : "Not connected to backend"}
             </p>
             <p className="text-[10px] md:text-xs mt-0.5 text-gray-500 hidden sm:block">
               {backendStatus === "waking"
                 ? wakeLoopActive
-                  ? `Tentativo ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 prossima richiesta tra ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
-                  : "Il server si sta riavviando, attendi 30\u201360 secondi\u2026"
-                : "Dopo un periodo di inattivit\u00e0 il server va in sleep. Risveglialo per continuare."}
+                  ? `Attempt ${wakeAttempt}/${MAX_WAKE_ATTEMPTS} \u2014 next request in ${wakeCountdown > 0 ? `${wakeCountdown}s` : "\u2026"}`
+                  : "The server is starting up, please wait 30\u201360 seconds\u2026"
+                : "Press Connect to reach the server."}
             </p>
           </div>
 
@@ -377,7 +602,7 @@ function App() {
                 onClick={() => stopWakeLoop(false)}
                 className="text-xs px-2.5 md:px-3 py-1.5 rounded-md bg-gray-800/80 border border-gray-700/50 hover:bg-gray-700/80 text-gray-400 hover:text-gray-300 transition-colors"
               >
-                Annulla
+                Cancel
               </button>
             </div>
           ) : backendStatus === "offline" || backendStatus === "unknown" ? (
@@ -400,7 +625,7 @@ function App() {
                   d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"
                 />
               </svg>
-              <span>Wake up</span>
+              <span>Connect</span>
             </button>
           ) : null}
         </div>
@@ -491,6 +716,28 @@ function App() {
                       {mode === "simulation" ? "Simulation" : "Map Editor"}
                     </button>
                   ))}
+                  {/* Trail toggle */}
+                  <button
+                    onClick={() => setShowTrails((v) => !v)}
+                    title={
+                      showTrails ? "Hide agent trails" : "Show agent trails"
+                    }
+                    className={`ml-0.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border ${
+                      showTrails
+                        ? "bg-indigo-600/40 text-indigo-300 border-indigo-500/50"
+                        : "bg-gray-800/60 text-gray-500 border-gray-700/40"
+                    }`}
+                  >
+                    Trails
+                  </button>
+                  {/* Snapshot export */}
+                  <button
+                    onClick={exportSnapshot}
+                    title="Export snapshot as PNG"
+                    className="ml-0.5 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border bg-cyan-800/40 text-cyan-400 border-cyan-600/40 hover:bg-cyan-700/50 hover:text-cyan-300 hover:border-cyan-500/50"
+                  >
+                    📷
+                  </button>
                 </div>
 
                 {/* Grid area — takes remaining space */}
@@ -501,6 +748,8 @@ function App() {
                         state={displayState}
                         selectedAgentId={selectedAgentId}
                         onSelectAgent={setSelectedAgentId}
+                        trailHistory={trailHistory}
+                        showTrails={showTrails}
                       />
                     ) : (
                       <div className="flex flex-col items-center justify-center text-center gap-2">
@@ -873,6 +1122,26 @@ function App() {
                   {mode === "simulation" ? "Simulation" : "Map Editor"}
                 </button>
               ))}
+              {/* Trail toggle */}
+              <button
+                onClick={() => setShowTrails((v) => !v)}
+                title={showTrails ? "Hide agent trails" : "Show agent trails"}
+                className={`ml-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border ${
+                  showTrails
+                    ? "bg-indigo-600/40 text-indigo-300 border-indigo-500/50"
+                    : "bg-gray-800/60 text-gray-500 border-gray-700/40 hover:text-gray-300"
+                }`}
+              >
+                Trails
+              </button>
+              {/* Snapshot export */}
+              <button
+                onClick={exportSnapshot}
+                title="Export snapshot as PNG"
+                className="ml-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all duration-200 border bg-cyan-800/40 text-cyan-400 border-cyan-600/40 hover:bg-cyan-700/50 hover:text-cyan-300 hover:border-cyan-500/50"
+              >
+                📷
+              </button>
             </div>
 
             {/* Content */}
@@ -880,9 +1149,12 @@ function App() {
               <div className="flex-1 bg-gray-900/70 border border-gray-800/60 rounded-xl overflow-hidden flex items-center justify-center p-2 min-h-0 backdrop-blur-sm">
                 {displayState && displayState.grid ? (
                   <GridCanvas
+                    ref={gridCanvasRef}
                     state={displayState}
                     selectedAgentId={selectedAgentId}
                     onSelectAgent={setSelectedAgentId}
+                    trailHistory={trailHistory}
+                    showTrails={showTrails}
                   />
                 ) : (
                   <div className="flex flex-col items-center justify-center text-center gap-2">

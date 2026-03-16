@@ -8,6 +8,7 @@ import time
 import traceback
 from typing import Optional, Set, Tuple
 
+from backend.agents.base_agent import _type_index_map, register_type_index
 from backend.agents.coordinator_agent import CoordinatorAgent
 from backend.agents.retriever_agent import RetrieverAgent
 from backend.agents.scout_agent import ScoutAgent
@@ -190,6 +191,9 @@ class SimulationManager:
         # Create model
         self.model = WarehouseModel(config)
 
+        # Reset per-type index registry
+        _type_index_map.clear()
+
         # Reset occupied spawn positions
         self.occupied_spawn_positions = set()
 
@@ -209,6 +213,7 @@ class SimulationManager:
                 max_energy=coord_config.parameters.max_energy,
                 speed=coord_config.parameters.speed,
             )
+            register_type_index(i, i + 1)
 
             if coord_config.spawn_location is None:
                 free_pos = self._find_tl_spawn_position()
@@ -235,6 +240,7 @@ class SimulationManager:
                 speed=retr_config.parameters.speed,
                 carrying_capacity=retr_config.parameters.carrying_capacity,
             )
+            register_type_index(base_id + i, i + 1)
 
             if retr_config.spawn_location is None:
                 free_pos = self._find_tl_spawn_position()
@@ -260,6 +266,7 @@ class SimulationManager:
                 max_energy=scout_config.parameters.max_energy,
                 speed=scout_config.parameters.speed,
             )
+            register_type_index(base_id + i, i + 1)
 
             if scout_config.spawn_location is None:
                 free_pos = self._find_tl_spawn_position()
@@ -326,6 +333,9 @@ class SimulationManager:
         # Build model from grid
         self.model = WarehouseModel.from_grid(grid_config)
 
+        # Reset per-type index registry
+        _type_index_map.clear()
+
         # Reset occupied spawn positions
         self.occupied_spawn_positions = set()
 
@@ -352,6 +362,7 @@ class SimulationManager:
                 speed=co.speed,
                 behavior=coord_beh,
             )
+            register_type_index(i, i + 1)
             free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
@@ -373,6 +384,7 @@ class SimulationManager:
                 carrying_capacity=re.carrying_capacity,
                 behavior=retr_beh,
             )
+            register_type_index(base_id + i, i + 1)
             free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
@@ -393,6 +405,7 @@ class SimulationManager:
                 speed=sc.speed,
                 behavior=scout_beh,
             )
+            register_type_index(base_id + i, i + 1)
             free_pos = self._find_tl_spawn_position()
             if free_pos:
                 self.model.grid.place_agent(agent, free_pos)
@@ -417,31 +430,58 @@ class SimulationManager:
         self.model.snapshot_rng()
 
     def _apply_map_knowledge(self) -> None:
-        """Pre-fill every agent's local_map with full terrain (except objects)
-        and populate known_warehouses with all warehouse cells."""
+        """Pre-fill warehouse knowledge and provide full-grid nav_map for A*.
+
+        local_map is NOT modified — exploration heuristics (frontier
+        detection via local_map==0) remain identical to unknown mode.
+        Agents still explore to discover objects.  The only advantages
+        of map_known are:
+          1) nav_map: A* knows every wall/obstacle from the start,
+             producing optimal paths without optimistic re-planning.
+          2) known_warehouses: delivery routing is immediate.
+        """
         if not self.model:
             return
         grid = self.model.grid
         w, h = grid.width, grid.height
 
-        # Build the terrain mask once: copy cell_types, replacing OBJECT with FREE
-        terrain = grid.cell_types.copy()  # shape (w, h), indexed [x, y]
-        terrain[terrain == CellType.OBJECT] = CellType.FREE
-
-        # Collect all warehouse cells
+        # Build a mask with ONLY obstacle/wall cells
+        # cell_types is indexed [x, y]; local_map is [y, x]
         _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
-        wh_cells = [(x, y) for x in range(w) for y in range(h) if CellType(terrain[x, y]) in _WH]
+
+        wh_cells = [
+            (x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH
+        ]
+
+        import numpy as np
 
         from backend.agents.base_agent import BaseAgent
+
+        _OBSTACLE_TYPES = {CellType.OBSTACLE}
 
         for agent in self.model.agents:
             if not isinstance(agent, BaseAgent):
                 continue
-            lm = getattr(agent, "local_map", None)
-            if lm is None:
-                continue
-            # local_map is indexed [y, x]; terrain is [x, y] → transpose
-            lm[:] = terrain.T
+            # Build a sanitized nav_map: only OBSTACLE and WAREHOUSE cells
+            # are revealed.  FREE / OBJECT cells stay UNKNOWN (0) so A*
+            # doesn't gain omniscient knowledge of walkable areas / object
+            # locations.  This gives A* wall-awareness without revealing
+            # anything beyond structural topology.
+            sanitized = np.zeros_like(agent.local_map)
+            for x in range(w):
+                for y in range(h):
+                    ct = CellType(grid.cell_types[x, y])
+                    if ct in _OBSTACLE_TYPES or ct in _WH:
+                        sanitized[y, x] = int(ct)
+            agent.nav_map = sanitized
+            # Also pre-fill obstacles + warehouses into local_map so
+            # frontier detection benefits from wall knowledge.
+            lm = agent.local_map
+            for x in range(w):
+                for y in range(h):
+                    ct = CellType(grid.cell_types[x, y])
+                    if ct in _OBSTACLE_TYPES or ct in _WH:
+                        lm[y, x] = int(ct)
             # Populate known_warehouses (avoid duplicates)
             existing = set(agent.known_warehouses)
             for wc in wh_cells:

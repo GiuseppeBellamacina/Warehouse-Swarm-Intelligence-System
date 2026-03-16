@@ -112,6 +112,15 @@ class ScoutAgent(BaseAgent):
         self._scout_wh_step: Optional[str] = None
         self._scout_wh_station: Optional[dict] = None
 
+        # Deferred seek-coordinator: when True, the scout will seek the
+        # coordinator as soon as it finishes (or abandons) its current
+        # exploration path — instead of aborting mid-path.
+        self._pending_seek_coordinator: bool = False
+
+        # Seek-coordinator cooldown: after a failed wide-scan, the scout
+        # pauses seek attempts until this step to avoid permanent give-up.
+        self._seek_cooldown_until: int = 0
+
         # Recently-reached targets: blacklisted for _RECENT_TARGET_TTL steps after arrival
         # so the scout does not immediately oscillate back to a just-explored cell.
         self._recent_targets: Dict[Tuple[int, int], int] = {}
@@ -361,44 +370,71 @@ class ScoutAgent(BaseAgent):
             if coordinators:
                 # Coordinator right here — hand-deliver via ObjectLocationMessage
                 self.should_communicate_this_step = True
+                self._pending_seek_coordinator = False
                 return
 
             # Passive relay likely active: met some agent recently → keep exploring.
             steps_since_contact = self.model.current_step - self._last_agent_contact_step
             if steps_since_contact < self._SEEK_COORDINATOR_DELAY:
                 pass  # fall through to exploration (Priority 3)
-            elif self._SEEK_COORDINATOR and self.last_seen_coordinator_pos:
-                # Truly isolated — actively seek coordinator
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                dist_to_saved = abs(self.last_seen_coordinator_pos[0] - my_pos[0]) + abs(
-                    self.last_seen_coordinator_pos[1] - my_pos[1]
+            elif (
+                self._SEEK_COORDINATOR
+                and self.last_seen_coordinator_pos
+                and self.model.current_step >= self._seek_cooldown_until
+            ):
+                # Defer seek until the current exploration path completes —
+                # the cells being discovered have high value and should be
+                # completed before diverting to the coordinator.
+
+                # Decide whether to defer seek
+                _should_defer = (
+                    self.target_position is not None
+                    and self._explore_target is not None
+                    and not self._pending_seek_coordinator
                 )
-                if dist_to_saved <= max(1, self.communication_radius):
-                    self.last_seen_coordinator_pos = None
-                    new_coord_pos = self._wide_scan_for_coordinator()
-                    if new_coord_pos:
-                        self.last_seen_coordinator_pos = new_coord_pos
-                        print(
-                            f"{self.tag} SEEK-COORD: old pos stale, "
-                            f"found coordinator at {new_coord_pos} via wide scan"
-                        )
-                    else:
-                        print(
-                            f"{self.tag} SEEK-COORD: reached stale pos, "
-                            f"coordinator not found nearby — resuming exploration"
-                        )
-                else:
-                    if self.target_position != self.last_seen_coordinator_pos:
-                        self.target_position = self.last_seen_coordinator_pos
-                        self.path = []
-                    self._explore_target = None  # not exploring while seeking
-                    self.state = AgentState.MOVING_TO_TARGET
+                if _should_defer:
+                    # Mark deferred seek — will fire after path completes
+                    self._pending_seek_coordinator = True
                     print(
-                        f"{self.tag} SEEK-COORD: isolated for {steps_since_contact} steps, "
-                        f"heading to coordinator "
+                        f"{self.tag} SEEK-COORD: deferred — finishing current "
+                        f"exploration path to {self.target_position} first "
                         f"({len(self.newly_discovered_objects)} discoveries pending)"
                     )
-                    return
+                    # Fall through to Priority 3 (keep moving toward target)
+                elif self._pending_seek_coordinator or self.target_position is None:
+                    # Current path completed (or no path) — now seek coordinator
+                    self._pending_seek_coordinator = False
+                    my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                    dist_to_saved = abs(self.last_seen_coordinator_pos[0] - my_pos[0]) + abs(
+                        self.last_seen_coordinator_pos[1] - my_pos[1]
+                    )
+                    if dist_to_saved <= max(1, self.communication_radius):
+                        new_coord_pos = self._wide_scan_for_coordinator()
+                        if new_coord_pos:
+                            self.last_seen_coordinator_pos = new_coord_pos
+                            print(
+                                f"{self.tag} SEEK-COORD: old pos stale, "
+                                f"found coordinator at {new_coord_pos} via wide scan"
+                            )
+                        else:
+                            # Cooldown instead of permanent give-up
+                            self._seek_cooldown_until = self.model.current_step + 60
+                            print(
+                                f"{self.tag} SEEK-COORD: reached stale pos, "
+                                f"coordinator not found — cooldown for 60 steps"
+                            )
+                    else:
+                        if self.target_position != self.last_seen_coordinator_pos:
+                            self.target_position = self.last_seen_coordinator_pos
+                            self.path = []
+                        self._explore_target = None  # not exploring while seeking
+                        self.state = AgentState.MOVING_TO_TARGET
+                        print(
+                            f"{self.tag} SEEK-COORD: isolated for {steps_since_contact} steps, "
+                            f"heading to coordinator "
+                            f"({len(self.newly_discovered_objects)} discoveries pending)"
+                        )
+                        return
 
             # Discard discoveries after prolonged total isolation
             self._discovery_age = self._discovery_age + 1 if not nearby else 0
@@ -444,22 +480,16 @@ class ScoutAgent(BaseAgent):
         for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 200]:
             del self.unreachable_targets[pos]
 
-        # When map_known, use vision_explored as the "unexplored" mask so
-        # that cells not yet visually scanned still appear as frontiers.
-        _unexp_mask = None
-        if getattr(self.model, "map_known", False):
-            _unexp_mask = self.vision_explored == 0  # True where NOT scanned
-
         frontiers = FrontierExplorer.find_frontiers(
             self.local_map,
             min_cluster_size=self._MIN_FRONTIER_CLUSTER_SIZE,
-            unexplored_mask=_unexp_mask,
         )
         # If the high threshold filtered everything out, retry with minimum=1
         # so the scout still has *something* to explore.
         if not frontiers:
             frontiers = FrontierExplorer.find_frontiers(
-                self.local_map, min_cluster_size=1, unexplored_mask=_unexp_mask
+                self.local_map,
+                min_cluster_size=1,
             )
 
         # Filter blacklisted / stale frontiers and recently-reached targets.
@@ -484,10 +514,18 @@ class ScoutAgent(BaseAgent):
                 continue
             if not self.model.grid.is_walkable(*frontier_pos):
                 continue
-            # In unknown mode, reject frontiers in well-explored zones
-            if not _is_map_known and _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
+            # Reject frontiers in well-explored zones
+            if _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
                 continue
             valid_frontiers.append((frontier_pos, cluster_size))
+
+        # Filter tiny frontiers (size 1-2) when larger ones (≥5) exist.
+        # Tiny frontiers are often isolated single-cell corners that waste
+        # the scout's time when large unexplored areas exist elsewhere.
+        if valid_frontiers:
+            large_frontiers = [f for f in valid_frontiers if f[1] >= 5]
+            if large_frontiers:
+                valid_frontiers = large_frontiers
 
         # Anti-clustering: prefer frontiers far from other scouts
         nearby = self.get_nearby_agents(self.communication_radius)
@@ -566,7 +604,7 @@ class ScoutAgent(BaseAgent):
         # ── Far-frontier filter (unknown only) ──
         # Prefer frontiers that require actual travel so the scout pushes
         # into new territory rather than hopping between tiny nearby clusters.
-        if frontiers_to_use and self._FAR_FRONTIER_ENABLED and not _is_map_known:
+        if frontiers_to_use and self._FAR_FRONTIER_ENABLED:
             min_dist = max(self.vision_radius * 2, 8)
             far_frontiers = [
                 f
@@ -597,7 +635,7 @@ class ScoutAgent(BaseAgent):
 
             def _explored_ratio(x: int, y: int) -> float:
                 """Return the explored ratio in a window around (x, y)."""
-                r = 3 if _is_map_known else 5
+                r = 5
                 y0, y1 = max(0, y - r), min(_H, y + r + 1)
                 x0, x1 = max(0, x - r), min(_W, x + r + 1)
                 patch = _vis_exp[y0:y1, x0:x1] if _is_map_known else _local_map[y0:y1, x0:x1]
@@ -606,6 +644,14 @@ class ScoutAgent(BaseAgent):
                     return 1.0
                 explored = int(np.count_nonzero(patch))
                 return explored / total
+
+            def _unknown_mass(x: int, y: int) -> int:
+                """Count UNKNOWN cells in a 7-cell radius around (x, y)."""
+                r = 7
+                y0, y1 = max(0, y - r), min(_H, y + r + 1)
+                x0, x1 = max(0, x - r), min(_W, x + r + 1)
+                patch = _vis_exp[y0:y1, x0:x1]
+                return int(patch.size - np.count_nonzero(patch))
 
             # Build global peer-target list for area division.
             # Exclude agents currently in comm range — handled by nearby_positions.
@@ -821,13 +867,9 @@ class ScoutAgent(BaseAgent):
         the centroid of unknown cells sits in the bottom half).
 
         Uses numpy vectorisation for performance.
-        When map_known, uses vision_explored==0 instead of local_map==0.
         """
         # Boolean mask: cells considered "unknown" for exploration purposes
-        if getattr(self.model, "map_known", False):
-            unknown_mask = self.vision_explored == 0
-        else:
-            unknown_mask = self.local_map == 0
+        unknown_mask = self.local_map == 0
         if not np.any(unknown_mask):
             self.target_position = None
             self.state = AgentState.EXPLORING
@@ -976,10 +1018,7 @@ class ScoutAgent(BaseAgent):
                 else:
                     # Last resort: move toward the centroid of all unscanned cells
                     # — purely directional, no randomness.
-                    if getattr(self.model, "map_known", False):
-                        unknown_ys, unknown_xs = np.where(self.vision_explored == 0)
-                    else:
-                        unknown_ys, unknown_xs = np.where(self.local_map == 0)
+                    unknown_ys, unknown_xs = np.where(self.local_map == 0)
                     if len(unknown_xs) > 0:
                         cx = int(np.mean(unknown_xs))
                         cy = int(np.mean(unknown_ys))
@@ -1129,6 +1168,14 @@ class ScoutAgent(BaseAgent):
         if not coordinators:
             return False
 
+        # Filter out stale discoveries — only broadcast objects still in known_objects.
+        # Objects removed by tombstone propagation or OBC should not be re-sent.
+        self.newly_discovered_objects = [
+            (pos, val) for pos, val in self.newly_discovered_objects if pos in self.known_objects
+        ]
+        if not self.newly_discovered_objects:
+            return True  # had coordinators, just nothing valid to send
+
         coordinator_ids = [
             getattr(c, "unique_id", 0) for c in coordinators if hasattr(c, "unique_id")
         ]
@@ -1140,9 +1187,13 @@ class ScoutAgent(BaseAgent):
 
         # Send messages about each newly discovered object
         for obj_pos, obj_value in self.newly_discovered_objects:
+            # Use the DISCOVERY step as the timestamp, not the current step.
+            # This prevents the message from bypassing tombstones created
+            # after the object was actually picked up.
+            discovery_step = self.known_objects_step.get(obj_pos, self.model.current_step)
             message = ObjectLocationMessage(
                 sender_id=self.unique_id or 0,
-                timestamp=self.model.current_step,
+                timestamp=discovery_step,
                 object_position=obj_pos,
                 object_value=obj_value,
             )

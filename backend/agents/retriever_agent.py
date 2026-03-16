@@ -98,6 +98,7 @@ class RetrieverAgent(BaseAgent):
 
         self.carrying_capacity = carrying_capacity
         self.carrying_objects = 0
+        self.total_delivered = 0
         self.state = AgentState.IDLE
         self.pathfinder = AStarPathfinder(model.grid)
 
@@ -128,7 +129,18 @@ class RetrieverAgent(BaseAgent):
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 40
-        self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 15
+        # Guard against seek-info infinite loops: count consecutive seeks
+        # without productive outcome.  After _MAX_SEEK_ATTEMPTS, force
+        # the retriever back to frontier exploration for one full interval.
+        self._seek_info_attempts: int = 0
+        self._MAX_SEEK_ATTEMPTS: int = 3
+
+        # Dubious objects: positions that are too far away for proactive self-assign.
+        # The retriever goes to verify them ONLY when completely idle (P4, no
+        # candidates from self-assign).  Scout/coordinator keep full knowledge;
+        # only the retriever demotes distant entries to dubious.
+        self.dubious_objects: Dict[Tuple[int, int], float] = {}
+        self.dubious_objects_step: Dict[Tuple[int, int], int] = {}
 
     # ------------------------------------------------------------------
     # Sense
@@ -143,6 +155,43 @@ class RetrieverAgent(BaseAgent):
         for pos in new_objects - old_objects:
             if pos not in self.task_queue:
                 self.newly_spotted_objects.append(pos)
+        # Resolve dubious objects confirmed or denied by vision/tombstone.
+        # Only remove when the tombstone is at least as recent as the dubious
+        # entry — an old tombstone (from before the dubious info arrived)
+        # should NOT invalidate a newer dubious report.
+        if self.dubious_objects:
+            for pos in list(self.dubious_objects.keys()):
+                if pos in self.known_objects:
+                    # Promoted to known — remove from dubious
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
+                elif self.known_objects_cleared.get(pos, -1) >= self.dubious_objects_step.get(
+                    pos, 0
+                ):
+                    # Tombstone is at least as recent as the dubious entry
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
+
+        # Age-based demotion: objects known only via relay (or old vision)
+        # that haven't been re-confirmed within 30 steps are demoted to
+        # dubious.  Objects in the active task_queue are exempt (we're
+        # already heading there), as are objects just confirmed by vision
+        # (known_objects_step == current_step).
+        _STALE_AGE = 30
+        _cs = self.model.current_step
+        _task_set = set(self.task_queue)
+        _stale_demote = [
+            pos
+            for pos, val in self.known_objects.items()
+            if _cs - self.known_objects_step.get(pos, 0) > _STALE_AGE and pos not in _task_set
+        ]
+        for pos in _stale_demote:
+            val = self.known_objects.pop(pos)
+            step = self.known_objects_step.pop(pos, 0)
+            if pos not in self.dubious_objects:
+                self.dubious_objects[pos] = val
+                self.dubious_objects_step[pos] = step
+            print(f"{self.tag} STALE-DEMOTE: {pos} age={_cs - step} → dubious")
 
     # ------------------------------------------------------------------
     # Communicate  (base class: map share + mailbox drain)
@@ -150,7 +199,37 @@ class RetrieverAgent(BaseAgent):
 
     def process_received_messages(self) -> None:
         """Handle TaskAssignmentMessage from coordinator and peer TaskStatusMessages."""
+        # ── Track known_objects BEFORE relay merges ────────────────────────
+        # Vision-added objects (from update_local_map in step_sense) are
+        # already in known_objects.  Anything NEW after super() was added by
+        # relay — for retrievers only direct vision counts as "known".
+        _known_before = set(self.known_objects.keys())
+
         super().process_received_messages()
+
+        # ── Redirect relay-added objects to dubious ───────────────────────
+        # Everything the base-class relay just added to known_objects that
+        # was NOT already known (from own vision) is unconfirmed hearsay.
+        _relay_added = set(self.known_objects.keys()) - _known_before
+        for pos in _relay_added:
+            val = self.known_objects.pop(pos)
+            s = self.known_objects_step.pop(pos, 0)
+            if pos not in self.dubious_objects:
+                self.dubious_objects[pos] = val
+                self.dubious_objects_step[pos] = s
+
+        # Prune dubious objects invalidated by tombstones or now in known_objects.
+        # Only tombstones at least as recent as the dubious entry count.
+        if self.dubious_objects:
+            for pos in list(self.dubious_objects.keys()):
+                if pos in self.known_objects:
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
+                elif self.known_objects_cleared.get(pos, -1) >= self.dubious_objects_step.get(
+                    pos, 0
+                ):
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
 
         # --- Stale-target cancellation -------------------------------------------
         # super() has already merged incoming MapDataMessages and pruned known_objects
@@ -158,7 +237,11 @@ class RetrieverAgent(BaseAgent):
         # same pruning onto our task_queue: any queued position that is no longer
         # present on the actual grid is invalid — release the claim immediately so
         # another agent (or a re-assigned coordinator task) can take it.
-        stale_tasks = [t for t in list(self.task_queue) if t not in self.model.grid.objects]
+        stale_tasks = [
+            t
+            for t in list(self.task_queue)
+            if t not in self.known_objects and t not in self.dubious_objects
+        ]
         for stale in stale_tasks:
             self.task_queue.remove(stale)
             self.model.comm_manager.release_claim(stale, self.unique_id)
@@ -181,7 +264,9 @@ class RetrieverAgent(BaseAgent):
                     if target is None:
                         continue
                     # Add to task queue only if not already there and not picked up
-                    if target not in self.task_queue and target in self.known_objects:
+                    if target not in self.task_queue and (
+                        target in self.known_objects or target in self.dubious_objects
+                    ):
                         self.task_queue.append(target)
                         self._fruitless_explore_steps = 0
                         print(
@@ -195,14 +280,16 @@ class RetrieverAgent(BaseAgent):
                             details=f"Retrieve at {target}",
                             target_ids=[message.sender_id],
                         )
-                    elif target not in self.known_objects:
-                        # Coordinator told us about an object we don't know
-                        self.known_objects[target] = message.priority
+                    elif target not in self.known_objects and target not in self.dubious_objects:
+                        # Coordinator told us about an object we don't know —
+                        # treat as dubious (unconfirmed by own vision).
+                        self.dubious_objects[target] = message.priority
+                        self.dubious_objects_step[target] = self.model.current_step
                         if target not in self.task_queue:
                             self.task_queue.append(target)
                         print(
                             f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
-                            f"queued unknown task {target}"
+                            f"queued unknown task {target} (dubious)"
                         )
 
             elif isinstance(message, TaskStatusMessage):
@@ -228,8 +315,10 @@ class RetrieverAgent(BaseAgent):
 
             elif isinstance(message, RetrieverEventMessage):
                 # React to "object_spotted" and "cargo_dropped" broadcasts from
-                # PEER retrievers.  Add the object to known_objects so P4 (or P3b
-                # opportunistic) can self-assign to it in the next decide phase.
+                # PEER retrievers.  Peer-reported objects are NOT trusted
+                # blindly — they go to dubious_objects by default.  The
+                # retriever will verify them when idle (P4b) or if no
+                # closer confirmed candidates exist.
                 if message.event_type not in ("object_spotted", "cargo_dropped"):
                     continue
                 peer_id = message.sender_id
@@ -241,18 +330,19 @@ class RetrieverAgent(BaseAgent):
                 obj_pos = message.object_position
                 if obj_pos is None:
                     continue
-                # Only insert if not already known and not tombstoned as gone
+                # Only insert if not already known/dubious and not tombstoned
                 if (
                     obj_pos not in self.known_objects
+                    and obj_pos not in self.dubious_objects
                     and message.timestamp > self.known_objects_cleared.get(obj_pos, -1)
                 ):
                     obc = getattr(self, "objects_being_collected", None)
                     if obc is None or obj_pos not in obc:
-                        self.known_objects[obj_pos] = 1.0
-                        self.known_objects_step[obj_pos] = message.timestamp
+                        self.dubious_objects[obj_pos] = 1.0
+                        self.dubious_objects_step[obj_pos] = message.timestamp
                         print(
                             f"{self.tag} PEER-SPOT: learned object {obj_pos} "
-                            f"from full peer retriever {peer_id} — adding to known_objects"
+                            f"from peer retriever {peer_id} — adding as dubious"
                         )
 
     # ------------------------------------------------------------------
@@ -337,10 +427,10 @@ class RetrieverAgent(BaseAgent):
             ]
             if self.task_queue:
                 next_target = self.task_queue[0]
-                # Skip if object is gone from the world
+                # Skip if object is no longer in our knowledge base
                 if (
-                    next_target not in self.model.grid.objects
-                    and next_target not in self.known_objects
+                    next_target not in self.known_objects
+                    and next_target not in self.dubious_objects
                 ):
                     self.task_queue.pop(0)
                     # Don't return — fall through to P4 so the retriever
@@ -391,6 +481,59 @@ class RetrieverAgent(BaseAgent):
             if (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP) and self._try_self_assign_visible():
                 self._fruitless_explore_steps = 0
                 return  # claimed something, P3 will handle it next step
+
+            # ---- P4b: Check dubious objects when completely idle ----
+            # Before exploring blindly, try to verify a dubious object.
+            # Purge dubious entries that have been tombstoned or re-confirmed.
+            self.dubious_objects = {
+                pos: val
+                for pos, val in self.dubious_objects.items()
+                if pos not in self.known_objects
+                and self.known_objects_cleared.get(pos, -1) < self.dubious_objects_step.get(pos, 0)
+            }
+            self.dubious_objects_step = {
+                pos: s
+                for pos, s in self.dubious_objects_step.items()
+                if pos in self.dubious_objects
+            }
+            if self.dubious_objects and self.carrying_objects == 0:
+                dub_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                # Pick the closest dubious object
+                closest_dub = min(
+                    self.dubious_objects.keys(),
+                    key=lambda p: abs(p[0] - dub_pos[0]) + abs(p[1] - dub_pos[1]),
+                )
+                dub_dist = abs(closest_dub[0] - dub_pos[0]) + abs(closest_dub[1] - dub_pos[1])
+                # Claim it for verification
+                can_claim = self.model.comm_manager.try_claim_object(
+                    closest_dub, self.unique_id, self.model.current_step, dub_dist, self.energy
+                )
+                if can_claim:
+                    # Promote back to known_objects for the task queue
+                    self.known_objects[closest_dub] = self.dubious_objects.pop(closest_dub)
+                    self.known_objects_step[closest_dub] = self.dubious_objects_step.pop(
+                        closest_dub, self.model.current_step
+                    )
+                    self.task_queue.append(closest_dub)
+                    self._fruitless_explore_steps = 0
+                    print(
+                        f"{self.tag} DUBIOUS-CHECK: verifying {closest_dub} "
+                        f"dist={dub_dist} (no other tasks)"
+                    )
+                    return
+
+            # No objects to claim — enter exploration
+            import numpy as _np_p4
+
+            _unk_count = int(_np_p4.count_nonzero(self.local_map == 0))
+            _total = self.local_map.size
+            _explored_pct = 100.0 * (1 - _unk_count / _total) if _total else 100.0
+            print(
+                f"{self.tag} P4-EXPLORE: no tasks, no self-assign → exploring "
+                f"(map {_explored_pct:.0f}% explored, "
+                f"{len(self.known_objects)} known objects, "
+                f"carrying {self.carrying_objects}/{self.carrying_capacity})"
+            )
             self._update_explore_target()
 
     def _try_opportunistic_pickup(self) -> None:
@@ -414,8 +557,6 @@ class RetrieverAgent(BaseAgent):
         for obj_pos in list(self.known_objects.keys()):
             if obj_pos in self.task_queue:
                 continue  # already queued
-            if obj_pos not in self.model.grid.objects:
-                continue  # already picked up by someone else
             dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
             # Use vision_radius instead of communication_radius so the retriever
             # opportunistically claims objects it can see, not just touch.
@@ -454,12 +595,11 @@ class RetrieverAgent(BaseAgent):
         knowledge base is leveraged to avoid idle wandering.
 
         Three-layer safety against double-assignment:
-          1. Grid truth check    — skip objects already gone from model.grid.objects.
-          2. Global claim check  — skip objects already locked in CommunicationManager.
-          3. Peer queue scan     — read task_queue of every nearby retriever directly;
+          1. Global claim check  — skip objects already locked in CommunicationManager.
+          2. Peer queue scan     — read task_queue of every nearby retriever directly;
              skip if any peer has the object queued (handles coordinator-assigned but
              not yet claimed items that haven't propagated through comm yet).
-          4. Atomic try_claim    — CommunicationManager.try_claim_object() is the
+          3. Atomic try_claim    — CommunicationManager.try_claim_object() is the
              final arbiter for same-step ties (first caller wins).
 
         Candidates are sorted by Manhattan distance so the nearest unclaimed object
@@ -491,12 +631,7 @@ class RetrieverAgent(BaseAgent):
         for obj_pos in list(self.known_objects.keys()):
             if obj_pos in self.task_queue:
                 continue
-            # layer 1: grid truth check (object may have been picked up already)
-            if obj_pos not in self.model.grid.objects:
-                # Prune stale entry so we don't keep re-checking it
-                del self.known_objects[obj_pos]
-                continue
-            # layer 2: global claim check — skip only if the claim is FRESH.
+            # layer 1: global claim check — skip only if the claim is FRESH.
             # A stale claim (>= 45 steps old with no refresh) indicates the
             # original claimer died, got stuck, or was reassigned.  In that case
             # fall through to try_claim_object which will atomically take it over.
@@ -513,9 +648,17 @@ class RetrieverAgent(BaseAgent):
             if obj_pos in peer_queued:
                 continue
             dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
-            # Scan ALL known objects — not limited to vision_radius.
-            # The retriever uses its full accumulated knowledge so it never idles
-            # when objects it has heard about from peers are still waiting.
+            # Cap: objects beyond half the map dimension are dubious — demote
+            # them instead of self-assigning.  The retriever will only go
+            # verify them when completely idle (no closer options).
+            _max_dim = max(self.model.grid.width, self.model.grid.height)
+            _half_map = _max_dim // 2
+            if dist > _half_map:
+                # Demote to dubious (keep original step timestamp)
+                if obj_pos not in self.dubious_objects:
+                    self.dubious_objects[obj_pos] = self.known_objects[obj_pos]
+                    self.dubious_objects_step[obj_pos] = self.known_objects_step.get(obj_pos, 0)
+                continue
             candidates.append((dist, obj_pos))
 
         if not candidates:
@@ -659,7 +802,25 @@ class RetrieverAgent(BaseAgent):
         # blocks re-evaluation for up to _EXPLORE_RETARGET steps, during
         # which the agent is completely frozen.
         if self._explore_target:
-            if pos_tuple == self._explore_target or self.target_position is None:
+            arrived = pos_tuple == self._explore_target
+            very_close = (
+                abs(pos_tuple[0] - self._explore_target[0])
+                + abs(pos_tuple[1] - self._explore_target[1])
+                <= 1
+            )
+            abandoned = self.target_position is None
+            if arrived or very_close or abandoned:
+                # Blacklist the frontier centroid so select_best_frontier
+                # doesn't immediately re-pick it (agent would camp there
+                # doing nothing while the centroid barely shifts).
+                if arrived or very_close:
+                    self.unreachable_targets[self._explore_target] = self.model.current_step
+                # Preserve the direction of the old target so momentum
+                # carries over to the next frontier selection.  Without
+                # this the momentum bonus is lost when _explore_target is
+                # cleared, causing the agent to flip back toward already-
+                # explored territory.
+                self._last_explore_target = self._explore_target
                 self._explore_target = None
 
         # Force immediate retarget when stuck next to another agent that is
@@ -682,14 +843,7 @@ class RetrieverAgent(BaseAgent):
             # coordinator (or any other agent) to exchange map data.
             # Once within communication range the normal MapDataMessage
             # exchange delivers discoveries that self-assign can use.
-            # In map_known mode use a much shorter interval: terrain is
-            # already known so frontier exploration adds little value —
-            # finding objects depends almost entirely on communication.
-            _seek_interval = (
-                self._SEEK_INFO_INTERVAL_MAP_KNOWN
-                if getattr(self.model, "map_known", False)
-                else self._SEEK_INFO_INTERVAL
-            )
+            _seek_interval = self._SEEK_INFO_INTERVAL
 
             # Gather nearby agent positions AND target positions for anti-clustering.
             # Include ALL agent types so two idle retrievers near each other are
@@ -705,8 +859,17 @@ class RetrieverAgent(BaseAgent):
             # the agent loops in SEEK-INFO forever after arriving.
             if nearby_agents and self._fruitless_explore_steps > _seek_interval:
                 self._fruitless_explore_steps = 0
+                self._seek_info_attempts = 0  # productive contact — reset
 
-            if self._fruitless_explore_steps > _seek_interval:
+            # Skip SEEK-INFO entirely when carrying objects — the retriever
+            # should deliver cargo, not wander looking for info.
+            # Also skip after too many consecutive seek attempts to break
+            # the loop where the seek target moves away repeatedly.
+            if (
+                self._fruitless_explore_steps > _seek_interval
+                and self.carrying_objects == 0
+                and self._seek_info_attempts < self._MAX_SEEK_ATTEMPTS
+            ):
                 seek_target = self._find_nearest_info_source(pos_tuple)
                 if seek_target is not None:
                     # If the target agent is inside a warehouse, redirect to a
@@ -747,6 +910,7 @@ class RetrieverAgent(BaseAgent):
                     # grows unboundedly and SEEK-INFO re-fires every 15 steps,
                     # trapping the agent for 100+ steps.
                     self._fruitless_explore_steps = 0
+                    self._seek_info_attempts += 1
                     return
             nearby_positions = []
             for a in nearby_agents:
@@ -767,36 +931,105 @@ class RetrieverAgent(BaseAgent):
             # Uses FrontierExplorer to find clusters of frontier cells so the
             # retriever targets large unexplored regions instead of zigzagging
             # around the nearest boundary cell.
+
+            # Expire old unreachable_targets so the dict doesn't grow
+            # unbounded and blacklisted frontiers become available again.
+            _cur_step = self.model.current_step
+            for _p in [p for p, s in self.unreachable_targets.items() if _cur_step - s >= 200]:
+                del self.unreachable_targets[_p]
+
             if self._SMART_EXPLORE:
                 from backend.algorithms.exploration import FrontierExplorer
 
-                # In map_known mode, local_map is pre-filled so local_map==0
-                # is always empty.  Use vision_explored==0 to find cells not
-                # yet visually scanned — objects can only be in unseen areas.
-                if getattr(self.model, "map_known", False):
-                    _unexp_mask = self.vision_explored == 0
-                else:
-                    _unexp_mask = None
+                # In map_known mode, obstacles/warehouses are pre-filled
+                # into local_map.  Use vision_explored==0 as "unexplored"
+                # so frontiers are cells adjacent to not-yet-scanned areas
+                # (objects can only be discovered in unseen cells).
+                _is_mk = getattr(self.model, "map_known", False)
+                _unexp = (self.vision_explored == 0) if _is_mk else None
 
                 frontiers = FrontierExplorer.find_frontiers(
                     self.local_map,
                     min_cluster_size=1,
-                    unexplored_mask=_unexp_mask,
+                    unexplored_mask=_unexp,
                 )
                 if frontiers:
-                    # Filter out warehouse cells and unwalkable centroids
+                    # Filter out warehouse cells, unwalkable centroids,
+                    # and blacklisted unreachable targets so LOOP /
+                    # NO-PROGRESS abandonment is respected.
                     _WH = (
                         CellType.WAREHOUSE,
                         CellType.WAREHOUSE_ENTRANCE,
                         CellType.WAREHOUSE_EXIT,
                     )
+                    _FRONTIER_COOLDOWN = 10
+                    _cs = self.model.current_step
                     valid = [
                         f
                         for f in frontiers
                         if self.model.grid.is_walkable(*f[0])
                         and self.model.grid.get_cell_type(*f[0]) not in _WH
+                        and (
+                            f[0] not in self.unreachable_targets
+                            or _cs - self.unreachable_targets[f[0]] > _FRONTIER_COOLDOWN
+                        )
+                        and f[0] not in self.unreachable_targets
                     ]
                     if valid:
+                        # Early game: spread retrievers to different map
+                        # quadrants.  At step 1 no agent has a target yet,
+                        # so peer_targets is empty and scoring converges on
+                        # the same centroid.  Detect clustering by agent
+                        # positions instead.
+                        if self.model.current_step <= 20:
+                            peer_positions = [
+                                pos_to_tuple(a.pos)
+                                for a in nearby_agents
+                                if a.unique_id != self.unique_id and a.pos is not None
+                            ]
+                            clustered = any(
+                                abs(pp[0] - pos_tuple[0]) + abs(pp[1] - pos_tuple[1]) <= 8
+                                for pp in peer_positions
+                            )
+                            if clustered:
+                                W = self.model.grid.width
+                                H = self.model.grid.height
+                                corners = [
+                                    (0, 0),
+                                    (W - 1, 0),
+                                    (0, H - 1),
+                                    (W - 1, H - 1),
+                                ]
+                                # Each retriever picks a different corner
+                                # based on its index among nearby retrievers
+                                # (no global model access — only peers in
+                                # communication range).
+                                ret_ids = sorted(
+                                    a.unique_id
+                                    for a in nearby_agents
+                                    if getattr(a, "role", None) == "retriever"
+                                )
+                                if self.unique_id not in ret_ids:
+                                    ret_ids.append(self.unique_id)
+                                    ret_ids.sort()
+                                my_idx = ret_ids.index(self.unique_id)
+                                corners.sort(
+                                    key=lambda c: abs(c[0] - pos_tuple[0])
+                                    + abs(c[1] - pos_tuple[1]),
+                                    reverse=True,
+                                )
+                                target = corners[my_idx % len(corners)]
+                                self._explore_target = target
+                                self.target_position = target
+                                self.path = []
+                                self.state = AgentState.EXPLORING
+                                print(
+                                    f"{self.tag} EXPLORE: "
+                                    f"spread to {target} "
+                                    f"(cluster deconfliction)"
+                                )
+                                return
+
                         # Soft deconfliction: if another nearby retriever
                         # already targets a frontier within 6 cells, prefer
                         # frontiers further away.  If no alternative exists,
@@ -823,72 +1056,69 @@ class RetrieverAgent(BaseAgent):
                             ]
                             if deconf_valid:
                                 valid = deconf_valid
-                            elif self.model.current_step <= 20:
-                                # Early game only: if all frontiers overlap
-                                # with peers and agents are clustered, spread
-                                # to different corners to bootstrap exploration.
-                                clustered = any(
-                                    abs(pt[0] - pos_tuple[0]) + abs(pt[1] - pos_tuple[1]) <= 8
-                                    for pt in peer_targets
-                                )
-                                if clustered:
-                                    W = self.model.grid.width
-                                    H = self.model.grid.height
-                                    corners = [
-                                        (0, 0),
-                                        (W - 1, 0),
-                                        (0, H - 1),
-                                        (W - 1, H - 1),
-                                    ]
-                                    corners.sort(
-                                        key=lambda c: abs(c[0] - pos_tuple[0])
-                                        + abs(c[1] - pos_tuple[1]),
-                                        reverse=True,
-                                    )
-                                    corners = corners[:-1]
-                                    target = corners[self.unique_id % len(corners)]
-                                    self._explore_target = target
-                                    self.target_position = target
-                                    self.path = []
-                                    self.state = AgentState.EXPLORING
-                                    print(
-                                        f"{self.tag} EXPLORE: "
-                                        f"spread to {target} "
-                                        f"(cluster deconfliction)"
-                                    )
-                                    return
 
                         # Coverage callback: ratio of explored cells in
                         # a window around each frontier centroid.  Frontiers
                         # in largely-unseen areas get a higher score.
-                        # Blended approach: personal vision counts fully,
-                        # communicated terrain (local_map non-zero but
-                        # vision_explored=0) counts partially.
-                        # Weight depends on team composition:
-                        # - With scouts: low weight (0.3) — retrievers stay
-                        #   near scout's trail for fast object retrieval.
-                        # - Without scouts: full weight (1.0) — retrievers
-                        #   spread out, avoiding redundant exploration.
+                        #
+                        # map_known mode uses a purer signal: only vision-
+                        # scanned walkable cells count as explored.  Obstacle
+                        # cells (pre-filled in local_map) are excluded from
+                        # both numerator and denominator — they can never
+                        # contain objects, so they are irrelevant for coverage
+                        # and counting them inflates the ratio near dense
+                        # obstacle clusters, unfairly penalising those frontiers.
+                        #
+                        # map_unknown mode: blended approach, personal vision
+                        # counts fully, communicated terrain partially.
                         import numpy as np
 
                         _H, _W = self.local_map.shape
-                        _map_known = getattr(self.model, "map_known", False)
-                        _has_scouts = len(self.model.scouts) > 0
+                        _nav = self.nav_map  # None in map_unknown mode
+
+                        # Communicated-cell weight (map_unknown only).
+                        _has_scouts = any(
+                            getattr(a, "role", None) == "scout" for a in nearby_agents
+                        )
                         _comm_weight = 0.6 if _has_scouts else 1.0
 
                         def _explored_ratio(fx: int, fy: int) -> float:
-                            r = 3 if _map_known else 5
+                            r = 5
                             y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
                             x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
-                            if _map_known:
-                                patch = self.vision_explored[y0:y1, x0:x1]
-                                total = patch.size
-                                return float(np.count_nonzero(patch) / total) if total else 1.0
                             vis = self.vision_explored[y0:y1, x0:x1]
-                            comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
-                            blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
-                            total = blended.size
-                            return float(np.sum(blended) / total) if total else 1.0
+                            if _is_mk and _nav is not None:
+                                # map_known: only walkable cells matter.
+                                # nav_map == 0 identifies free (walkable) cells.
+                                walkable = (_nav[y0:y1, x0:x1] == 0).astype(np.float32)
+                                total_w = float(np.sum(walkable))
+                                if total_w == 0:
+                                    return 1.0
+                                scanned_w = float(np.sum(vis.astype(np.float32) * walkable))
+                                return scanned_w / total_w
+                            else:
+                                # map_unknown: blended vision + communicated terrain
+                                comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
+                                blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
+                                total = blended.size
+                                return float(np.sum(blended) / total) if total else 1.0
+
+                        # In map_known mode, provide unknown_mass_at: the actual
+                        # count of walkable-but-unscanned cells around a frontier.
+                        # This replaces cluster_size for effective_size scoring and
+                        # gives a far more accurate picture of "how much is left to
+                        # scan" than just counting frontier boundary cells.
+                        def _unknown_mass_mk(fx: int, fy: int) -> int:
+                            r = 8
+                            y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
+                            x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
+                            walkable = _nav[y0:y1, x0:x1] == 0  # type: ignore[index]
+                            unscanned = self.vision_explored[y0:y1, x0:x1] == 0
+                            return int(np.sum(walkable & unscanned))
+
+                        _unknown_mass_cb = (
+                            _unknown_mass_mk if (_is_mk and _nav is not None) else None
+                        )
 
                         # Build global peer-target list for area division.
                         # Only include targets from non-retriever agents
@@ -896,15 +1126,33 @@ class RetrieverAgent(BaseAgent):
                         # deconfliction is handled by the local
                         # _DECONFLICT_DIST filter and nearby_positions penalty.
                         _cs = self.model.current_step
-                        _retriever_ids = {a.unique_id for a in self.model.retrievers}
+                        # Filter peer targets to non-retriever agents only
+                        # using nearby agent info (no global model access).
+                        _nearby_retriever_ids = {
+                            a.unique_id
+                            for a in nearby_agents
+                            if getattr(a, "role", None) == "retriever"
+                        }
+                        _nearby_retriever_ids.add(self.unique_id)
                         _global_targets = [
                             pos
                             for aid, pos in self.peer_explore_targets.items()
-                            if aid not in _retriever_ids
+                            if aid not in _nearby_retriever_ids
                             and _cs - self.peer_explore_targets_step.get(aid, 0)
                             <= self._explore_target_ttl
                         ]
 
+                        # Dampen momentum after 6 steps on the same target
+                        # so stale unreachable targets lose their bonus and
+                        # other frontiers can win on raw utility.
+                        # Use _last_explore_target as fallback when the
+                        # current target was just cleared (arrived / very_close)
+                        # so the agent keeps pushing in the same direction.
+                        _momentum_target = self._explore_target
+                        if _momentum_target is None:
+                            _momentum_target = getattr(self, "_last_explore_target", None)
+                        if _momentum_target is not None and self._explore_steps > 6:
+                            _momentum_target = None
                         best = FrontierExplorer.select_best_frontier(
                             valid,
                             pos_tuple,
@@ -912,7 +1160,8 @@ class RetrieverAgent(BaseAgent):
                             grid_size=(self.model.grid.width, self.model.grid.height),
                             explored_ratio_at=_explored_ratio,
                             all_peer_targets=_global_targets,
-                            current_target=self._explore_target,
+                            current_target=_momentum_target,
+                            unknown_mass_at=_unknown_mass_cb,
                         )
                         if best:
                             old_target = self._explore_target
@@ -929,10 +1178,7 @@ class RetrieverAgent(BaseAgent):
             # retriever naturally drifts toward the least-covered region of the map.
             import numpy as np
 
-            if getattr(self.model, "map_known", False):
-                _unk_mask = self.vision_explored == 0
-            else:
-                _unk_mask = self.local_map == 0
+            _unk_mask = self.local_map == 0
 
             unk_coords = np.argwhere(_unk_mask)
             # Compute centroid of unknown area (or map centre if fully explored)
@@ -1064,7 +1310,7 @@ class RetrieverAgent(BaseAgent):
 
         # Check own cell first
         ct = self.model.grid.get_cell_type(*pos)
-        if ct == CellType.FREE and pos not in self.model.grid.objects:
+        if ct == CellType.FREE and pos not in self.known_objects:
             candidates.append(pos)
 
         # Spiral outward in rings of increasing radius
@@ -1080,7 +1326,7 @@ class RetrieverAgent(BaseAgent):
                     cell_t = self.model.grid.get_cell_type(nx, ny)
                     if cell_t != CellType.FREE:
                         continue
-                    if (nx, ny) in self.model.grid.objects:
+                    if (nx, ny) in self.known_objects:
                         continue
                     candidates.append((nx, ny))
                     if len(candidates) >= count:
@@ -1374,6 +1620,7 @@ class RetrieverAgent(BaseAgent):
                 # Deliver objects
                 delivered = self.carrying_objects
                 self.model.objects_retrieved += delivered
+                self.total_delivered += delivered
                 self.carrying_objects = 0
                 self._fruitless_explore_steps = 0
                 self.energy_consumption["move"] = 0.6  # normal move cost
@@ -1522,11 +1769,16 @@ class RetrieverAgent(BaseAgent):
                 self.pending_events.append("object_picked")
                 self._fruitless_explore_steps = 0
                 self.model.comm_manager.release_claim(pos_tuple, self.unique_id)
-                # Remove from task queue
+                # Remove from task queue and tombstone the object so peers
+                # don't re-add it via relay messages.
                 if pos_tuple in self.task_queue:
                     self.task_queue.remove(pos_tuple)
-                if pos_tuple in self.known_objects:
-                    del self.known_objects[pos_tuple]
+                self.known_objects.pop(pos_tuple, None)
+                self.known_objects_step.pop(pos_tuple, None)
+                self.known_objects_cleared[pos_tuple] = self.model.current_step
+                self._confirmed_gone.add(pos_tuple)
+                # Update local_map so we don't broadcast a stale OBJECT cell
+                self.local_map[pos_tuple[1], pos_tuple[0]] = CellType.FREE
 
                 if self.carrying_objects >= self.carrying_capacity:
                     # Release remaining claims so peers can grab those objects
@@ -1549,13 +1801,16 @@ class RetrieverAgent(BaseAgent):
                         self.state = AgentState.EXPLORING
                         self.target_position = None
         else:
-            # Object gone, remove from queue
+            # Object gone, remove from queue and tombstone
             if pos_tuple:
                 self.model.comm_manager.release_claim(pos_tuple, self.unique_id)
                 if pos_tuple in self.task_queue:
                     self.task_queue.remove(pos_tuple)
-                if pos_tuple in self.known_objects:
-                    del self.known_objects[pos_tuple]
+                self.known_objects.pop(pos_tuple, None)
+                self.known_objects_step.pop(pos_tuple, None)
+                self.known_objects_cleared[pos_tuple] = self.model.current_step
+                self._confirmed_gone.add(pos_tuple)
+                self.local_map[pos_tuple[1], pos_tuple[0]] = CellType.FREE
             print(f"{self.tag} PICKUP: object gone at {pos_tuple}")
             self.state = AgentState.EXPLORING
             self.target_position = None
