@@ -400,9 +400,7 @@ class ScoutAgent(BaseAgent):
                         f"({len(self.newly_discovered_objects)} discoveries pending)"
                     )
                     # Fall through to Priority 3 (keep moving toward target)
-                elif (
-                    self._pending_seek_coordinator or self.target_position is None
-                ):
+                elif self._pending_seek_coordinator or self.target_position is None:
                     # Current path completed (or no path) — now seek coordinator
                     self._pending_seek_coordinator = False
                     my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
@@ -489,7 +487,8 @@ class ScoutAgent(BaseAgent):
         # so the scout still has *something* to explore.
         if not frontiers:
             frontiers = FrontierExplorer.find_frontiers(
-                self.local_map, min_cluster_size=1,
+                self.local_map,
+                min_cluster_size=1,
             )
 
         # Filter blacklisted / stale frontiers and recently-reached targets.

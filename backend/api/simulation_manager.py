@@ -449,7 +449,9 @@ class SimulationManager:
         _OBSTACLE_TYPES = {CellType.OBSTACLE}
         _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
 
-        wh_cells = [(x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH]
+        wh_cells = [
+            (x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH
+        ]
 
         from backend.agents.base_agent import BaseAgent
 
