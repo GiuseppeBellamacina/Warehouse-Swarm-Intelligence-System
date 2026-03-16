@@ -488,7 +488,8 @@ class ScoutAgent(BaseAgent):
         # so the scout still has *something* to explore.
         if not frontiers:
             frontiers = FrontierExplorer.find_frontiers(
-                self.local_map, min_cluster_size=1, unexplored_mask=_unexp_mask
+                self.local_map,
+                min_cluster_size=1,
             )
 
         # Filter blacklisted / stale frontiers and recently-reached targets.
