@@ -135,6 +135,13 @@ class RetrieverAgent(BaseAgent):
         self._seek_info_attempts: int = 0
         self._MAX_SEEK_ATTEMPTS: int = 3
 
+        # Dubious objects: positions that are too far away for proactive self-assign.
+        # The retriever goes to verify them ONLY when completely idle (P4, no
+        # candidates from self-assign).  Scout/coordinator keep full knowledge;
+        # only the retriever demotes distant entries to dubious.
+        self.dubious_objects: Dict[Tuple[int, int], float] = {}
+        self.dubious_objects_step: Dict[Tuple[int, int], int] = {}
+
     # ------------------------------------------------------------------
     # Sense
     # ------------------------------------------------------------------
@@ -148,6 +155,43 @@ class RetrieverAgent(BaseAgent):
         for pos in new_objects - old_objects:
             if pos not in self.task_queue:
                 self.newly_spotted_objects.append(pos)
+        # Resolve dubious objects confirmed or denied by vision/tombstone.
+        # Only remove when the tombstone is at least as recent as the dubious
+        # entry — an old tombstone (from before the dubious info arrived)
+        # should NOT invalidate a newer dubious report.
+        if self.dubious_objects:
+            for pos in list(self.dubious_objects.keys()):
+                if pos in self.known_objects:
+                    # Promoted to known — remove from dubious
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
+                elif self.known_objects_cleared.get(pos, -1) >= self.dubious_objects_step.get(
+                    pos, 0
+                ):
+                    # Tombstone is at least as recent as the dubious entry
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
+
+        # Age-based demotion: objects known only via relay (or old vision)
+        # that haven't been re-confirmed within 30 steps are demoted to
+        # dubious.  Objects in the active task_queue are exempt (we're
+        # already heading there), as are objects just confirmed by vision
+        # (known_objects_step == current_step).
+        _STALE_AGE = 30
+        _cs = self.model.current_step
+        _task_set = set(self.task_queue)
+        _stale_demote = [
+            pos
+            for pos, val in self.known_objects.items()
+            if _cs - self.known_objects_step.get(pos, 0) > _STALE_AGE and pos not in _task_set
+        ]
+        for pos in _stale_demote:
+            val = self.known_objects.pop(pos)
+            step = self.known_objects_step.pop(pos, 0)
+            if pos not in self.dubious_objects:
+                self.dubious_objects[pos] = val
+                self.dubious_objects_step[pos] = step
+            print(f"{self.tag} STALE-DEMOTE: {pos} age={_cs - step} → dubious")
 
     # ------------------------------------------------------------------
     # Communicate  (base class: map share + mailbox drain)
@@ -155,7 +199,37 @@ class RetrieverAgent(BaseAgent):
 
     def process_received_messages(self) -> None:
         """Handle TaskAssignmentMessage from coordinator and peer TaskStatusMessages."""
+        # ── Track known_objects BEFORE relay merges ────────────────────────
+        # Vision-added objects (from update_local_map in step_sense) are
+        # already in known_objects.  Anything NEW after super() was added by
+        # relay — for retrievers only direct vision counts as "known".
+        _known_before = set(self.known_objects.keys())
+
         super().process_received_messages()
+
+        # ── Redirect relay-added objects to dubious ───────────────────────
+        # Everything the base-class relay just added to known_objects that
+        # was NOT already known (from own vision) is unconfirmed hearsay.
+        _relay_added = set(self.known_objects.keys()) - _known_before
+        for pos in _relay_added:
+            val = self.known_objects.pop(pos)
+            s = self.known_objects_step.pop(pos, 0)
+            if pos not in self.dubious_objects:
+                self.dubious_objects[pos] = val
+                self.dubious_objects_step[pos] = s
+
+        # Prune dubious objects invalidated by tombstones or now in known_objects.
+        # Only tombstones at least as recent as the dubious entry count.
+        if self.dubious_objects:
+            for pos in list(self.dubious_objects.keys()):
+                if pos in self.known_objects:
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
+                elif self.known_objects_cleared.get(pos, -1) >= self.dubious_objects_step.get(
+                    pos, 0
+                ):
+                    self.dubious_objects.pop(pos, None)
+                    self.dubious_objects_step.pop(pos, None)
 
         # --- Stale-target cancellation -------------------------------------------
         # super() has already merged incoming MapDataMessages and pruned known_objects
@@ -163,7 +237,11 @@ class RetrieverAgent(BaseAgent):
         # same pruning onto our task_queue: any queued position that is no longer
         # present on the actual grid is invalid — release the claim immediately so
         # another agent (or a re-assigned coordinator task) can take it.
-        stale_tasks = [t for t in list(self.task_queue) if t not in self.known_objects]
+        stale_tasks = [
+            t
+            for t in list(self.task_queue)
+            if t not in self.known_objects and t not in self.dubious_objects
+        ]
         for stale in stale_tasks:
             self.task_queue.remove(stale)
             self.model.comm_manager.release_claim(stale, self.unique_id)
@@ -186,7 +264,9 @@ class RetrieverAgent(BaseAgent):
                     if target is None:
                         continue
                     # Add to task queue only if not already there and not picked up
-                    if target not in self.task_queue and target in self.known_objects:
+                    if target not in self.task_queue and (
+                        target in self.known_objects or target in self.dubious_objects
+                    ):
                         self.task_queue.append(target)
                         self._fruitless_explore_steps = 0
                         print(
@@ -200,14 +280,16 @@ class RetrieverAgent(BaseAgent):
                             details=f"Retrieve at {target}",
                             target_ids=[message.sender_id],
                         )
-                    elif target not in self.known_objects:
-                        # Coordinator told us about an object we don't know
-                        self.known_objects[target] = message.priority
+                    elif target not in self.known_objects and target not in self.dubious_objects:
+                        # Coordinator told us about an object we don't know —
+                        # treat as dubious (unconfirmed by own vision).
+                        self.dubious_objects[target] = message.priority
+                        self.dubious_objects_step[target] = self.model.current_step
                         if target not in self.task_queue:
                             self.task_queue.append(target)
                         print(
                             f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
-                            f"queued unknown task {target}"
+                            f"queued unknown task {target} (dubious)"
                         )
 
             elif isinstance(message, TaskStatusMessage):
@@ -233,8 +315,10 @@ class RetrieverAgent(BaseAgent):
 
             elif isinstance(message, RetrieverEventMessage):
                 # React to "object_spotted" and "cargo_dropped" broadcasts from
-                # PEER retrievers.  Add the object to known_objects so P4 (or P3b
-                # opportunistic) can self-assign to it in the next decide phase.
+                # PEER retrievers.  Peer-reported objects are NOT trusted
+                # blindly — they go to dubious_objects by default.  The
+                # retriever will verify them when idle (P4b) or if no
+                # closer confirmed candidates exist.
                 if message.event_type not in ("object_spotted", "cargo_dropped"):
                     continue
                 peer_id = message.sender_id
@@ -246,18 +330,19 @@ class RetrieverAgent(BaseAgent):
                 obj_pos = message.object_position
                 if obj_pos is None:
                     continue
-                # Only insert if not already known and not tombstoned as gone
+                # Only insert if not already known/dubious and not tombstoned
                 if (
                     obj_pos not in self.known_objects
+                    and obj_pos not in self.dubious_objects
                     and message.timestamp > self.known_objects_cleared.get(obj_pos, -1)
                 ):
                     obc = getattr(self, "objects_being_collected", None)
                     if obc is None or obj_pos not in obc:
-                        self.known_objects[obj_pos] = 1.0
-                        self.known_objects_step[obj_pos] = message.timestamp
+                        self.dubious_objects[obj_pos] = 1.0
+                        self.dubious_objects_step[obj_pos] = message.timestamp
                         print(
                             f"{self.tag} PEER-SPOT: learned object {obj_pos} "
-                            f"from full peer retriever {peer_id} — adding to known_objects"
+                            f"from peer retriever {peer_id} — adding as dubious"
                         )
 
     # ------------------------------------------------------------------
@@ -343,7 +428,10 @@ class RetrieverAgent(BaseAgent):
             if self.task_queue:
                 next_target = self.task_queue[0]
                 # Skip if object is no longer in our knowledge base
-                if next_target not in self.known_objects:
+                if (
+                    next_target not in self.known_objects
+                    and next_target not in self.dubious_objects
+                ):
                     self.task_queue.pop(0)
                     # Don't return — fall through to P4 so the retriever
                     # immediately self-assigns or explores instead of sitting
@@ -393,6 +481,47 @@ class RetrieverAgent(BaseAgent):
             if (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP) and self._try_self_assign_visible():
                 self._fruitless_explore_steps = 0
                 return  # claimed something, P3 will handle it next step
+
+            # ---- P4b: Check dubious objects when completely idle ----
+            # Before exploring blindly, try to verify a dubious object.
+            # Purge dubious entries that have been tombstoned or re-confirmed.
+            self.dubious_objects = {
+                pos: val
+                for pos, val in self.dubious_objects.items()
+                if pos not in self.known_objects
+                and self.known_objects_cleared.get(pos, -1) < self.dubious_objects_step.get(pos, 0)
+            }
+            self.dubious_objects_step = {
+                pos: s
+                for pos, s in self.dubious_objects_step.items()
+                if pos in self.dubious_objects
+            }
+            if self.dubious_objects and self.carrying_objects == 0:
+                dub_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                # Pick the closest dubious object
+                closest_dub = min(
+                    self.dubious_objects.keys(),
+                    key=lambda p: abs(p[0] - dub_pos[0]) + abs(p[1] - dub_pos[1]),
+                )
+                dub_dist = abs(closest_dub[0] - dub_pos[0]) + abs(closest_dub[1] - dub_pos[1])
+                # Claim it for verification
+                can_claim = self.model.comm_manager.try_claim_object(
+                    closest_dub, self.unique_id, self.model.current_step, dub_dist, self.energy
+                )
+                if can_claim:
+                    # Promote back to known_objects for the task queue
+                    self.known_objects[closest_dub] = self.dubious_objects.pop(closest_dub)
+                    self.known_objects_step[closest_dub] = self.dubious_objects_step.pop(
+                        closest_dub, self.model.current_step
+                    )
+                    self.task_queue.append(closest_dub)
+                    self._fruitless_explore_steps = 0
+                    print(
+                        f"{self.tag} DUBIOUS-CHECK: verifying {closest_dub} "
+                        f"dist={dub_dist} (no other tasks)"
+                    )
+                    return
+
             # No objects to claim — enter exploration
             import numpy as _np_p4
 
@@ -519,9 +648,17 @@ class RetrieverAgent(BaseAgent):
             if obj_pos in peer_queued:
                 continue
             dist = abs(obj_pos[0] - my_pos[0]) + abs(obj_pos[1] - my_pos[1])
-            # Scan ALL known objects — not limited to vision_radius.
-            # The retriever uses its full accumulated knowledge so it never idles
-            # when objects it has heard about from peers are still waiting.
+            # Cap: objects beyond half the map dimension are dubious — demote
+            # them instead of self-assigning.  The retriever will only go
+            # verify them when completely idle (no closer options).
+            _max_dim = max(self.model.grid.width, self.model.grid.height)
+            _half_map = _max_dim // 2
+            if dist > _half_map:
+                # Demote to dubious (keep original step timestamp)
+                if obj_pos not in self.dubious_objects:
+                    self.dubious_objects[obj_pos] = self.known_objects[obj_pos]
+                    self.dubious_objects_step[obj_pos] = self.known_objects_step.get(obj_pos, 0)
+                continue
             candidates.append((dist, obj_pos))
 
         if not candidates:
@@ -678,6 +815,12 @@ class RetrieverAgent(BaseAgent):
                 # doing nothing while the centroid barely shifts).
                 if arrived or very_close:
                     self.unreachable_targets[self._explore_target] = self.model.current_step
+                # Preserve the direction of the old target so momentum
+                # carries over to the next frontier selection.  Without
+                # this the momentum bonus is lost when _explore_target is
+                # cleared, causing the agent to flip back toward already-
+                # explored territory.
+                self._last_explore_target = self._explore_target
                 self._explore_target = None
 
         # Force immediate retarget when stuck next to another agent that is
@@ -798,9 +941,17 @@ class RetrieverAgent(BaseAgent):
             if self._SMART_EXPLORE:
                 from backend.algorithms.exploration import FrontierExplorer
 
+                # In map_known mode, obstacles/warehouses are pre-filled
+                # into local_map.  Use vision_explored==0 as "unexplored"
+                # so frontiers are cells adjacent to not-yet-scanned areas
+                # (objects can only be discovered in unseen cells).
+                _is_mk = getattr(self.model, "map_known", False)
+                _unexp = (self.vision_explored == 0) if _is_mk else None
+
                 frontiers = FrontierExplorer.find_frontiers(
                     self.local_map,
                     min_cluster_size=1,
+                    unexplored_mask=_unexp,
                 )
                 if frontiers:
                     # Filter out warehouse cells, unwalkable centroids,
@@ -959,9 +1110,14 @@ class RetrieverAgent(BaseAgent):
                         # Dampen momentum after 6 steps on the same target
                         # so stale unreachable targets lose their bonus and
                         # other frontiers can win on raw utility.
-                        _momentum_target = (
-                            self._explore_target if self._explore_steps <= 6 else None
-                        )
+                        # Use _last_explore_target as fallback when the
+                        # current target was just cleared (arrived / very_close)
+                        # so the agent keeps pushing in the same direction.
+                        _momentum_target = self._explore_target
+                        if _momentum_target is None:
+                            _momentum_target = getattr(self, "_last_explore_target", None)
+                        if _momentum_target is not None and self._explore_steps > 6:
+                            _momentum_target = None
                         best = FrontierExplorer.select_best_frontier(
                             valid,
                             pos_tuple,
@@ -1584,6 +1740,7 @@ class RetrieverAgent(BaseAgent):
                 self.known_objects.pop(pos_tuple, None)
                 self.known_objects_step.pop(pos_tuple, None)
                 self.known_objects_cleared[pos_tuple] = self.model.current_step
+                self._confirmed_gone.add(pos_tuple)
                 # Update local_map so we don't broadcast a stale OBJECT cell
                 self.local_map[pos_tuple[1], pos_tuple[0]] = CellType.FREE
 
@@ -1616,6 +1773,7 @@ class RetrieverAgent(BaseAgent):
                 self.known_objects.pop(pos_tuple, None)
                 self.known_objects_step.pop(pos_tuple, None)
                 self.known_objects_cleared[pos_tuple] = self.model.current_step
+                self._confirmed_gone.add(pos_tuple)
                 self.local_map[pos_tuple[1], pos_tuple[0]] = CellType.FREE
             print(f"{self.tag} PICKUP: object gone at {pos_tuple}")
             self.state = AgentState.EXPLORING

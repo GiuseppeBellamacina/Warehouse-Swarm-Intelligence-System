@@ -3,7 +3,7 @@ Base agent class with common functionality
 """
 
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -131,6 +131,10 @@ class BaseAgent(Agent):
         self.known_objects_step: Dict[Tuple, int] = {}
         # Tombstone: step at which we (or a peer) last confirmed a position is NOT an object
         self.known_objects_cleared: Dict[Tuple, int] = {}
+        # Positions confirmed gone (pickup, vision, or relay) — for tombstone relay filtering.
+        # Only positions with CONFIRMED removal are propagated via MapDataMessage;
+        # local-only tombstones (e.g. coordinator task assignment) are not propagated.
+        self._confirmed_gone: Set[Tuple[int, int]] = set()
 
         # Last-known positions of retrievers, learned via message relay
         # {retriever_id: (x, y)} — re-broadcast so every agent is a relay
@@ -317,6 +321,7 @@ class BaseAgent(Agent):
                     self.known_objects[pos] = 1.0
                     self.known_objects_step[pos] = self.model.current_step
                     self.known_objects_cleared.pop(pos, None)  # re-seen: remove tombstone
+                    self._confirmed_gone.discard(pos)  # no longer confirmed gone
                 else:
                     # Direct vision confirms this cell is NOT an object right now
                     pos = (x, y)
@@ -324,6 +329,7 @@ class BaseAgent(Agent):
                         self.known_objects.pop(pos, None)
                         self.known_objects_step.pop(pos, None)
                         self.known_objects_cleared[pos] = self.model.current_step
+                        self._confirmed_gone.add(pos)  # vision-confirmed gone
                     elif self.known_objects_cleared.get(pos, -1) < self.model.current_step:
                         self.known_objects_cleared[pos] = self.model.current_step
 
@@ -423,9 +429,25 @@ class BaseAgent(Agent):
             return 0
 
         # Extract explored cells from local map (raw topology).
-        # Object tracking is handled exclusively via the known_objects dict
-        # which carries per-object timestamps for proper tombstone semantics.
-        explored_cells = MapSharingSystem.extract_explored_cells(self.local_map)
+        # OBJECT cells are NEVER shared via explored_cells — they propagate
+        # exclusively through the known_objects dict which carries per-item
+        # timestamps and respects tombstones.  Sending OBJECT in topology
+        # causes stale cells to persist indefinitely in recipients' local_maps
+        # (apply_shared_map_data only writes to UNKNOWN cells, so a ghost
+        # OBJECT can never be corrected back to FREE via topology sharing).
+        _OBJ_INT = int(CellType.OBJECT)
+        _FREE_INT = int(CellType.FREE)
+        raw_cells = MapSharingSystem.extract_explored_cells(self.local_map)
+        explored_cells = []
+        for x, y, ct in raw_cells:
+            if ct == _OBJ_INT:
+                explored_cells.append((x, y, _FREE_INT))
+                # Also fix own local_map for entries no longer in known_objects:
+                # known_objects is the authoritative source for object presence.
+                if (x, y) not in self.known_objects:
+                    self.local_map[y, x] = CellType.FREE
+            else:
+                explored_cells.append((x, y, ct))
         cs = self.model.current_step
 
         # Create message — carry full knowledge with Stamped timestamps so every
@@ -441,6 +463,14 @@ class BaseAgent(Agent):
             if cs - step <= self._explore_target_ttl:
                 _et[aid] = Stamped(tuple(pos), step)
 
+        # Build tombstone relay: only for positions that were actual objects,
+        # and that are no longer in known_objects (confirmed gone).
+        _cleared_relay = {
+            pos: Stamped(None, step)
+            for pos, step in self.known_objects_cleared.items()
+            if pos in self._confirmed_gone and pos not in self.known_objects
+        }
+
         message = MapDataMessage(
             sender_id=self.unique_id or 0,
             timestamp=cs,
@@ -453,6 +483,7 @@ class BaseAgent(Agent):
                 pos: Stamped(None, getattr(self, "objects_being_collected_step", {}).get(pos, 0))
                 for pos in getattr(self, "objects_being_collected", [])
             },
+            known_objects_cleared=_cleared_relay,
             retriever_positions={
                 rid: Stamped(tuple(p), self.retriever_positions_step.get(rid, 0))
                 for rid, p in self.retriever_positions.items()
@@ -486,10 +517,18 @@ class BaseAgent(Agent):
         """
         for message in self._step_messages:
             if isinstance(message, MapDataMessage):
-                # Merge raw topology first
-                self.local_map = MapSharingSystem.apply_shared_map_data(
-                    self.local_map, message.explored_cells
-                )
+                # Merge raw topology first.
+                # Filter out any OBJECT cells — objects propagate exclusively
+                # via the known_objects dict.  Stale OBJECT cells in
+                # explored_cells would create permanent ghosts in local_map
+                # (apply_shared_map_data only writes to UNKNOWN cells).
+                _OBJ_CT = int(CellType.OBJECT)
+                _FREE_CT = int(CellType.FREE)
+                safe_cells = [
+                    (x, y, _FREE_CT) if ct == _OBJ_CT else (x, y, ct)
+                    for x, y, ct in message.explored_cells
+                ]
+                self.local_map = MapSharingSystem.apply_shared_map_data(self.local_map, safe_cells)
                 self._map_version += 1
                 _WH_CELL_TYPES = (
                     CellType.WAREHOUSE,
@@ -522,12 +561,40 @@ class BaseAgent(Agent):
                         if step > my_obc_step.get(pos, -1):
                             my_obc.add(pos)
                             my_obc_step[pos] = step
-                    # Remove from known_objects when OBC entry is at least as recent
+                    # Remove from known_objects when OBC entry is at least as recent.
+                    # Do NOT create a tombstone here — the object is merely
+                    # "claimed", not confirmed gone.  If the retriever fails
+                    # (stuck, unreachable, released claim), the object is
+                    # still on the grid and must be re-discoverable via
+                    # relay or direct vision.  Only actual pickup (in
+                    # _try_pickup_object) should create tombstones.
                     if step >= self.known_objects_step.get(pos, -1):
                         self.known_objects.pop(pos, None)
                         self.known_objects_step.pop(pos, None)
-                        if step > self.known_objects_cleared.get(pos, -1):
-                            self.known_objects_cleared[pos] = step
+                        # Keep local_map consistent — the underlying terrain
+                        # is FREE; OBJECT was a transient overlay.  This
+                        # prevents stale OBJECT cells from leaking via
+                        # explored_cells or confusing the agent's own logic.
+                        if (
+                            0 <= pos[1] < self.local_map.shape[0]
+                            and 0 <= pos[0] < self.local_map.shape[1]
+                            and self.local_map[pos[1], pos[0]] == CellType.OBJECT
+                        ):
+                            self.local_map[pos[1], pos[0]] = CellType.FREE
+
+                # --- known_objects_cleared relay: Stamped(None, step), newest wins ---
+                # Propagate tombstones so ALL agents learn about picked-up objects.
+                for raw_pos, stamped in message.known_objects_cleared.items():
+                    pos = tuple(raw_pos)
+                    step = stamped.step if isinstance(stamped, Stamped) else int(stamped)
+                    if step > self.known_objects_cleared.get(pos, -1):
+                        self.known_objects_cleared[pos] = step
+                        self._confirmed_gone.add(pos)  # relay-confirmed gone
+                    # Remove from known_objects if tombstone is newer
+                    if step >= self.known_objects_step.get(pos, -1):
+                        if pos in self.known_objects:
+                            self.known_objects.pop(pos, None)
+                            self.known_objects_step.pop(pos, None)
 
                 # --- known_objects relay: Stamped(value=float, step), newest wins ---
                 for raw_pos, stamped in message.known_objects.items():
@@ -537,7 +604,11 @@ class BaseAgent(Agent):
                     if self.known_objects_cleared.get(pos, -1) >= step:
                         continue
                     if step > self.known_objects_step.get(pos, -1):
-                        if my_obc is None or pos not in my_obc:
+                        # Block stale relays from BEFORE a known OBC claim,
+                        # but accept relays that re-confirmed the object
+                        # AFTER the claim (the claim may have failed).
+                        obc_step = my_obc_step.get(pos, -1) if my_obc_step else -1
+                        if step > obc_step:
                             self.known_objects[pos] = val
                             self.known_objects_step[pos] = step
 
@@ -1620,13 +1691,22 @@ class BaseAgent(Agent):
                     self.coordinator_positions_step[cid] = cs
 
     def step_communicate(self) -> None:
-        """Stage 1: Drain mailbox once, share map, process messages."""
-        # Drain mailbox exactly ONCE — subclasses must NOT call get_messages() again
+        """Stage 1: Drain mailbox, share map, process messages.
+
+        A second drain+process round picks up messages that earlier agents
+        (in the same model tick) sent during THEIR communicate phase.  This
+        lets tombstones and knowledge propagate faster through relay chains.
+        """
+        # Round 1: drain, share, process
         self._step_messages = self.model.comm_manager.get_messages(self.unique_id)
-        # Proactively share map data with all agents in communication radius
         self.communicate_with_nearby_agents()
-        # Process all received messages (subclasses extend this)
         self.process_received_messages()
+
+        # Round 2: drain new messages from agents that already stepped this tick
+        extra = self.model.comm_manager.get_messages(self.unique_id)
+        if extra:
+            self._step_messages = extra
+            self.process_received_messages()
 
     def step_decide(self) -> None:
         """Stage 2: Make decisions (implemented by subclasses)"""

@@ -191,6 +191,7 @@ class CoordinatorAgent(BaseAgent):
                         self.known_objects.pop(opos, None)
                         self.known_objects_step.pop(opos, None)
                         self.known_objects_cleared[opos] = self.model.current_step
+                        self._confirmed_gone.add(opos)
 
                 elif event in ("object_delivered", "idle"):
                     self.retriever_states[rid] = "idle"
@@ -685,6 +686,12 @@ class CoordinatorAgent(BaseAgent):
         # When no work pending → genuine exploration, NO centroid bias.
         # When work pending but near centroid → biased toward centroid.
         if self._SMART_EXPLORE:
+            # In map_known mode, obstacles/warehouses are pre-filled into
+            # local_map, so local_map==0 correctly represents "unvisited
+            # non-structure" cells.  Use vision_explored for the density
+            # filter so pre-filled structural cells don't inflate the
+            # "mostly explored" ratio.
+            _is_map_known = getattr(self.model, "map_known", False)
             unknown_mask = self.local_map == 0
             if _np.any(unknown_mask):
                 padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
@@ -710,7 +717,11 @@ class CoordinatorAgent(BaseAgent):
                         _r = 3
                         _y0, _y1 = max(0, _by - _r), min(_cH, _by + _r + 1)
                         _x0, _x1 = max(0, _bx - _r), min(_cW, _bx + _r + 1)
-                        _p = self.local_map[_y0:_y1, _x0:_x1]
+                        _p = (
+                            self.vision_explored[_y0:_y1, _x0:_x1]
+                            if _is_map_known
+                            else self.local_map[_y0:_y1, _x0:_x1]
+                        )
                         if _p.size == 0 or int(_np.count_nonzero(_p)) / _p.size <= 0.85:
                             _keep.append(_i)
                     if _keep:

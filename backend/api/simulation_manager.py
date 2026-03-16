@@ -453,15 +453,35 @@ class SimulationManager:
             (x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH
         ]
 
+        import numpy as np
+
         from backend.agents.base_agent import BaseAgent
+
+        _OBSTACLE_TYPES = {CellType.OBSTACLE}
 
         for agent in self.model.agents:
             if not isinstance(agent, BaseAgent):
                 continue
-            # Give each agent a nav_map — transposed copy of the full grid
-            # cell_types so A* knows all obstacles from the start.
-            # cell_types is [x, y]; nav_map must be [y, x] like local_map.
-            agent.nav_map = grid.cell_types.T.copy()
+            # Build a sanitized nav_map: only OBSTACLE and WAREHOUSE cells
+            # are revealed.  FREE / OBJECT cells stay UNKNOWN (0) so A*
+            # doesn't gain omniscient knowledge of walkable areas / object
+            # locations.  This gives A* wall-awareness without revealing
+            # anything beyond structural topology.
+            sanitized = np.zeros_like(agent.local_map)
+            for x in range(w):
+                for y in range(h):
+                    ct = CellType(grid.cell_types[x, y])
+                    if ct in _OBSTACLE_TYPES or ct in _WH:
+                        sanitized[y, x] = int(ct)
+            agent.nav_map = sanitized
+            # Also pre-fill obstacles + warehouses into local_map so
+            # frontier detection benefits from wall knowledge.
+            lm = agent.local_map
+            for x in range(w):
+                for y in range(h):
+                    ct = CellType(grid.cell_types[x, y])
+                    if ct in _OBSTACLE_TYPES or ct in _WH:
+                        lm[y, x] = int(ct)
             # Populate known_warehouses (avoid duplicates)
             existing = set(agent.known_warehouses)
             for wc in wh_cells:
