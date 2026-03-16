@@ -38,11 +38,24 @@ seguito che affermi la presenza dell'oggetto in quella cella viene rifiutato se 
 timestamp \`e anteriore al tombstone. Questo impedisce la re-inserzione di oggetti fantasma
 nella mappa condivisa.
 
-Inoltre, prima di trasmettere un \texttt{MapDataMessage}, l'agente esegue uno
-\textit{scrubbing} preventivo: ogni cella con tipo \texttt{OBJECT} che non corrisponde
-a un oggetto realmente presente sulla griglia viene declassata a \texttt{FREE} nel
-messaggio e nella propria mappa locale. Questo interrompe la catena di ritrasmissione
-di informazioni obsolete attraverso lo sciame.
+Oltre al tombstone passivo, il BaseAgent mantiene un insieme \texttt{\_confirmed\_gone}:
+ogni cella che l'agente ha scansionato e trovato vuota viene registrata in questo set.
+Quando deve costruire un \texttt{MapDataMessage}, l'agente esegue uno \textit{scrubbing}
+preventivo: ogni cella con tipo \texttt{OBJECT} che \`e in \texttt{\_confirmed\_gone}
+oppure non corrisponde a un oggetto realmente presente sulla griglia viene declassata a
+\texttt{FREE} nel messaggio e nella propria mappa locale. Questo interrompe la catena di
+ritrasmissione di informazioni obsolete attraverso lo sciame.
+
+\subsection{Redirect Relay $\to$ Dubious (solo Retriever)}
+
+Il \texttt{MapDataMessage} trasporta anche gli oggetti noti del mittente. Quando il
+BaseAgent li integra in \texttt{known\_objects}, il Retriever — nella propria
+implementazione di \texttt{process\_received\_messages} — intercetta questa operazione:
+prima di invocare \texttt{super()}, salva \texttt{\_known\_before = set(known\_objects)};
+subito dopo, sposta tutte le posizioni \textit{nuove} (aggiunte dal relay ma non viste
+direttamente) in \texttt{dubious\_objects}.  In questo modo solo la visione diretta
+costituisce conoscenza confermata, mentre le informazioni di relay sono trattate come
+indizi da verificare (Sezione~\ref{sec:dubious}).
 
 \section{Integrazione della Mappa Condivisa}
 

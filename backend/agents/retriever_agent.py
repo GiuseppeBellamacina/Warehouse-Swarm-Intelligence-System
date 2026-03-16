@@ -1060,16 +1060,23 @@ class RetrieverAgent(BaseAgent):
                         # Coverage callback: ratio of explored cells in
                         # a window around each frontier centroid.  Frontiers
                         # in largely-unseen areas get a higher score.
-                        # Blended approach: personal vision counts fully,
-                        # communicated terrain (local_map non-zero but
-                        # vision_explored=0) counts partially.
+                        #
+                        # map_known mode uses a purer signal: only vision-
+                        # scanned walkable cells count as explored.  Obstacle
+                        # cells (pre-filled in local_map) are excluded from
+                        # both numerator and denominator — they can never
+                        # contain objects, so they are irrelevant for coverage
+                        # and counting them inflates the ratio near dense
+                        # obstacle clusters, unfairly penalising those frontiers.
+                        #
+                        # map_unknown mode: blended approach, personal vision
+                        # counts fully, communicated terrain partially.
                         import numpy as np
 
                         _H, _W = self.local_map.shape
-                        # Communicated-cell weight — how much to count
-                        # terrain learned from peers vs personally seen.
-                        # Detect scout presence from nearby agents (no
-                        # global model access).
+                        _nav = self.nav_map  # None in map_unknown mode
+
+                        # Communicated-cell weight (map_unknown only).
                         _has_scouts = any(
                             getattr(a, "role", None) == "scout" for a in nearby_agents
                         )
@@ -1080,10 +1087,38 @@ class RetrieverAgent(BaseAgent):
                             y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
                             x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
                             vis = self.vision_explored[y0:y1, x0:x1]
-                            comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
-                            blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
-                            total = blended.size
-                            return float(np.sum(blended) / total) if total else 1.0
+                            if _is_mk and _nav is not None:
+                                # map_known: only walkable cells matter.
+                                # nav_map == 0 identifies free (walkable) cells.
+                                walkable = (_nav[y0:y1, x0:x1] == 0).astype(np.float32)
+                                total_w = float(np.sum(walkable))
+                                if total_w == 0:
+                                    return 1.0
+                                scanned_w = float(np.sum(vis.astype(np.float32) * walkable))
+                                return scanned_w / total_w
+                            else:
+                                # map_unknown: blended vision + communicated terrain
+                                comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
+                                blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
+                                total = blended.size
+                                return float(np.sum(blended) / total) if total else 1.0
+
+                        # In map_known mode, provide unknown_mass_at: the actual
+                        # count of walkable-but-unscanned cells around a frontier.
+                        # This replaces cluster_size for effective_size scoring and
+                        # gives a far more accurate picture of "how much is left to
+                        # scan" than just counting frontier boundary cells.
+                        def _unknown_mass_mk(fx: int, fy: int) -> int:
+                            r = 8
+                            y0, y1 = max(0, fy - r), min(_H, fy + r + 1)
+                            x0, x1 = max(0, fx - r), min(_W, fx + r + 1)
+                            walkable = _nav[y0:y1, x0:x1] == 0  # type: ignore[index]
+                            unscanned = self.vision_explored[y0:y1, x0:x1] == 0
+                            return int(np.sum(walkable & unscanned))
+
+                        _unknown_mass_cb = (
+                            _unknown_mass_mk if (_is_mk and _nav is not None) else None
+                        )
 
                         # Build global peer-target list for area division.
                         # Only include targets from non-retriever agents
@@ -1126,6 +1161,7 @@ class RetrieverAgent(BaseAgent):
                             explored_ratio_at=_explored_ratio,
                             all_peer_targets=_global_targets,
                             current_target=_momentum_target,
+                            unknown_mass_at=_unknown_mass_cb,
                         )
                         if best:
                             old_target = self._explore_target
