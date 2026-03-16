@@ -211,8 +211,7 @@ class ScoutAgent(BaseAgent):
             return (0, 0)
         zone_w = W / n_cols
         zone_h = H / n_rows
-        _is_mk = getattr(self.model, "map_known", False)
-        src = self.vision_explored if _is_mk else self.local_map
+        src = self.vision_explored
 
         # Collect (zone_index, unexplored_ratio, dist_from_agent) for every zone
         zones: List[Tuple[Tuple[int, int], float, float]] = []
@@ -382,18 +381,13 @@ class ScoutAgent(BaseAgent):
                 and self.last_seen_coordinator_pos
                 and self.model.current_step >= self._seek_cooldown_until
             ):
-                # In map_known mode, seek immediately — terrain is already known
-                # so finishing the current exploration path adds little value,
-                # whereas delivering object discoveries to the coordinator is
-                # critical for retriever assignment.
-                # In map_unknown mode, defer seek until the current exploration
-                # path completes — the terrain being discovered has high value.
-                _is_map_known = getattr(self.model, "map_known", False)
+                # Defer seek until the current exploration path completes —
+                # the cells being discovered have high value and should be
+                # completed before diverting to the coordinator.
 
                 # Decide whether to defer seek
                 _should_defer = (
-                    not _is_map_known
-                    and self.target_position is not None
+                    self.target_position is not None
                     and self._explore_target is not None
                     and not self._pending_seek_coordinator
                 )
@@ -407,7 +401,7 @@ class ScoutAgent(BaseAgent):
                     )
                     # Fall through to Priority 3 (keep moving toward target)
                 elif (
-                    self._pending_seek_coordinator or self.target_position is None or _is_map_known
+                    self._pending_seek_coordinator or self.target_position is None
                 ):
                     # Current path completed (or no path) — now seek coordinator
                     self._pending_seek_coordinator = False
@@ -487,36 +481,27 @@ class ScoutAgent(BaseAgent):
         for pos in [p for p, s in self.unreachable_targets.items() if current_step - s >= 200]:
             del self.unreachable_targets[pos]
 
-        # When map_known, use vision_explored as the "unexplored" mask so
-        # that cells not yet visually scanned still appear as frontiers.
-        _unexp_mask = None
-        if getattr(self.model, "map_known", False):
-            _unexp_mask = self.vision_explored == 0  # True where NOT scanned
-
         frontiers = FrontierExplorer.find_frontiers(
             self.local_map,
             min_cluster_size=self._MIN_FRONTIER_CLUSTER_SIZE,
-            unexplored_mask=_unexp_mask,
         )
         # If the high threshold filtered everything out, retry with minimum=1
         # so the scout still has *something* to explore.
         if not frontiers:
             frontiers = FrontierExplorer.find_frontiers(
-                self.local_map, min_cluster_size=1, unexplored_mask=_unexp_mask
+                self.local_map, min_cluster_size=1,
             )
 
         # Filter blacklisted / stale frontiers and recently-reached targets.
-        _is_map_known = getattr(self.model, "map_known", False)
-        _filt_map = self.local_map
         _filt_vis = self.vision_explored
-        _filt_H, _filt_W = _filt_map.shape
+        _filt_H, _filt_W = self.local_map.shape
 
         def _zone_ratio(fx: int, fy: int) -> float:
             """Explored ratio in 11×11 window around (fx, fy)."""
             r = 5
             y0, y1 = max(0, fy - r), min(_filt_H, fy + r + 1)
             x0, x1 = max(0, fx - r), min(_filt_W, fx + r + 1)
-            p = _filt_vis[y0:y1, x0:x1] if _is_map_known else _filt_map[y0:y1, x0:x1]
+            p = _filt_vis[y0:y1, x0:x1]
             return int(np.count_nonzero(p)) / p.size if p.size else 1.0
 
         valid_frontiers = []
@@ -527,17 +512,15 @@ class ScoutAgent(BaseAgent):
                 continue
             if not self.model.grid.is_walkable(*frontier_pos):
                 continue
-            # In unknown mode, reject frontiers in well-explored zones
-            if not _is_map_known and _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
+            # Reject frontiers in well-explored zones
+            if _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
                 continue
             valid_frontiers.append((frontier_pos, cluster_size))
 
         # Filter tiny frontiers (size 1-2) when larger ones (≥5) exist.
         # Tiny frontiers are often isolated single-cell corners that waste
         # the scout's time when large unexplored areas exist elsewhere.
-        # Only applied in map_unknown mode; in map_known, late-game
-        # frontiers are naturally small (scattered unscanned cells).
-        if valid_frontiers and not _is_map_known:
+        if valid_frontiers:
             large_frontiers = [f for f in valid_frontiers if f[1] >= 5]
             if large_frontiers:
                 valid_frontiers = large_frontiers
@@ -562,14 +545,11 @@ class ScoutAgent(BaseAgent):
         else:
             frontiers_to_use = valid_frontiers
 
-        # ── Zone-based macro routing (map_known only) ──
-        # In map_known, all frontiers are visible globally — zone routing
-        # hard-filters frontiers to the most unexplored block so the scout
-        # doesn't nibble residual edges.
-        # In unknown mode, zone routing is not used: the natural frontier
-        # following + _zone_ratio filter is sufficient.
+        # ── Zone-based macro routing ──
+        # Zone routing hard-filters frontiers to the most unexplored
+        # block so the scout doesn't nibble residual edges.
         _zone_waypoint: Optional[Tuple[int, int]] = None
-        if self._ZONE_DIVISIONS > 1 and _is_map_known:
+        if self._ZONE_DIVISIONS > 1:
             new_zone = self._select_target_zone(my_pos)
             if new_zone is not None and new_zone != self._current_zone:
                 old_label = str(self._current_zone) if self._current_zone else "None"
@@ -616,10 +596,10 @@ class ScoutAgent(BaseAgent):
                             int(np.mean(unk_ys)) + zy0,
                         )
 
-        # ── Far-frontier filter (unknown only) ──
+        # ── Far-frontier filter ──
         # Prefer frontiers that require actual travel so the scout pushes
         # into new territory rather than hopping between tiny nearby clusters.
-        if frontiers_to_use and self._FAR_FRONTIER_ENABLED and not _is_map_known:
+        if frontiers_to_use and self._FAR_FRONTIER_ENABLED:
             min_dist = max(self.vision_radius * 2, 8)
             far_frontiers = [
                 f
@@ -645,15 +625,14 @@ class ScoutAgent(BaseAgent):
             # frontiers in poorly-explored zones of the grid.
             _local_map = self.local_map
             _vis_exp = self.vision_explored
-            _is_map_known = getattr(self.model, "map_known", False)
             _H, _W = _local_map.shape
 
             def _explored_ratio(x: int, y: int) -> float:
                 """Return the explored ratio in a window around (x, y)."""
-                r = 3 if _is_map_known else 5
+                r = 5
                 y0, y1 = max(0, y - r), min(_H, y + r + 1)
                 x0, x1 = max(0, x - r), min(_W, x + r + 1)
-                patch = _vis_exp[y0:y1, x0:x1] if _is_map_known else _local_map[y0:y1, x0:x1]
+                patch = _vis_exp[y0:y1, x0:x1]
                 total = patch.size
                 if total == 0:
                     return 1.0
@@ -665,12 +644,8 @@ class ScoutAgent(BaseAgent):
                 r = 7
                 y0, y1 = max(0, y - r), min(_H, y + r + 1)
                 x0, x1 = max(0, x - r), min(_W, x + r + 1)
-                if _is_map_known:
-                    patch = _vis_exp[y0:y1, x0:x1]
-                    return int(patch.size - np.count_nonzero(patch))
-                else:
-                    patch = _local_map[y0:y1, x0:x1]
-                    return int(np.count_nonzero(patch == 0))
+                patch = _vis_exp[y0:y1, x0:x1]
+                return int(patch.size - np.count_nonzero(patch))
 
             # Build global peer-target list for area division.
             # Exclude agents currently in comm range — handled by nearby_positions.
@@ -691,7 +666,7 @@ class ScoutAgent(BaseAgent):
                 explored_ratio_at=_explored_ratio,
                 all_peer_targets=_global_targets,
                 current_target=_zone_waypoint or self.target_position,
-                unknown_mass_at=_unknown_mass if not _is_map_known else None,
+                unknown_mass_at=_unknown_mass,
             )
             if best:
                 # Shift target deeper into the unexplored region: compute
@@ -703,7 +678,7 @@ class ScoutAgent(BaseAgent):
                 _dy1 = min(_H, _fy + _deep_r + 1)
                 _dx0 = max(0, _fx - _deep_r)
                 _dx1 = min(_W, _fx + _deep_r + 1)
-                _src = _vis_exp if _is_map_known else _local_map
+                _src = self.local_map
                 _win = _src[_dy0:_dy1, _dx0:_dx1]
                 _unk_rows, _unk_cols = np.where(_win == 0)
                 if len(_unk_rows) > 3:
@@ -730,10 +705,10 @@ class ScoutAgent(BaseAgent):
                 self.state = AgentState.MOVING_TO_TARGET
                 return
 
-        # Zone centroid fallback (map_known only): if zone routing is active
+        # Zone centroid fallback: if zone routing is active
         # but no frontier was selected, head to the centroid of unexplored
         # cells inside the target zone.
-        if self._current_zone is not None and self._ZONE_DIVISIONS > 1 and _is_map_known:
+        if self._current_zone is not None and self._ZONE_DIVISIONS > 1:
             zx0, zy0, zx1, zy1 = self._get_zone_bounds(self._current_zone)
             zone_patch = self.vision_explored[zy0:zy1, zx0:zx1]
             unk_ys, unk_xs = np.where(zone_patch == 0)
@@ -800,18 +775,14 @@ class ScoutAgent(BaseAgent):
         )
 
         # Find all explored cells (local_map != UNKNOWN) that are stale.
-        # When map_known, unscanned cells (vision_explored==0) take ABSOLUTE
-        # priority — the scout must scan all terrain before re-patrolling.
-        is_map_known = getattr(self.model, "map_known", False)
-        if is_map_known:
-            unseen_mask = (self.local_map != 0) & (self.vision_explored == 0)
-            if np.any(unseen_mask):
-                # Only target never-scanned cells; skip stale re-patrol
-                stale_mask = unseen_mask
-            else:
-                # All cells scanned — normal stale coverage patrol
-                stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
+        # Unscanned cells (vision_explored==0) take ABSOLUTE priority —
+        # the scout must scan all terrain before re-patrolling.
+        unseen_mask = (self.local_map != 0) & (self.vision_explored == 0)
+        if np.any(unseen_mask):
+            # Only target never-scanned cells; skip stale re-patrol
+            stale_mask = unseen_mask
         else:
+            # All cells scanned — normal stale coverage patrol
             stale_mask = (self.local_map != 0) & (self._coverage_step <= threshold_step)
         stale_ys, stale_xs = np.where(stale_mask)
 
@@ -887,13 +858,9 @@ class ScoutAgent(BaseAgent):
         the centroid of unknown cells sits in the bottom half).
 
         Uses numpy vectorisation for performance.
-        When map_known, uses vision_explored==0 instead of local_map==0.
         """
         # Boolean mask: cells considered "unknown" for exploration purposes
-        if getattr(self.model, "map_known", False):
-            unknown_mask = self.vision_explored == 0
-        else:
-            unknown_mask = self.local_map == 0
+        unknown_mask = self.local_map == 0
         if not np.any(unknown_mask):
             self.target_position = None
             self.state = AgentState.EXPLORING
@@ -1042,10 +1009,7 @@ class ScoutAgent(BaseAgent):
                 else:
                     # Last resort: move toward the centroid of all unscanned cells
                     # — purely directional, no randomness.
-                    if getattr(self.model, "map_known", False):
-                        unknown_ys, unknown_xs = np.where(self.vision_explored == 0)
-                    else:
-                        unknown_ys, unknown_xs = np.where(self.local_map == 0)
+                    unknown_ys, unknown_xs = np.where(self.local_map == 0)
                     if len(unknown_xs) > 0:
                         cx = int(np.mean(unknown_xs))
                         cy = int(np.mean(unknown_ys))

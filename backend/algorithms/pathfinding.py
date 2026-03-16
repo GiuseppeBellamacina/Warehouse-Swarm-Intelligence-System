@@ -109,16 +109,7 @@ class AStarPathfinder:
                     continue
             if forbidden_pos and (nx, ny) in forbidden_pos:
                 continue
-            # Fog-of-war penalty: UNKNOWN cells in the agent's local map
-            # are walkable but cost more, so A* strongly prefers charted
-            # routes and only uses unknown territory when no better path
-            # exists.  Without this penalty, A* plans "straight line"
-            # paths through fog that frequently hit obstacles, causing
-            # repeated replans and worse total distance.
-            actual_cost = cost
-            if agent_local_map is not None and int(agent_local_map[ny, nx]) == CellType.UNKNOWN:
-                actual_cost = cost + 5.0
-            neighbors.append(((nx, ny), actual_cost))
+            neighbors.append(((nx, ny), cost))
 
         return neighbors
 
