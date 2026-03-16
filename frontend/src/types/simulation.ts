@@ -36,6 +36,8 @@ export interface Agent {
   known_objects?: Position[];
   /** Far-away objects the retriever is unsure about (will verify only when idle) */
   dubious_objects?: Position[];
+  /** Dubious objects promoted to the task queue — agent is actively travelling to verify */
+  verifying_objects?: Position[];
   /** Warehouse cells this agent knows about */
   known_warehouses?: Position[];
 }

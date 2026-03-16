@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 from backend.agents.base_agent import AgentState, BaseAgent, agent_tag, pos_to_tuple
 from backend.algorithms.pathfinding import AStarPathfinder
 from backend.core.communication import (
+    MapDataMessage,
     RetrieverEventMessage,
+    Stamped,
     TaskAssignmentMessage,
     TaskStatusMessage,
 )
@@ -142,6 +144,17 @@ class RetrieverAgent(BaseAgent):
         self.dubious_objects: Dict[Tuple[int, int], float] = {}
         self.dubious_objects_step: Dict[Tuple[int, int], int] = {}
 
+        # Positions this retriever personally picked up (own hand → own carry).
+        # Used to permanently reject stale relay info about already-delivered
+        # objects, regardless of the relay timestamp.
+        self._personally_collected: Dict[Tuple[int, int], int] = {}
+
+        # Positions currently being verified: promoted from dubious to the task
+        # queue but not yet confirmed by direct vision.  Used by the UI to render
+        # these with a distinct "going to check" symbol instead of the normal
+        # confirmed-object marker.
+        self._dubious_being_verified: Set[Tuple[int, int]] = set()
+
     # ------------------------------------------------------------------
     # Sense
     # ------------------------------------------------------------------
@@ -211,12 +224,39 @@ class RetrieverAgent(BaseAgent):
         # Everything the base-class relay just added to known_objects that
         # was NOT already known (from own vision) is unconfirmed hearsay.
         _relay_added = set(self.known_objects.keys()) - _known_before
+        # Collect positions we're rejecting due to personal/tombstone knowledge
+        # so we can proactively correct all MapDataMessage senders this step.
+        _relay_rejected_positions: set = set()
         for pos in _relay_added:
             val = self.known_objects.pop(pos)
             s = self.known_objects_step.pop(pos, 0)
+            if pos in self._personally_collected:
+                # We collected this object ourselves — reject the stale relay
+                # and make sure our tombstone is at least as fresh as the pickup.
+                self.known_objects_cleared[pos] = max(
+                    self.known_objects_cleared.get(pos, -1), self._personally_collected[pos]
+                )
+                self._confirmed_gone.add(pos)
+                _relay_rejected_positions.add(pos)
+                print(
+                    f"{self.tag} REJECT-RELAY: {pos} personally collected "
+                    f"at step {self._personally_collected[pos]}, relaying tombstone"
+                )
+                continue
             if pos not in self.dubious_objects:
                 self.dubious_objects[pos] = val
                 self.dubious_objects_step[pos] = s
+
+        # Send corrective tombstone to all MapDataMessage senders that injected
+        # stale object info we just rejected.
+        if _relay_rejected_positions:
+            _map_senders = [
+                m.sender_id
+                for m in self._step_messages
+                if isinstance(m, MapDataMessage) and m.sender_id != self.unique_id
+            ]
+            if _map_senders:
+                self._send_tombstone_correction(_map_senders, _relay_rejected_positions)
 
         # Prune dubious objects invalidated by tombstones or now in known_objects.
         # Only tombstones at least as recent as the dubious entry count.
@@ -283,14 +323,20 @@ class RetrieverAgent(BaseAgent):
                     elif target not in self.known_objects and target not in self.dubious_objects:
                         # Coordinator told us about an object we don't know —
                         # treat as dubious (unconfirmed by own vision).
-                        self.dubious_objects[target] = message.priority
-                        self.dubious_objects_step[target] = self.model.current_step
-                        if target not in self.task_queue:
-                            self.task_queue.append(target)
-                        print(
-                            f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
-                            f"queued unknown task {target} (dubious)"
-                        )
+                        if target in self._personally_collected:
+                            print(
+                                f"{self.tag} REJECT-ASSIGN: {target} already personally "
+                                f"collected at step {self._personally_collected[target]}"
+                            )
+                        else:
+                            self.dubious_objects[target] = message.priority
+                            self.dubious_objects_step[target] = self.model.current_step
+                            if target not in self.task_queue:
+                                self.task_queue.append(target)
+                            print(
+                                f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
+                                f"queued unknown task {target} (dubious)"
+                            )
 
             elif isinstance(message, TaskStatusMessage):
                 # Peer retriever broadcast its queue after a self/peer-assign.
@@ -331,11 +377,20 @@ class RetrieverAgent(BaseAgent):
                 if obj_pos is None:
                     continue
                 # Only insert if not already known/dubious and not tombstoned
-                if (
-                    obj_pos not in self.known_objects
-                    and obj_pos not in self.dubious_objects
-                    and message.timestamp > self.known_objects_cleared.get(obj_pos, -1)
-                ):
+                _is_tombstoned = (
+                    obj_pos in self._personally_collected
+                    or message.timestamp <= self.known_objects_cleared.get(obj_pos, -1)
+                )
+                if _is_tombstoned:
+                    # We know this object is gone — correct the stale informer
+                    # immediately so they stop re-broadcasting it.
+                    self._send_tombstone_correction([peer_id], {obj_pos})
+                    print(
+                        f"{self.tag} REJECT-SPOT: {obj_pos} already gone "
+                        f"(tombstone step={self.known_objects_cleared.get(obj_pos,-1)}, "
+                        f"msg step={message.timestamp}), correcting peer {peer_id}"
+                    )
+                elif obj_pos not in self.known_objects and obj_pos not in self.dubious_objects:
                     obc = getattr(self, "objects_being_collected", None)
                     if obc is None or obj_pos not in obc:
                         self.dubious_objects[obj_pos] = 1.0
@@ -504,7 +559,9 @@ class RetrieverAgent(BaseAgent):
                     key=lambda p: abs(p[0] - dub_pos[0]) + abs(p[1] - dub_pos[1]),
                 )
                 dub_dist = abs(closest_dub[0] - dub_pos[0]) + abs(closest_dub[1] - dub_pos[1])
-                # Claim it for verification
+                # Attempt to claim and head there for verification.
+                # Whether the object is still on the grid will be discovered
+                # on arrival via _try_pickup_object — no omniscient grid check here.
                 can_claim = self.model.comm_manager.try_claim_object(
                     closest_dub, self.unique_id, self.model.current_step, dub_dist, self.energy
                 )
@@ -515,6 +572,7 @@ class RetrieverAgent(BaseAgent):
                         closest_dub, self.model.current_step
                     )
                     self.task_queue.append(closest_dub)
+                    self._dubious_being_verified.add(closest_dub)
                     self._fruitless_explore_steps = 0
                     print(
                         f"{self.tag} DUBIOUS-CHECK: verifying {closest_dub} "
@@ -1777,6 +1835,10 @@ class RetrieverAgent(BaseAgent):
                 self.known_objects_step.pop(pos_tuple, None)
                 self.known_objects_cleared[pos_tuple] = self.model.current_step
                 self._confirmed_gone.add(pos_tuple)
+                # Record personal pickup so future relay info about this
+                # position is permanently rejected regardless of timestamp.
+                self._personally_collected[pos_tuple] = self.model.current_step
+                self._dubious_being_verified.discard(pos_tuple)
                 # Update local_map so we don't broadcast a stale OBJECT cell
                 self.local_map[pos_tuple[1], pos_tuple[0]] = CellType.FREE
 
@@ -1810,6 +1872,7 @@ class RetrieverAgent(BaseAgent):
                 self.known_objects_step.pop(pos_tuple, None)
                 self.known_objects_cleared[pos_tuple] = self.model.current_step
                 self._confirmed_gone.add(pos_tuple)
+                self._dubious_being_verified.discard(pos_tuple)
                 self.local_map[pos_tuple[1], pos_tuple[0]] = CellType.FREE
             print(f"{self.tag} PICKUP: object gone at {pos_tuple}")
             self.state = AgentState.EXPLORING
@@ -1818,6 +1881,30 @@ class RetrieverAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Communication helpers
     # ------------------------------------------------------------------
+
+    def _send_tombstone_correction(self, recipient_ids: List[int], positions: set) -> None:
+        """Send a minimal MapDataMessage carrying tombstones for *positions*
+        directly to *recipient_ids* so they discard stale object info immediately.
+        Does NOT consume energy — this is a lightweight correction, not a full
+        map share.
+        """
+        if not recipient_ids or not positions:
+            return
+        cs = self.model.current_step
+        cleared_payload = {
+            pos: Stamped(None, self.known_objects_cleared.get(pos, cs)) for pos in positions
+        }
+        msg = MapDataMessage(
+            sender_id=self.unique_id or 0,
+            timestamp=cs,
+            explored_cells=[],
+            known_objects_cleared=cleared_payload,
+        )
+        self.model.comm_manager.send_message(msg, recipient_ids)
+        print(
+            f"{self.tag} TOMBSTONE-CORRECTION: sent to {recipient_ids} "
+            f"for positions {positions}"
+        )
 
     def _broadcast_spotted_to_peers(self, nearby_agents: Optional[List] = None) -> None:
         """

@@ -825,16 +825,28 @@ class WarehouseModel(Model):
                     if ve is not None:
                         vision_flat = ve.flatten().tolist()
 
-                # Known objects for this agent
+                # Positions being actively verified (promoted from dubious)
+                _verifying: set = getattr(agent, "_dubious_being_verified", set())
+
+                # Known objects for this agent — exclude verifying positions so
+                # they render with the distinct "checking" symbol instead.
                 agent_known_objects = [
                     {"x": int(pos[0]), "y": int(pos[1])}
                     for pos in getattr(agent, "known_objects", {}).keys()
+                    if pos not in _verifying
                 ]
 
                 # Dubious objects (retriever-only: too far to self-assign)
                 agent_dubious_objects = [
                     {"x": int(pos[0]), "y": int(pos[1])}
                     for pos in getattr(agent, "dubious_objects", {}).keys()
+                ]
+
+                # Objects being verified (dubious promoted to task queue)
+                agent_verifying_objects = [
+                    {"x": int(pos[0]), "y": int(pos[1])}
+                    for pos in _verifying
+                    if pos in getattr(agent, "known_objects", {})
                 ]
 
                 # Known warehouses for this agent
@@ -866,6 +878,7 @@ class WarehouseModel(Model):
                     "object_explored": vision_flat,
                     "known_objects": agent_known_objects,
                     "dubious_objects": agent_dubious_objects,
+                    "verifying_objects": agent_verifying_objects,
                     "known_warehouses": agent_known_warehouses,
                 }
                 agents_data.append(agent_data)
