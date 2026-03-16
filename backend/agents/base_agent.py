@@ -275,10 +275,27 @@ class BaseAgent(Agent):
         Args:
             visible_cells: List of visible (x, y, cell_type) tuples
         """
+        _path_set = set(self.path) if self.path else set()
+        _path_invalidated = False
+
         for x, y, cell_type in visible_cells:
             if 0 <= y < self.local_map.shape[0] and 0 <= x < self.local_map.shape[1]:
+                old_type = int(self.local_map[y, x])
                 self.local_map[y, x] = cell_type
                 self.vision_explored[y, x] = 1
+
+                # Path invalidation: if a cell that was UNKNOWN (or FREE)
+                # turns out to be an OBSTACLE and our cached A* path goes
+                # through it, clear the path immediately so the next
+                # move_towards call triggers an instant replan.
+                if (
+                    not _path_invalidated
+                    and cell_type == CellType.OBSTACLE
+                    and old_type != CellType.OBSTACLE
+                    and (x, y) in _path_set
+                ):
+                    self.path = []
+                    _path_invalidated = True
 
                 # Track discovered objects
                 if cell_type == CellType.OBJECT:
@@ -861,12 +878,31 @@ class BaseAgent(Agent):
             if cached_destination != target:
                 self.path = []  # stale — destination changed
             if not self.path or self.stuck_counter > 3:
+                # Two-phase pathfinding in fog-of-war (map_unknown) mode:
+                #   1. Try normal A* using only known terrain first
+                #      — gives optimal paths through explored areas.
+                #   2. If no path exists through known cells, fall back to
+                #      fog-of-war A* where UNKNOWN cells are walkable
+                #      (with a cost penalty) — allows planning through
+                #      unexplored territory when necessary.
+                # In map_known mode, the global grid has full terrain so
+                # only phase 1 is needed.
+                _is_map_unknown = not getattr(self.model, "map_known", False)
                 new_path = self.pathfinder.find_path(
                     pos_tuple,
                     target,
                     other_agent_positions,
                     forbidden_types=forbidden_types,
                 )
+                # Phase 2: fog-of-war fallback
+                if new_path is None and _is_map_unknown:
+                    new_path = self.pathfinder.find_path(
+                        pos_tuple,
+                        target,
+                        other_agent_positions,
+                        forbidden_types=forbidden_types,
+                        agent_local_map=self.local_map,
+                    )
 
                 # If no path found, target is unreachable
                 if new_path is None:

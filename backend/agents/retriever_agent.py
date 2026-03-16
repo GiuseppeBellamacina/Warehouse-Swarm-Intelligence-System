@@ -130,6 +130,11 @@ class RetrieverAgent(BaseAgent):
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 40
         self._SEEK_INFO_INTERVAL_MAP_KNOWN: int = 40
+        # Guard against seek-info infinite loops: count consecutive seeks
+        # without productive outcome.  After _MAX_SEEK_ATTEMPTS, force
+        # the retriever back to frontier exploration for one full interval.
+        self._seek_info_attempts: int = 0
+        self._MAX_SEEK_ATTEMPTS: int = 3
 
     # ------------------------------------------------------------------
     # Sense
@@ -706,8 +711,17 @@ class RetrieverAgent(BaseAgent):
             # the agent loops in SEEK-INFO forever after arriving.
             if nearby_agents and self._fruitless_explore_steps > _seek_interval:
                 self._fruitless_explore_steps = 0
+                self._seek_info_attempts = 0  # productive contact — reset
 
-            if self._fruitless_explore_steps > _seek_interval:
+            # Skip SEEK-INFO entirely when carrying objects — the retriever
+            # should deliver cargo, not wander looking for info.
+            # Also skip after too many consecutive seek attempts to break
+            # the loop where the seek target moves away repeatedly.
+            if (
+                self._fruitless_explore_steps > _seek_interval
+                and self.carrying_objects == 0
+                and self._seek_info_attempts < self._MAX_SEEK_ATTEMPTS
+            ):
                 seek_target = self._find_nearest_info_source(pos_tuple)
                 if seek_target is not None:
                     # If the target agent is inside a warehouse, redirect to a
@@ -748,6 +762,7 @@ class RetrieverAgent(BaseAgent):
                     # grows unboundedly and SEEK-INFO re-fires every 15 steps,
                     # trapping the agent for 100+ steps.
                     self._fruitless_explore_steps = 0
+                    self._seek_info_attempts += 1
                     return
             nearby_positions = []
             for a in nearby_agents:
@@ -925,9 +940,7 @@ class RetrieverAgent(BaseAgent):
                         # so stale unreachable targets lose their bonus and
                         # other frontiers can win on raw utility.
                         _momentum_target = (
-                            self._explore_target
-                            if self._explore_steps <= 6
-                            else None
+                            self._explore_target if self._explore_steps <= 6 else None
                         )
                         best = FrontierExplorer.select_best_frontier(
                             valid,
