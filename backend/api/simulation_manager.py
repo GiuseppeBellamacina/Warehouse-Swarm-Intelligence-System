@@ -430,31 +430,28 @@ class SimulationManager:
         self.model.snapshot_rng()
 
     def _apply_map_knowledge(self) -> None:
-        """Pre-fill every agent's local_map with full terrain (except objects)
-        and populate known_warehouses with all warehouse cells."""
+        """Populate known_warehouses for every agent.
+
+        local_map is intentionally NOT pre-filled with terrain so that
+        agents explore identically in both map_known and map_unknown
+        modes.  The only map_known advantage is that the A* pathfinder
+        already has the full grid, allowing optimal routing even through
+        undiscovered terrain.
+        """
         if not self.model:
             return
         grid = self.model.grid
         w, h = grid.width, grid.height
 
-        # Build the terrain mask once: copy cell_types, replacing OBJECT with FREE
-        terrain = grid.cell_types.copy()  # shape (w, h), indexed [x, y]
-        terrain[terrain == CellType.OBJECT] = CellType.FREE
-
         # Collect all warehouse cells
         _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
-        wh_cells = [(x, y) for x in range(w) for y in range(h) if CellType(terrain[x, y]) in _WH]
+        wh_cells = [(x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH]
 
         from backend.agents.base_agent import BaseAgent
 
         for agent in self.model.agents:
             if not isinstance(agent, BaseAgent):
                 continue
-            lm = getattr(agent, "local_map", None)
-            if lm is None:
-                continue
-            # local_map is indexed [y, x]; terrain is [x, y] → transpose
-            lm[:] = terrain.T
             # Populate known_warehouses (avoid duplicates)
             existing = set(agent.known_warehouses)
             for wc in wh_cells:
