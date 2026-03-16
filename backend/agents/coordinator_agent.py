@@ -513,6 +513,12 @@ class CoordinatorAgent(BaseAgent):
                 },
             )
             self.model.comm_manager.send_message(sync_msg, [cid])
+            self.log_message(
+                direction="sent",
+                message_type="coordinator_sync",
+                details=f"{len(self.known_objects)} objs synced",
+                target_ids=[cid],
+            )
             print(
                 f"{self.tag} -> {agent_tag('coordinator', cid)}: "
                 f"sync ({len(self.known_objects)} objs)"

@@ -651,6 +651,131 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
           }
         }
 
+        // ── Communication arcs ──
+        // Draw fading arcs for messages sent in the current step.
+        {
+          const elapsed = now - animStartRef.current;
+          const arcAlpha = Math.max(0, 1 - elapsed / LERP_DURATION);
+          if (arcAlpha > 0 && state.step > 0) {
+            const agentPosMap = new Map(
+              state.agents.map((a) => [a.id, getLerpPos(a.id, now)]),
+            );
+
+            // Color per message type
+            const ARC_COLORS: Record<string, string> = {
+              task_assignment: "#60a5fa", // blue-400
+              object_location: "#fbbf24", // amber-400
+              retriever_event: "#fb923c", // orange-400
+              task_status: "#34d399", // emerald-400
+              map_data: "#a78bfa", // violet-400
+              coordinator_sync: "#818cf8", // indigo-400
+            };
+
+            state.agents.forEach((agent) => {
+              if (!agent.recent_messages) return;
+              agent.recent_messages.forEach((msg) => {
+                if (msg.step !== state.step) return;
+                if (msg.direction !== "sent") return;
+                if (!msg.targets || msg.targets.length === 0) return;
+
+                const fromPos = agentPosMap.get(agent.id);
+                if (!fromPos) return;
+
+                const isTaskAssignment = msg.type === "task_assignment";
+                const baseColor = ARC_COLORS[msg.type] ?? "#94a3b8";
+                const lineWidth = isTaskAssignment ? 2.5 : 1.5;
+
+                msg.targets.forEach((tid) => {
+                  const toPos = agentPosMap.get(tid);
+                  if (!toPos) return;
+
+                  const fx = (fromPos.x + 0.5) * cellWidth;
+                  const fy = (fromPos.y + 0.5) * cellHeight;
+                  const tx = (toPos.x + 0.5) * cellWidth;
+                  const ty = (toPos.y + 0.5) * cellHeight;
+
+                  // Perpendicular bezier control point for curve
+                  const mx = (fx + tx) / 2;
+                  const my = (fy + ty) / 2;
+                  const pdx = tx - fx;
+                  const pdy = ty - fy;
+                  const cpx = mx - pdy * 0.25;
+                  const cpy = my + pdx * 0.25;
+
+                  // Glow pass for task_assignment
+                  if (isTaskAssignment) {
+                    ctx.save();
+                    ctx.globalAlpha = arcAlpha * 0.35;
+                    ctx.shadowColor = baseColor;
+                    ctx.shadowBlur = 12;
+                    ctx.strokeStyle = baseColor;
+                    ctx.lineWidth = lineWidth + 4;
+                    ctx.beginPath();
+                    ctx.moveTo(fx, fy);
+                    ctx.quadraticCurveTo(cpx, cpy, tx, ty);
+                    ctx.stroke();
+                    ctx.restore();
+                  }
+
+                  // Main arc line
+                  ctx.save();
+                  ctx.globalAlpha = arcAlpha * (isTaskAssignment ? 0.92 : 0.7);
+                  ctx.strokeStyle = baseColor;
+                  ctx.lineWidth = lineWidth;
+                  ctx.setLineDash(msg.type === "map_data" ? [5, 4] : []);
+                  ctx.beginPath();
+                  ctx.moveTo(fx, fy);
+                  ctx.quadraticCurveTo(cpx, cpy, tx, ty);
+                  ctx.stroke();
+                  ctx.setLineDash([]);
+                  ctx.restore();
+
+                  // Arrowhead at target end
+                  ctx.save();
+                  ctx.globalAlpha = arcAlpha * (isTaskAssignment ? 0.95 : 0.75);
+                  // Tangent at t=1 of quadratic bezier: direction from control point to end
+                  const atx = tx - cpx;
+                  const aty = ty - cpy;
+                  const alen = Math.sqrt(atx * atx + aty * aty);
+                  if (alen > 0) {
+                    const nx = atx / alen;
+                    const ny = aty / alen;
+                    const arrowLen = lineWidth * 4;
+                    const arrowAngle = 0.45;
+                    const ax1 =
+                      tx -
+                      arrowLen *
+                        (nx * Math.cos(arrowAngle) - ny * Math.sin(arrowAngle));
+                    const ay1 =
+                      ty -
+                      arrowLen *
+                        (ny * Math.cos(arrowAngle) + nx * Math.sin(arrowAngle));
+                    const ax2 =
+                      tx -
+                      arrowLen *
+                        (nx * Math.cos(-arrowAngle) -
+                          ny * Math.sin(-arrowAngle));
+                    const ay2 =
+                      ty -
+                      arrowLen *
+                        (ny * Math.cos(-arrowAngle) +
+                          nx * Math.sin(-arrowAngle));
+                    ctx.strokeStyle = baseColor;
+                    ctx.fillStyle = baseColor;
+                    ctx.lineWidth = lineWidth;
+                    ctx.beginPath();
+                    ctx.moveTo(ax1, ay1);
+                    ctx.lineTo(tx, ty);
+                    ctx.lineTo(ax2, ay2);
+                    ctx.stroke();
+                  }
+                  ctx.restore();
+                });
+              });
+            });
+          }
+        }
+
         // ── Draw agent trails ──
         if (trailHistory && trailHistory.size > 0) {
           const roleColor: Record<string, string> = {
