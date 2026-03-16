@@ -81,6 +81,21 @@ A real-time swarm intelligence simulation where autonomous agents cooperate to e
 - Log-scale speed slider with 1× label
 - ⚡ "Wake up backend" button — polls `/api/health` until Render cold-starts (~30 s)
 
+#### Visual communication arcs
+
+Animated arcs appear at the start of each simulation step and fade out as agents move. Each arc represents a message sent from one agent to another during that step.
+
+| Arc colour                         | Message type                             | Direction                       |
+| ---------------------------------- | ---------------------------------------- | ------------------------------- |
+| 🔵 Blue (`#60a5fa`) — thick + glow | `task_assignment`                        | Coordinator → Retriever         |
+| 🟡 Amber (`#fbbf24`)               | `object_location`                        | Scout → Coordinator             |
+| 🟠 Orange (`#fb923c`)              | `retriever_event` (spotted / cargo drop) | Retriever → Coordinator or Peer |
+| 🟢 Emerald (`#34d399`)             | `task_status`                            | Retriever → Coordinator or Peer |
+| 🟣 Violet (`#a78bfa`) — dashed     | `map_data` (map relay)                   | Any agent → nearby agents       |
+| 🔷 Indigo (`#818cf8`) — dashed     | `coordinator_sync`                       | Coordinator → Coordinator       |
+
+Arcs are drawn as quadratic Bézier curves with a perpendicular offset so overlapping arcs between the same two agents remain distinguishable. A small arrowhead indicates the direction of the message.
+
 ### Optional Telegram notifications
 
 Receive a message when a simulation starts, completes or is stopped (see [Environment variables](#environment-variables)).

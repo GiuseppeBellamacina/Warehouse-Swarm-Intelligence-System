@@ -501,6 +501,14 @@ class BaseAgent(Agent):
         recipient_ids = [agent.unique_id for agent in nearby]
         self.model.comm_manager.send_message(message, recipient_ids)
 
+        if recipient_ids:
+            self.log_message(
+                direction="sent",
+                message_type="map_data",
+                details=f"{len(message.known_objects)} objs, {len(message.explored_cells)} cells",
+                target_ids=recipient_ids,
+            )
+
         # Consume energy
         self.consume_energy(self.energy_consumption["communicate"])
         self.last_communication_step = self.model.current_step

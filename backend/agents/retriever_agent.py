@@ -785,6 +785,12 @@ class RetrieverAgent(BaseAgent):
             position=my_pos,
         )
         self.model.comm_manager.send_message(status_msg, target_ids)
+        self.log_message(
+            direction="sent",
+            message_type="task_status",
+            details=f"queue={len(self.task_queue)}, carrying={self.carrying_objects}",
+            target_ids=target_ids,
+        )
         self.consume_energy(self.energy_consumption["communicate"])
 
     def _count_agents_heading_to(self, entrance: Tuple[int, int]) -> int:
@@ -1445,6 +1451,12 @@ class RetrieverAgent(BaseAgent):
                     carrying_count=0,
                 )
                 self.model.comm_manager.send_message(drop_msg, target_ids)
+            self.log_message(
+                direction="sent",
+                message_type="retriever_event",
+                details=f"cargo_dropped x{len(dropped_positions)}",
+                target_ids=target_ids,
+            )
             print(
                 f"{self.tag} CARGO DROP: notified agents {target_ids} "
                 f"about {len(dropped_positions)} dropped objects"
@@ -1949,6 +1961,13 @@ class RetrieverAgent(BaseAgent):
             print(
                 f"{self.tag} PEER-SPOT: full, broadcasting spotted {obj_pos} "
                 f"to peer retrievers {peer_ids}"
+            )
+        if peer_ids and self.newly_spotted_objects:
+            self.log_message(
+                direction="sent",
+                message_type="retriever_event",
+                details=f"object_spotted x{len(self.newly_spotted_objects)} to peers",
+                target_ids=peer_ids,
             )
         self.consume_energy(self.energy_consumption["communicate"])
 
