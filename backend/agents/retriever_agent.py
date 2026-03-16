@@ -395,6 +395,7 @@ class RetrieverAgent(BaseAgent):
                 return  # claimed something, P3 will handle it next step
             # No objects to claim — enter exploration
             import numpy as _np_p4
+
             _unk_count = int(_np_p4.count_nonzero(self.local_map == 0))
             _total = self.local_map.size
             _explored_pct = 100.0 * (1 - _unk_count / _total) if _total else 100.0
@@ -901,8 +902,7 @@ class RetrieverAgent(BaseAgent):
                         # Detect scout presence from nearby agents (no
                         # global model access).
                         _has_scouts = any(
-                            getattr(a, "role", None) == "scout"
-                            for a in nearby_agents
+                            getattr(a, "role", None) == "scout" for a in nearby_agents
                         )
                         _comm_weight = 0.6 if _has_scouts else 1.0
 

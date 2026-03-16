@@ -344,6 +344,7 @@ class CoordinatorAgent(BaseAgent):
             )
         else:
             import numpy as _np_cd
+
             _unk = int(_np_cd.count_nonzero(self.local_map == 0))
             _total = self.local_map.size
             _pct = 100.0 * (1 - _unk / _total) if _total else 100.0
