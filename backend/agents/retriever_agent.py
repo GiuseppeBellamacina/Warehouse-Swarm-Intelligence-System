@@ -284,6 +284,7 @@ class RetrieverAgent(BaseAgent):
         ]
         for stale in stale_tasks:
             self.task_queue.remove(stale)
+            self._dubious_being_verified.discard(stale)
             self.model.comm_manager.release_claim(stale, self.unique_id)
             if stale in self.known_objects:
                 del self.known_objects[stale]
@@ -353,6 +354,7 @@ class RetrieverAgent(BaseAgent):
                     if peer_task in self.task_queue:
                         # Peer already claimed this — drop it from our queue
                         self.task_queue.remove(peer_task)
+                        self._dubious_being_verified.discard(peer_task)
                         self.model.comm_manager.release_claim(peer_task, self.unique_id)
                         print(
                             f"{self.tag} PEER-YIELD: "
@@ -431,6 +433,7 @@ class RetrieverAgent(BaseAgent):
                         f"(at capacity, offering to peers)"
                     )
                 self.task_queue.clear()
+                self._dubious_being_verified.clear()
                 self._start_warehouse_sequence("deliver")
                 return
             elif not self.task_queue:
@@ -488,6 +491,7 @@ class RetrieverAgent(BaseAgent):
                     and next_target not in self.dubious_objects
                 ):
                     self.task_queue.pop(0)
+                    self._dubious_being_verified.discard(next_target)
                     # Don't return — fall through to P4 so the retriever
                     # immediately self-assigns or explores instead of sitting
                     # idle for a full step with no target.
@@ -513,6 +517,7 @@ class RetrieverAgent(BaseAgent):
                             f"already claimed, removing from queue"
                         )
                         self.task_queue.pop(0)
+                        self._dubious_being_verified.discard(next_target)
                         self.model.comm_manager.release_claim(next_target, self.unique_id)
                     # ---- P3b: opportunistic nearby objects while travelling ----
                     # Even if we already have a primary task, try to claim unclaimed objects
@@ -1852,6 +1857,7 @@ class RetrieverAgent(BaseAgent):
                             f"(full after pickup, offering to peers)"
                         )
                     self.task_queue.clear()
+                    self._dubious_being_verified.clear()
                     self.state = AgentState.DELIVERING
                     self._start_warehouse_sequence("deliver")
                 else:

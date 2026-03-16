@@ -465,35 +465,54 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
 
         // ── Per-agent known objects (when an agent is selected) ──
         if (selectedAgent && selectedAgent.known_objects) {
+          const isRetriever = selectedAgent.role === "retriever";
           selectedAgent.known_objects.forEach((obj) => {
             const ox = (obj.x + 0.5) * cellWidth;
             const oy = (obj.y + 0.5) * cellHeight;
             const r = Math.min(cellWidth, cellHeight) * 0.38;
 
-            // Outer glow
-            ctx.shadowColor = "#facc15";
-            ctx.shadowBlur = 10;
-
-            // Bright filled circle
-            ctx.fillStyle = "rgba(250, 204, 21, 0.85)";
-            ctx.beginPath();
-            ctx.arc(ox, oy, r, 0, 2 * Math.PI);
-            ctx.fill();
-
-            // Thick white border
-            ctx.strokeStyle = "#fff";
-            ctx.lineWidth = 2.5;
-            ctx.stroke();
-
-            // Reset shadow
-            ctx.shadowColor = "transparent";
-            ctx.shadowBlur = 0;
-
-            // Inner marker: black star/dot for contrast
-            ctx.fillStyle = "#000";
-            ctx.beginPath();
-            ctx.arc(ox, oy, r * 0.35, 0, 2 * Math.PI);
-            ctx.fill();
+            if (isRetriever) {
+              // Retriever: filled yellow circle + black inner dot
+              // (confirmed via vision or direct claim)
+              ctx.shadowColor = "#facc15";
+              ctx.shadowBlur = 10;
+              ctx.fillStyle = "rgba(250, 204, 21, 0.85)";
+              ctx.beginPath();
+              ctx.arc(ox, oy, r, 0, 2 * Math.PI);
+              ctx.fill();
+              ctx.strokeStyle = "#fff";
+              ctx.lineWidth = 2.5;
+              ctx.stroke();
+              ctx.shadowColor = "transparent";
+              ctx.shadowBlur = 0;
+              ctx.fillStyle = "#000";
+              ctx.beginPath();
+              ctx.arc(ox, oy, r * 0.35, 0, 2 * Math.PI);
+              ctx.fill();
+            } else {
+              // Scout / Coordinator: thin amber diamond outline + center dot
+              // ("I spotted this but it’s for retrievers to collect")
+              ctx.shadowColor = "#fbbf24";
+              ctx.shadowBlur = 6;
+              ctx.fillStyle = "rgba(251, 191, 36, 0.18)";
+              ctx.strokeStyle = "rgba(251, 191, 36, 0.9)";
+              ctx.lineWidth = 1.8;
+              ctx.beginPath();
+              ctx.moveTo(ox, oy - r); // top
+              ctx.lineTo(ox + r, oy); // right
+              ctx.lineTo(ox, oy + r); // bottom
+              ctx.lineTo(ox - r, oy); // left
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+              ctx.shadowColor = "transparent";
+              ctx.shadowBlur = 0;
+              // Small centre dot
+              ctx.fillStyle = "rgba(251, 191, 36, 0.95)";
+              ctx.beginPath();
+              ctx.arc(ox, oy, r * 0.18, 0, 2 * Math.PI);
+              ctx.fill();
+            }
           });
         }
 
