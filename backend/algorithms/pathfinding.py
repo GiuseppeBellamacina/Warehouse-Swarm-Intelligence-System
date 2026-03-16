@@ -36,10 +36,38 @@ class AStarPathfinder:
         """
         return np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 
+    def _is_walkable_for_agent(
+        self,
+        x: int,
+        y: int,
+        agent_local_map: Optional[np.ndarray] = None,
+    ) -> bool:
+        """Check walkability using the agent's navigation map.
+
+        Accepts either the agent's local_map (fog-of-war / unknown mode)
+        or the full-grid nav_map (map_known mode).
+
+        - UNKNOWN (0) cells are treated as walkable so A* can plan through
+          unexplored territory (optimistic assumption).
+        - OBSTACLE cells block.
+        - All other cell types (FREE, WAREHOUSE, …) are walkable.
+
+        Falls back to the global ``grid.is_walkable()`` when no map is
+        provided (legacy callers).
+        """
+        if not (0 <= x < self.grid.width and 0 <= y < self.grid.height):
+            return False
+        if agent_local_map is not None:
+            cell = int(agent_local_map[y, x])
+            # UNKNOWN (0) is treated as walkable; only OBSTACLE blocks
+            return cell != CellType.OBSTACLE
+        return self.grid.is_walkable(x, y)
+
     def get_neighbors(
         self,
         pos: Tuple[int, int],
         forbidden_pos: Optional[Set[Tuple[int, int]]] = None,
+        agent_local_map: Optional[np.ndarray] = None,
     ) -> List[Tuple[Tuple[int, int], float]]:
         """
         Get walkable neighbors with cost.
@@ -49,6 +77,8 @@ class AStarPathfinder:
             forbidden_pos: Positions that must NOT be used as intermediate nodes.
                            These cells are still walkable in general, but the
                            pathfinder will not route *through* them.
+            agent_local_map: Optional agent local map for fog-of-war pathfinding.
+                             When provided, UNKNOWN cells are treated as walkable.
 
         Returns:
             List of ((neighbor_x, neighbor_y), cost) tuples
@@ -71,12 +101,15 @@ class AStarPathfinder:
         for dx, dy, cost in directions:
             nx, ny = x + dx, y + dy
 
-            if not self.grid.is_walkable(nx, ny):
+            if not self._is_walkable_for_agent(nx, ny, agent_local_map):
                 continue
+
             # Prevent diagonal corner-cutting: both adjacent cardinal
             # cells must be walkable for the agent to squeeze through.
             if dx != 0 and dy != 0:
-                if not self.grid.is_walkable(x + dx, y) or not self.grid.is_walkable(x, y + dy):
+                if not self._is_walkable_for_agent(
+                    x + dx, y, agent_local_map
+                ) or not self._is_walkable_for_agent(x, y + dy, agent_local_map):
                     continue
             if forbidden_pos and (nx, ny) in forbidden_pos:
                 continue
@@ -90,6 +123,7 @@ class AStarPathfinder:
         goal: Tuple[int, int],
         avoid_positions: Optional[Set[Tuple[int, int]]] = None,
         forbidden_types: Optional[Set[CellType]] = None,
+        agent_local_map: Optional[np.ndarray] = None,
     ) -> Optional[List[Tuple[int, int]]]:
         """
         Find shortest path using A* algorithm.
@@ -101,6 +135,9 @@ class AStarPathfinder:
             forbidden_types: CellType values that must NOT appear as *intermediate*
                              nodes in the path.  The goal cell is always allowed
                              regardless of its type.
+            agent_local_map: Optional agent local map for fog-of-war pathfinding.
+                             When provided, UNKNOWN cells are treated as walkable
+                             so A* can plan through unexplored territory.
 
         Returns:
             List of positions from start to goal, or None if no path
@@ -143,7 +180,9 @@ class AStarPathfinder:
                 return self._reconstruct_path(came_from, current)
 
             # Explore neighbors
-            for neighbor, move_cost in self.get_neighbors(current, forbidden_pos or None):
+            for neighbor, move_cost in self.get_neighbors(
+                current, forbidden_pos or None, agent_local_map
+            ):
                 # Add penalty for positions to avoid (other agents)
                 penalty = 10.0 if neighbor in avoid_positions else 0.0
 

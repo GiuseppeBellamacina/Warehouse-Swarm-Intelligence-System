@@ -3,7 +3,7 @@ Base agent class with common functionality
 """
 
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -38,12 +38,24 @@ _AGENT_COLORS: Dict[str, str] = {
 _RESET = "\033[0m"
 
 
+_ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
+
+# Mapping from unique_id → per-type 1-based index, populated at spawn time
+_type_index_map: dict[int, int] = {}
+
+
+def register_type_index(uid: int, idx: int) -> None:
+    """Register the per-type 1-based index for an agent."""
+    _type_index_map[uid] = idx
+
+
 def agent_tag(role: str, uid: int) -> str:
-    """Return a colored terminal label, e.g. \033[1;32m[SCOUT 0]\033[0m."""
+    """Return a colored terminal label, e.g. \033[1;32m[SCO 1]\033[0m."""
     color = _AGENT_COLORS.get(role, "")
-    name = "COORD" if role == "coordinator" else role.upper()
+    short = _ROLE_SHORT.get(role, role.upper())
+    idx = _type_index_map.get(uid, uid)
     reset = _RESET if color else ""
-    return f"{color}[{name} {uid}]{reset}"
+    return f"{color}[{short} {idx}]{reset}"
 
 
 class AgentState(Enum):
@@ -107,12 +119,22 @@ class BaseAgent(Agent):
         # Cells actually seen via vision (for object-scan fog when map is pre-known)
         self.vision_explored = np.zeros((grid_height, grid_width), dtype=np.uint8)
 
+        # Navigation map for A* pathfinding.
+        # - map_unknown: None → A* uses self.local_map (optimistic about unknowns).
+        # - map_known: full grid cell types → A* knows all obstacles/walls.
+        # Either way, exploration (frontier detection via local_map) is identical.
+        self.nav_map: Optional[np.ndarray] = None
+
         # Known object locations (position -> value)
         self.known_objects: Dict[Tuple, float] = {}
         # Step at which each known_objects entry was last confirmed
         self.known_objects_step: Dict[Tuple, int] = {}
         # Tombstone: step at which we (or a peer) last confirmed a position is NOT an object
         self.known_objects_cleared: Dict[Tuple, int] = {}
+        # Positions confirmed gone (pickup, vision, or relay) — for tombstone relay filtering.
+        # Only positions with CONFIRMED removal are propagated via MapDataMessage;
+        # local-only tombstones (e.g. coordinator task assignment) are not propagated.
+        self._confirmed_gone: Set[Tuple[int, int]] = set()
 
         # Last-known positions of retrievers, learned via message relay
         # {retriever_id: (x, y)} — re-broadcast so every agent is a relay
@@ -142,15 +164,26 @@ class BaseAgent(Agent):
         self.last_position: Optional[Tuple[int, int]] = None
         self.wait_counter: int = 0  # Counter for waiting when path blocked by other agents
         self.position_history: List[Tuple[int, int]] = []  # Track recent positions to detect loops
-        self.max_history_length: int = 15  # Keep last 15 positions
+        self.max_history_length: int = 25  # Keep last 25 positions
         self.unreachable_targets: dict[Tuple[int, int], int] = (
             {}
         )  # Track unreachable targets {position: step}
+        # Distance-progress tracking: detect agents that move laterally
+        # without ever getting closer to their target.
+        self._progress_best_dist: int = 999999  # best Manhattan dist seen
+        self._progress_steps: int = 0  # steps since last improvement
+        _NO_PROGRESS_LIMIT: int = 12  # abandon after this many steps w/o progress
+        self._no_progress_limit = _NO_PROGRESS_LIMIT
         # Cells yielded via ClearWay — avoid routing back for a few steps
         self._yield_cooldown: dict[Tuple[int, int], int] = {}
 
         # Optional A* pathfinder — set by subclasses that support it (e.g. RetrieverAgent)
         self.pathfinder: Optional["AStarPathfinder"] = None
+
+        # Map version counter — incremented whenever local_map changes so
+        # cached A* paths can be invalidated.
+        self._map_version: int = 0
+        self._path_map_version: int = -1  # version when path was last computed
 
         # Decision making
         self.decision_maker = DecisionMaker()
@@ -167,13 +200,18 @@ class BaseAgent(Agent):
         self._last_clearway_sent: int = -99
 
     @property
+    def type_index(self) -> int:
+        """1-based index within this agent's role type."""
+        return _type_index_map.get(self.unique_id, self.unique_id + 1)
+
+    @property
     def tag(self) -> str:
-        """Colored terminal label with step, e.g. [SCOUT 0 @42]."""
+        """Colored terminal label with step, e.g. [SCO 1 @42]."""
         color = _AGENT_COLORS.get(self.role, "")
-        name = "COORD" if self.role == "coordinator" else self.role.upper()
+        short = _ROLE_SHORT.get(self.role, self.role.upper())
         reset = _RESET if color else ""
         step = self.model.current_step
-        return f"{color}[{name} {self.unique_id} @{step}]{reset}"
+        return f"{color}[{short} {self.type_index} @{step}]{reset}"
 
     @property
     def energy_percentage(self) -> float:
@@ -252,10 +290,30 @@ class BaseAgent(Agent):
         Args:
             visible_cells: List of visible (x, y, cell_type) tuples
         """
+        _path_set = set(self.path) if self.path else set()
+        _path_invalidated = False
+
+        changed = False
         for x, y, cell_type in visible_cells:
             if 0 <= y < self.local_map.shape[0] and 0 <= x < self.local_map.shape[1]:
+                old_type = int(self.local_map[y, x])
+                if self.local_map[y, x] != cell_type:
+                    changed = True
                 self.local_map[y, x] = cell_type
                 self.vision_explored[y, x] = 1
+
+                # Path invalidation: if a cell that was UNKNOWN (or FREE)
+                # turns out to be an OBSTACLE and our cached A* path goes
+                # through it, clear the path immediately so the next
+                # move_towards call triggers an instant replan.
+                if (
+                    not _path_invalidated
+                    and cell_type == CellType.OBSTACLE
+                    and old_type != CellType.OBSTACLE
+                    and (x, y) in _path_set
+                ):
+                    self.path = []
+                    _path_invalidated = True
 
                 # Track discovered objects
                 if cell_type == CellType.OBJECT:
@@ -263,6 +321,7 @@ class BaseAgent(Agent):
                     self.known_objects[pos] = 1.0
                     self.known_objects_step[pos] = self.model.current_step
                     self.known_objects_cleared.pop(pos, None)  # re-seen: remove tombstone
+                    self._confirmed_gone.discard(pos)  # no longer confirmed gone
                 else:
                     # Direct vision confirms this cell is NOT an object right now
                     pos = (x, y)
@@ -270,6 +329,7 @@ class BaseAgent(Agent):
                         self.known_objects.pop(pos, None)
                         self.known_objects_step.pop(pos, None)
                         self.known_objects_cleared[pos] = self.model.current_step
+                        self._confirmed_gone.add(pos)  # vision-confirmed gone
                     elif self.known_objects_cleared.get(pos, -1) < self.model.current_step:
                         self.known_objects_cleared[pos] = self.model.current_step
 
@@ -291,6 +351,8 @@ class BaseAgent(Agent):
                             self.known_warehouses.append((wx, wy))
                         if 0 <= wy < self.local_map.shape[0] and 0 <= wx < self.local_map.shape[1]:
                             self.local_map[wy, wx] = wt
+        if changed:
+            self._map_version += 1
 
     def get_closest_warehouse(self) -> Optional[Tuple[int, int]]:
         """
@@ -366,32 +428,30 @@ class BaseAgent(Agent):
         if not nearby:
             return 0
 
-        # Extract explored cells from local map, scrubbing stale OBJECT entries.
-        # Agents update their local_map only via direct vision, so cells marked as
-        # OBJECT that were already retrieved remain stale until the agent re-visits
-        # that location. If we broadcast a stale OBJECT cell with the current step
-        # timestamp, recipients will re-insert it into known_objects (bypassing the
-        # tombstone, which was set at an earlier step). Fix: any OBJECT cell not
-        # present in the actual grid is downgraded to FREE before broadcasting, and
-        # the sender's local_map is corrected in-place to avoid repeat stale sends.
+        # Extract explored cells from local map (raw topology).
+        # OBJECT cells are NEVER shared via explored_cells — they propagate
+        # exclusively through the known_objects dict which carries per-item
+        # timestamps and respects tombstones.  Sending OBJECT in topology
+        # causes stale cells to persist indefinitely in recipients' local_maps
+        # (apply_shared_map_data only writes to UNKNOWN cells, so a ghost
+        # OBJECT can never be corrected back to FREE via topology sharing).
+        _OBJ_INT = int(CellType.OBJECT)
+        _FREE_INT = int(CellType.FREE)
         raw_cells = MapSharingSystem.extract_explored_cells(self.local_map)
-        actual_objects = self.model.grid.objects
         explored_cells = []
         for x, y, ct in raw_cells:
-            if ct == int(CellType.OBJECT) and (x, y) not in actual_objects:
-                explored_cells.append((x, y, int(CellType.FREE)))
-                self.local_map[y, x] = CellType.FREE
-                pos = (x, y)
-                self.known_objects.pop(pos, None)
-                self.known_objects_step.pop(pos, None)
-                if self.known_objects_cleared.get(pos, -1) < self.model.current_step:
-                    self.known_objects_cleared[pos] = self.model.current_step
+            if ct == _OBJ_INT:
+                explored_cells.append((x, y, _FREE_INT))
+                # Also fix own local_map for entries no longer in known_objects:
+                # known_objects is the authoritative source for object presence.
+                if (x, y) not in self.known_objects:
+                    self.local_map[y, x] = CellType.FREE
             else:
                 explored_cells.append((x, y, ct))
+        cs = self.model.current_step
 
         # Create message — carry full knowledge with Stamped timestamps so every
         # recipient can apply "newest wins" and use this agent as a relay node.
-        cs = self.model.current_step
 
         # Build explore_targets dict: own target + relayed peers (TTL-filtered).
         _et: Dict = {}
@@ -402,6 +462,14 @@ class BaseAgent(Agent):
             step = self.peer_explore_targets_step.get(aid, 0)
             if cs - step <= self._explore_target_ttl:
                 _et[aid] = Stamped(tuple(pos), step)
+
+        # Build tombstone relay: only for positions that were actual objects,
+        # and that are no longer in known_objects (confirmed gone).
+        _cleared_relay = {
+            pos: Stamped(None, step)
+            for pos, step in self.known_objects_cleared.items()
+            if pos in self._confirmed_gone and pos not in self.known_objects
+        }
 
         message = MapDataMessage(
             sender_id=self.unique_id or 0,
@@ -415,6 +483,7 @@ class BaseAgent(Agent):
                 pos: Stamped(None, getattr(self, "objects_being_collected_step", {}).get(pos, 0))
                 for pos in getattr(self, "objects_being_collected", [])
             },
+            known_objects_cleared=_cleared_relay,
             retriever_positions={
                 rid: Stamped(tuple(p), self.retriever_positions_step.get(rid, 0))
                 for rid, p in self.retriever_positions.items()
@@ -448,44 +517,41 @@ class BaseAgent(Agent):
         """
         for message in self._step_messages:
             if isinstance(message, MapDataMessage):
-                # Merge raw topology first
-                self.local_map = MapSharingSystem.apply_shared_map_data(
-                    self.local_map, message.explored_cells
-                )
+                # Merge raw topology first.
+                # Filter out any OBJECT cells — objects propagate exclusively
+                # via the known_objects dict.  Stale OBJECT cells in
+                # explored_cells would create permanent ghosts in local_map
+                # (apply_shared_map_data only writes to UNKNOWN cells).
+                _OBJ_CT = int(CellType.OBJECT)
+                _FREE_CT = int(CellType.FREE)
+                safe_cells = [
+                    (x, y, _FREE_CT) if ct == _OBJ_CT else (x, y, ct)
+                    for x, y, ct in message.explored_cells
+                ]
+                self.local_map = MapSharingSystem.apply_shared_map_data(self.local_map, safe_cells)
+                self._map_version += 1
                 _WH_CELL_TYPES = (
                     CellType.WAREHOUSE,
                     CellType.WAREHOUSE_ENTRANCE,
                     CellType.WAREHOUSE_EXIT,
                 )
 
-                # Resolve OBC references once — used by both explored_cells and
-                # known_objects relay to prevent re-adding in-flight positions.
+                # Resolve OBC references once — used by known_objects relay
+                # to prevent re-adding in-flight positions.
                 my_obc = getattr(self, "objects_being_collected", None)
                 my_obc_step = getattr(self, "objects_being_collected_step", None)
 
-                # --- explored_cells: object positions with message-level timestamp ---
-                msg_ts = message.timestamp
+                # --- explored_cells: topology only (warehouses) ---
+                # Object tracking (add / remove / tombstone) is handled
+                # exclusively by the known_objects dict which carries
+                # per-object timestamps.  Using explored_cells for objects
+                # is unreliable: the sender's local_map may be stale, and
+                # the message-level timestamp would bypass tombstones.
                 for x, y, cell_type in message.explored_cells:
-                    pos = (x, y)
-                    if cell_type == CellType.OBJECT:
-                        # Reject if currently being collected or tombstoned
-                        if my_obc is not None and pos in my_obc:
-                            continue
-                        if msg_ts > self.known_objects_step.get(
-                            pos, -1
-                        ) and msg_ts > self.known_objects_cleared.get(pos, -1):
-                            self.known_objects[pos] = 1.0
-                            self.known_objects_step[pos] = msg_ts
-                    else:
-                        # Sender confirms no object here — clear if their info is newer
-                        if pos in self.known_objects:
-                            if msg_ts >= self.known_objects_step.get(pos, 0):
-                                del self.known_objects[pos]
-                                self.known_objects_step.pop(pos, None)
-                                self.known_objects_cleared[pos] = msg_ts
-                        elif cell_type in _WH_CELL_TYPES:
-                            if pos not in self.known_warehouses:
-                                self.known_warehouses.append(pos)
+                    if cell_type in _WH_CELL_TYPES:
+                        pos = (x, y)
+                        if pos not in self.known_warehouses:
+                            self.known_warehouses.append(pos)
 
                 # --- objects_being_collected: Stamped(value=None, step), newest wins ---
                 for raw_pos, stamped in message.objects_being_collected.items():
@@ -495,12 +561,40 @@ class BaseAgent(Agent):
                         if step > my_obc_step.get(pos, -1):
                             my_obc.add(pos)
                             my_obc_step[pos] = step
-                    # Remove from known_objects when OBC entry is at least as recent
+                    # Remove from known_objects when OBC entry is at least as recent.
+                    # Do NOT create a tombstone here — the object is merely
+                    # "claimed", not confirmed gone.  If the retriever fails
+                    # (stuck, unreachable, released claim), the object is
+                    # still on the grid and must be re-discoverable via
+                    # relay or direct vision.  Only actual pickup (in
+                    # _try_pickup_object) should create tombstones.
                     if step >= self.known_objects_step.get(pos, -1):
                         self.known_objects.pop(pos, None)
                         self.known_objects_step.pop(pos, None)
-                        if step > self.known_objects_cleared.get(pos, -1):
-                            self.known_objects_cleared[pos] = step
+                        # Keep local_map consistent — the underlying terrain
+                        # is FREE; OBJECT was a transient overlay.  This
+                        # prevents stale OBJECT cells from leaking via
+                        # explored_cells or confusing the agent's own logic.
+                        if (
+                            0 <= pos[1] < self.local_map.shape[0]
+                            and 0 <= pos[0] < self.local_map.shape[1]
+                            and self.local_map[pos[1], pos[0]] == CellType.OBJECT
+                        ):
+                            self.local_map[pos[1], pos[0]] = CellType.FREE
+
+                # --- known_objects_cleared relay: Stamped(None, step), newest wins ---
+                # Propagate tombstones so ALL agents learn about picked-up objects.
+                for raw_pos, stamped in message.known_objects_cleared.items():
+                    pos = tuple(raw_pos)
+                    step = stamped.step if isinstance(stamped, Stamped) else int(stamped)
+                    if step > self.known_objects_cleared.get(pos, -1):
+                        self.known_objects_cleared[pos] = step
+                        self._confirmed_gone.add(pos)  # relay-confirmed gone
+                    # Remove from known_objects if tombstone is newer
+                    if step >= self.known_objects_step.get(pos, -1):
+                        if pos in self.known_objects:
+                            self.known_objects.pop(pos, None)
+                            self.known_objects_step.pop(pos, None)
 
                 # --- known_objects relay: Stamped(value=float, step), newest wins ---
                 for raw_pos, stamped in message.known_objects.items():
@@ -510,7 +604,11 @@ class BaseAgent(Agent):
                     if self.known_objects_cleared.get(pos, -1) >= step:
                         continue
                     if step > self.known_objects_step.get(pos, -1):
-                        if my_obc is None or pos not in my_obc:
+                        # Block stale relays from BEFORE a known OBC claim,
+                        # but accept relays that re-confirmed the object
+                        # AFTER the claim (the claim may have failed).
+                        obc_step = my_obc_step.get(pos, -1) if my_obc_step else -1
+                        if step > obc_step:
                             self.known_objects[pos] = val
                             self.known_objects_step[pos] = step
 
@@ -752,6 +850,12 @@ class BaseAgent(Agent):
         if pos_tuple == target:
             return True  # Already at target
 
+        # Reset distance-progress tracking when the target changes
+        if not hasattr(self, "_progress_last_target") or self._progress_last_target != target:
+            self._progress_last_target = target
+            self._progress_best_dist = abs(pos_tuple[0] - target[0]) + abs(pos_tuple[1] - target[1])
+            self._progress_steps = 0
+
         # Determine whether warehouse doors may be used as transit nodes.
         #
         # Rules enforce strict door directionality:
@@ -823,32 +927,68 @@ class BaseAgent(Agent):
 
         # Try to use A* pathfinding if agent has it
         if self.pathfinder is not None:
+            # A* uses optimistic mode in both unknown and map_known:
+            # unexplored cells (local_map == 0) are assumed walkable,
+            # path replanned only when a cell on it is discovered as blocked.
+            # This ensures identical exploration dynamics.  The advantage of
+            # map_known comes from pre-known warehouse locations, not
+            # different pathfinding behaviour.
+            _known_mask = self.local_map
+
+            # Choose the map that A* uses for walkability:
+            # - map_known: nav_map (full grid) → avoids all real walls
+            # - map_unknown: local_map → optimistic about UNKNOWN cells
+            _astar_map = self.nav_map if self.nav_map is not None else self.local_map
+
             # Recompute path if:
             # - we don't have one yet
             # - stuck too long
             # - cached path leads somewhere other than the current target
             #   (target changed since path was computed, e.g. new task assigned)
+            # - (unknown mode) a cell on the current path is now known to
+            #   be blocked — discovered via vision since last A* call
             cached_destination = self.path[-1] if self.path else None
             if cached_destination != target:
                 self.path = []  # stale — destination changed
-            if not self.path or self.stuck_counter > 3:
+
+            path_blocked = False
+            if self.path and _known_mask is not None:
+                for px, py in self.path:
+                    if (
+                        0 <= py < _known_mask.shape[0]
+                        and 0 <= px < _known_mask.shape[1]
+                        and _known_mask[py, px] != 0
+                        and int(_known_mask[py, px]) == CellType.OBSTACLE
+                    ):
+                        path_blocked = True
+                        break
+
+            if not self.path or self.stuck_counter > 3 or path_blocked:
+                # Unified fog-of-war pathfinding:
+                # A* uses the agent's local_map in BOTH modes.  UNKNOWN
+                # cells (value 0) are treated as walkable so paths can
+                # pass through unexplored territory.  In map_known mode
+                # the local_map has obstacles pre-filled, so A* avoids
+                # walls from the start (like knowing your city's streets).
+                # In map_unknown the agent discovers walls at runtime.
                 new_path = self.pathfinder.find_path(
                     pos_tuple,
                     target,
                     other_agent_positions,
                     forbidden_types=forbidden_types,
+                    agent_local_map=_astar_map,
                 )
 
-                # If no path found, target is unreachable
                 if new_path is None:
+                    # With optimistic A*, None means truly unreachable
+                    # (even assuming unknown cells are walkable).
                     print(f"{self.tag} PATH: No path found to {target}, target unreachable")
-                    # Blacklist this target for 100 steps
                     self.unreachable_targets[target] = self.model.current_step
                     self.target_position = None
                     self.stuck_counter = 0
                     return False
-
-                self.path = new_path
+                else:
+                    self.path = new_path
 
                 # Remove first element (current position) if path exists
                 if self.path and len(self.path) > 1 and self.path[0] == pos_tuple:
@@ -911,7 +1051,14 @@ class BaseAgent(Agent):
                                     self.model.grid.move_agent(self, side)
                                     self.consume_energy(self.energy_consumption["move"])
                                     self.path = []  # replan from new position
-                                    moved = True
+                                    # Sidestep is lateral, NOT forward progress.
+                                    # Don't set moved=True so stuck_counter keeps
+                                    # incrementing, preventing infinite sidestep loops.
+                                    # But do record position for loop detection.
+                                    current_pos = pos_to_tuple(self.pos) if self.pos else pos_tuple
+                                    self.position_history.append(current_pos)
+                                    if len(self.position_history) > self.max_history_length:
+                                        self.position_history.pop(0)
 
                         if not moved:
                             if self.stuck_counter <= 2:
@@ -934,8 +1081,9 @@ class BaseAgent(Agent):
                     # Path is permanently blocked (obstacle), replan
                     self.path = []
                     # stuck_counter incremented at the bottom when moved==False
-        else:
-            # Fallback: Simple greedy movement if no pathfinder
+
+        # Greedy movement fallback — used when no pathfinder is available
+        if not moved and self.pathfinder is None:
             current_x, current_y = pos_tuple
             target_x, target_y = target
 
@@ -984,11 +1132,38 @@ class BaseAgent(Agent):
             if len(self.position_history) > self.max_history_length:
                 self.position_history.pop(0)
 
-            # Detect loop: if we're oscillating between 2-3 positions
+            # ── Distance-progress check ──
+            # Even when moving (including sidesteps recorded above), verify
+            # the agent is actually getting closer to its target.  If not,
+            # abandon after _no_progress_limit steps.
+            if self.target_position is not None:
+                cur_dist = abs(current_pos[0] - self.target_position[0]) + abs(
+                    current_pos[1] - self.target_position[1]
+                )
+                if cur_dist < self._progress_best_dist:
+                    self._progress_best_dist = cur_dist
+                    self._progress_steps = 0
+                else:
+                    self._progress_steps += 1
+                if self._progress_steps >= self._no_progress_limit:
+                    print(
+                        f"{self.tag} NO-PROGRESS: no distance improvement in "
+                        f"{self._progress_steps} steps at {current_pos}, "
+                        f"abandoning target {self.target_position}"
+                    )
+                    if self.target_position is not None:
+                        self.unreachable_targets[self.target_position] = self.model.current_step
+                    self.target_position = None
+                    self.path = []
+                    self.stuck_counter = 0
+                    self._progress_best_dist = 999999
+                    self._progress_steps = 0
+                    return moved
+
+            # Detect loop: if oscillating between few positions
             if len(self.position_history) >= 10:
-                # Count unique positions in recent history
                 recent_positions = set(self.position_history[-10:])
-                if len(recent_positions) <= 3:
+                if len(recent_positions) <= 5:
                     # Oscillating between few positions - clear target
                     print(
                         f"{self.tag} LOOP: Detected position loop (oscillating between {len(recent_positions)} positions), abandoning target {self.target_position}"
@@ -1003,6 +1178,30 @@ class BaseAgent(Agent):
                     self.position_history = []
         else:
             self.stuck_counter += 1
+            # Track distance progress even when not moving
+            if self.target_position is not None and self.pos:
+                cp = pos_to_tuple(self.pos)
+                cur_dist = abs(cp[0] - self.target_position[0]) + abs(
+                    cp[1] - self.target_position[1]
+                )
+                if cur_dist < self._progress_best_dist:
+                    self._progress_best_dist = cur_dist
+                    self._progress_steps = 0
+                else:
+                    self._progress_steps += 1
+                if self._progress_steps >= self._no_progress_limit:
+                    print(
+                        f"{self.tag} NO-PROGRESS: no distance improvement in "
+                        f"{self._progress_steps} steps at {cp}, "
+                        f"abandoning target {self.target_position}"
+                    )
+                    self.unreachable_targets[self.target_position] = self.model.current_step
+                    self.target_position = None
+                    self.path = []
+                    self.stuck_counter = 0
+                    self._progress_best_dist = 999999
+                    self._progress_steps = 0
+                    return moved
             # If stuck for too long, clear target and path to find alternative
             if self.stuck_counter > 20:
                 print(
@@ -1130,9 +1329,14 @@ class BaseAgent(Agent):
         benefit from trading places.
 
         A swap is performed when ANY of these conditions hold:
-        1. **Head-on**: blocker's desired direction points back toward us.
-        2. **Mutual benefit**: swapping moves *both* agents closer to their
-           respective targets (or at least one closer and the other no worse).
+        1. **Head-on**: blocker's desired direction points back toward us,
+           OR the blocker's overall target lies behind us (opposite
+           directions in a corridor).
+        2. **Mutual benefit**: swapping moves the pair closer to (or at
+           least no farther from) their respective targets.
+        3. **Stuck escalation**: this agent has been stuck long enough that
+           the swap is accepted even without strict mutual benefit — as
+           long as it moves *this* agent closer to its target.
 
         Additional guards:
         - Both resulting positions satisfy warehouse negotiation rules.
@@ -1157,21 +1361,55 @@ class BaseAgent(Agent):
 
         head_on = b_desired == my_pos
 
+        # Extended head-on: blocker's target is *behind* us (opposite
+        # direction).  In a 1-wide corridor this means they need to pass
+        # through us.  Detect by checking if the swap moves the blocker
+        # closer to its target.
+        if not head_on:
+            b_target = getattr(blocking_agent, "target_position", None)
+            if b_target is not None:
+                b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+                b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+                if b_dist_after < b_dist_now:
+                    # Blocker wants to go past us
+                    my_target = getattr(self, "target_position", None)
+                    if my_target is not None:
+                        my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+                        my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                        if my_dist_after < my_dist_now:
+                            head_on = True  # both improve
+
         # ── Mutual-benefit check (fallback when not head-on) ─────────────
         if not head_on:
             my_target = getattr(self, "target_position", None)
             b_target = getattr(blocking_agent, "target_position", None)
             if my_target is None or b_target is None:
-                return False
-            # Current distances
-            my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
-            b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
-            # After-swap distances
-            my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
-            b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
-            # Accept if total distance decreases (at least one improves, none worsens)
-            if (my_dist_after + b_dist_after) >= (my_dist_now + b_dist_now):
-                return False
+                # Stuck escalation: no target on one side — swap if I'm
+                # stuck enough and the swap moves ME closer.
+                if self.stuck_counter >= 3 and my_target is not None:
+                    my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+                    my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                    if my_dist_after >= my_dist_now:
+                        return False
+                    # Accept — stuck escalation override
+                else:
+                    return False
+            else:
+                # Current distances
+                my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
+                b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+                # After-swap distances
+                my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+                total_now = my_dist_now + b_dist_now
+                total_after = my_dist_after + b_dist_after
+                if total_after > total_now:
+                    # Strictly worse — reject unless stuck escalation
+                    if self.stuck_counter >= 3 and my_dist_after < my_dist_now:
+                        pass  # accept: I improve, stuck long enough
+                    else:
+                        return False
+                # total_after <= total_now: at least neutral — accept
 
         # ── Diagonal corner-cutting guard ────────────────────────────────
         dx = b_pos[0] - my_pos[0]
@@ -1287,14 +1525,15 @@ class BaseAgent(Agent):
                     and b_want == a_pos
                 )
 
-                # Condition (b): mutual benefit — swap reduces total distance
+                # Condition (b): mutual benefit — swap reduces or preserves
+                # total distance (at least neutral).
                 mutual_benefit = False
                 if not head_on and a_target is not None and b_target is not None:
                     a_d_now = abs(a_pos[0] - a_target[0]) + abs(a_pos[1] - a_target[1])
                     b_d_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
                     a_d_aft = abs(b_pos[0] - a_target[0]) + abs(b_pos[1] - a_target[1])
                     b_d_aft = abs(a_pos[0] - b_target[0]) + abs(a_pos[1] - b_target[1])
-                    if (a_d_aft + b_d_aft) < (a_d_now + b_d_now):
+                    if (a_d_aft + b_d_aft) <= (a_d_now + b_d_now):
                         mutual_benefit = True
 
                 if not head_on and not mutual_benefit:
@@ -1452,13 +1691,22 @@ class BaseAgent(Agent):
                     self.coordinator_positions_step[cid] = cs
 
     def step_communicate(self) -> None:
-        """Stage 1: Drain mailbox once, share map, process messages."""
-        # Drain mailbox exactly ONCE — subclasses must NOT call get_messages() again
+        """Stage 1: Drain mailbox, share map, process messages.
+
+        A second drain+process round picks up messages that earlier agents
+        (in the same model tick) sent during THEIR communicate phase.  This
+        lets tombstones and knowledge propagate faster through relay chains.
+        """
+        # Round 1: drain, share, process
         self._step_messages = self.model.comm_manager.get_messages(self.unique_id)
-        # Proactively share map data with all agents in communication radius
         self.communicate_with_nearby_agents()
-        # Process all received messages (subclasses extend this)
         self.process_received_messages()
+
+        # Round 2: drain new messages from agents that already stepped this tick
+        extra = self.model.comm_manager.get_messages(self.unique_id)
+        if extra:
+            self._step_messages = extra
+            self.process_received_messages()
 
     def step_decide(self) -> None:
         """Stage 2: Make decisions (implemented by subclasses)"""

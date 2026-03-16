@@ -42,10 +42,11 @@ export const useSimulation = () => {
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    // Connect to WebSocket with session ID so the server routes events correctly
+    // Create socket but do NOT auto-connect — wait for explicit user action
     const socket = io(BACKEND_URL, {
       transports: ["websocket", "polling"],
       auth: { sessionId: SESSION_ID },
+      autoConnect: false,
     });
 
     socketRef.current = socket;
@@ -102,14 +103,7 @@ export const useSimulation = () => {
     };
   }, []);
 
-  // Initial health check on mount
-  useEffect(() => {
-    fetch(`${BACKEND_URL}/api/health`)
-      .then((r) =>
-        r.ok ? setBackendStatus("online") : setBackendStatus("offline"),
-      )
-      .catch(() => setBackendStatus("offline"));
-  }, []);
+  // No auto health check — wait for explicit user Connect action
 
   /**
    * Single health-check ping. Sets status to "waking" on entry and "online" on

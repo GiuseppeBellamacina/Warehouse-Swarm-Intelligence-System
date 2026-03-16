@@ -191,6 +191,7 @@ class CoordinatorAgent(BaseAgent):
                         self.known_objects.pop(opos, None)
                         self.known_objects_step.pop(opos, None)
                         self.known_objects_cleared[opos] = self.model.current_step
+                        self._confirmed_gone.add(opos)
 
                 elif event in ("object_delivered", "idle"):
                     self.retriever_states[rid] = "idle"
@@ -336,6 +337,24 @@ class CoordinatorAgent(BaseAgent):
         self._identify_available_retrievers()
         self._plan_task_assignments()
 
+        if self.tasks_to_assign:
+            print(
+                f"{self.tag} PLAN: assigning {len(self.tasks_to_assign)} tasks "
+                f"({len(self.known_objects)} known objs, "
+                f"{len(self.available_retrievers)} available retrievers)"
+            )
+        else:
+            import numpy as _np_cd
+
+            _unk = int(_np_cd.count_nonzero(self.local_map == 0))
+            _total = self.local_map.size
+            _pct = 100.0 * (1 - _unk / _total) if _total else 100.0
+            print(
+                f"{self.tag} IDLE: no tasks to assign "
+                f"(map {_pct:.0f}% explored, "
+                f"{len(self.known_objects)} known objs)"
+            )
+
         # Priority 1: Communicate (send tasks OR sync)
         if self.tasks_to_assign:
             self.should_communicate_this_step = True
@@ -369,6 +388,12 @@ class CoordinatorAgent(BaseAgent):
             # Cache the carrying capacity when we can read it directly
             cap = getattr(agent, "carrying_capacity", 2)
             self.retriever_capacity[rid] = cap
+
+            # Refresh position data — agent is physically nearby now
+            agent_pos = getattr(agent, "pos", None)
+            if agent_pos is not None:
+                self.retriever_positions[rid] = pos_to_tuple(agent_pos)
+                self.retriever_positions_step[rid] = self.model.current_step
 
             # Use declared task queue length (authoritative, avoids race conditions)
             declared_queue = self.retriever_task_queues.get(rid, [])
@@ -661,14 +686,13 @@ class CoordinatorAgent(BaseAgent):
         # When no work pending → genuine exploration, NO centroid bias.
         # When work pending but near centroid → biased toward centroid.
         if self._SMART_EXPLORE:
-            # In map_known mode, local_map is pre-filled so local_map==0 is
-            # always empty.  Use vision_explored==0 to find cells not yet
-            # visually scanned — objects can only be in unseen areas.
+            # In map_known mode, obstacles/warehouses are pre-filled into
+            # local_map, so local_map==0 correctly represents "unvisited
+            # non-structure" cells.  Use vision_explored for the density
+            # filter so pre-filled structural cells don't inflate the
+            # "mostly explored" ratio.
             _is_map_known = getattr(self.model, "map_known", False)
-            if _is_map_known:
-                unknown_mask = self.vision_explored == 0
-            else:
-                unknown_mask = self.local_map == 0
+            unknown_mask = self.local_map == 0
             if _np.any(unknown_mask):
                 padded = _np.pad(self.local_map, 1, mode="constant", constant_values=0)
                 has_explored = _np.zeros_like(unknown_mask)
@@ -693,10 +717,11 @@ class CoordinatorAgent(BaseAgent):
                         _r = 3
                         _y0, _y1 = max(0, _by - _r), min(_cH, _by + _r + 1)
                         _x0, _x1 = max(0, _bx - _r), min(_cW, _bx + _r + 1)
-                        if _is_map_known:
-                            _p = self.vision_explored[_y0:_y1, _x0:_x1]
-                        else:
-                            _p = self.local_map[_y0:_y1, _x0:_x1]
+                        _p = (
+                            self.vision_explored[_y0:_y1, _x0:_x1]
+                            if _is_map_known
+                            else self.local_map[_y0:_y1, _x0:_x1]
+                        )
                         if _p.size == 0 or int(_np.count_nonzero(_p)) / _p.size <= 0.85:
                             _keep.append(_i)
                     if _keep:
@@ -738,6 +763,11 @@ class CoordinatorAgent(BaseAgent):
                         self.target_position = target
                         self.path = []
                         self.state = AgentState.EXPLORING
+                        _work_str = "yes" if has_work else "no"
+                        print(
+                            f"{self.tag} EXPLORE: frontier target {target} "
+                            f"(boundary cells={len(b_ys)}, work={_work_str})"
+                        )
                         return
 
         # ── Strategy 3: random walkable cell (fallback) ──
@@ -756,9 +786,11 @@ class CoordinatorAgent(BaseAgent):
             self.target_position = self._explore_target
             self.path = []
             self.state = AgentState.EXPLORING
+            print(f"{self.tag} EXPLORE: random fallback target {self._explore_target}")
         else:
             self.state = AgentState.IDLE
             self.target_position = None
+            print(f"{self.tag} EXPLORE: no candidates — going IDLE")
 
     def _snap_to_walkable(
         self,

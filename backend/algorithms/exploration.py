@@ -128,6 +128,7 @@ class FrontierExplorer:
         explored_ratio_at: Optional[Callable[[int, int], float]] = None,
         all_peer_targets: Optional[List[Tuple[int, int]]] = None,
         current_target: Optional[Tuple[int, int]] = None,
+        unknown_mass_at: Optional[Callable[[int, int], int]] = None,
     ) -> Optional[Tuple[int, int]]:
         """
         Select the best frontier to explore
@@ -136,12 +137,13 @@ class FrontierExplorer:
         utility = effective_size / (distance^0.4 + 1) - agent_penalty
                   - global_penalty + coverage_bonus + momentum_bonus
 
-        effective_size = cluster_size * max(1 - explored_ratio, 0.05)
-        coverage_bonus = (1 - explored_ratio) * 3.0
+        effective_size = base_size * max(1 - explored_ratio, 0.05)
+        where base_size = unknown_mass (if callback provided) or cluster_size
+        coverage_bonus = (1 - explored_ratio) * 5.0
 
-        Scaling cluster_size by the unexplored fraction prevents large
-        mostly-explored frontiers from dominating small frontiers in
-        completely unseen regions.
+        Using unknown_mass (actual UNKNOWN cells behind the frontier)
+        prevents the scout from fixating on tiny isolated frontiers in
+        recondite corners when large unexplored areas exist elsewhere.
 
         Args:
             frontiers: List of (position, cluster_size)
@@ -157,6 +159,10 @@ class FrontierExplorer:
             current_target: agent's current exploration target — adds a
                 directional momentum bonus so the agent continues pushing
                 in the same direction instead of flipping back and forth.
+            unknown_mass_at: callable(x, y) → int giving the count of UNKNOWN
+                cells in a radius around (x,y).  When provided, replaces
+                cluster_size as the base for effective_size so frontiers
+                leading to large unexplored regions are preferred.
 
         Returns:
             Best frontier position or None
@@ -220,7 +226,14 @@ class FrontierExplorer:
             if explored_ratio_at is not None:
                 local_ratio = explored_ratio_at(frontier_pos[0], frontier_pos[1])
                 unexplored_frac = max(1.0 - local_ratio, 0.05)
-                effective_size = cluster_size * unexplored_frac
+                # Use unknown_mass as base when available: actual UNKNOWN
+                # cell count behind the frontier gives a much better
+                # signal than the boundary cluster_size alone.
+                base_size = float(cluster_size)
+                if unknown_mass_at is not None:
+                    mass = unknown_mass_at(frontier_pos[0], frontier_pos[1])
+                    base_size = max(float(mass), float(cluster_size))
+                effective_size = base_size * unexplored_frac
                 coverage_bonus = (1.0 - local_ratio) * 5.0
 
             # Momentum: bonus for frontiers aligned with the agent's current

@@ -33,7 +33,7 @@ class Message:
     timestamp: int
 
 
-@dataclass
+@dataclass(kw_only=True)
 class MapDataMessage(Message):
     """Message containing explored map data.
 
@@ -43,6 +43,7 @@ class MapDataMessage(Message):
     - explored_cells:          grid topology (cell types discovered so far)
     - known_objects:           {(x,y): Stamped(value=float, step=int)}
     - objects_being_collected: {(x,y): Stamped(value=None,  step=int)}
+    - known_objects_cleared:   {(x,y): Stamped(value=None,  step=int)}
     - retriever_positions:     {rid:   Stamped(value=(x,y), step=int)}
     - coordinator_positions:   {cid:   Stamped(value=(x,y), step=int)}
     - explore_targets:         {aid:   Stamped(value=(x,y), step=int)}
@@ -51,6 +52,7 @@ class MapDataMessage(Message):
     explored_cells: List[Tuple[int, int, int]]
     known_objects: Dict = field(default_factory=dict)  # {(x,y): Stamped}
     objects_being_collected: Dict = field(default_factory=dict)  # {(x,y): Stamped}
+    known_objects_cleared: Dict = field(default_factory=dict)  # {(x,y): Stamped}
     retriever_positions: Dict = field(default_factory=dict)  # {rid:   Stamped}
     coordinator_positions: Dict = field(default_factory=dict)  # {cid:   Stamped}
     explore_targets: Dict = field(default_factory=dict)  # {aid:   Stamped}

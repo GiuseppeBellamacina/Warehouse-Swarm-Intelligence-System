@@ -66,9 +66,13 @@ La dimensione del cluster viene scalata dalla frazione inesplorata della zona ci
 
 $$S_{\text{eff}}(f) = \text{cluster\_size}(f) \cdot \max\!\big(1 - r_{\text{exp}}(f),\; 0{,}05\big)$$
 
-dove $r_{\text{exp}}(f)$ \`e la frazione di celle gi\`a esplorate in una finestra
-centrata sulla frontiera ($11\times11$ in modalit\`a unknown, $7\times7$ in
-\texttt{map\_known}). In questo modo, una frontiera in una zona esplorata al 89\%
+dove $r_{\text{exp}}(f)$ \`e la frazione di celle gi\`a esplorate nella finestra
+$W_k$ centrata sulla frontiera ($k = 11$ in modalit\`a unknown, $k = 7$ in
+\texttt{map\_known}):
+
+$$r_{\text{exp}}(f) = \frac{|\{c \in W_k(f) : c \neq \texttt{UNKNOWN}\}|}{|W_k(f)|}$$
+
+In questo modo, una frontiera in una zona esplorata all'89\%
 con cluster di dimensione~21 ha $S_{\text{eff}} = 21 \times 0{,}11 \approx 2{,}3$:
 non pu\`o competere con piccole frontiere in territorio completamente inesplorato.
 
@@ -101,15 +105,12 @@ appetibile: lo forza a continuare nella direzione gi\`a intrapresa.
 \subsection{Filtro Zone Esplorate (Solo Unknown Mode)}
 
 Prima della valutazione dell'utilit\`a, in modalit\`a unknown le frontiere vengono
-pre-filtrate in base alla copertura locale:
-
-$$r_{\text{zone}}(f) = \frac{|\{c \in W_{11}(f) : c \ne \text{UNKNOWN}\}|}{|W_{11}(f)|}$$
-
-Se $r_{\text{zone}}(f) > 0{,}85$, la frontiera viene scartata: si trova in una
-zona quasi completamente esplorata e spostarsi per coprire poche celle residue
-non \`e efficiente. Questo filtro non si applica in \texttt{map\_known}, dove il
-routing a zone (Sezione~\ref{sec:zone-routing}) gestisce la stessa problematica
-in modo pi\`u strutturato.
+pre-filtrate in base alla copertura locale: se $r_{\text{exp}}(f) > 0{,}85$,
+la frontiera viene scartata perch\'e si trova in una zona quasi completamente
+esplorata e spostarsi per coprire poche celle residue non \`e efficiente.
+Questo filtro non si applica in \texttt{map\_known}, dove il routing a zone
+(Sezione~\ref{sec:zone-routing}) gestisce la stessa problematica in modo pi\`u
+strutturato.
 
 \subsection{Blocco del Target (Target Lock)}
 
@@ -185,7 +186,7 @@ viene calcolato un \textit{waypoint} come centroide delle celle ancora inesplora
 nella zona, utilizzato come bonus di momento per guidare lo Scout verso di essa.
 
 Questo filtro non si applica in modalit\`a unknown, dove il routing naturale delle
-frontiere combinato con il filtro $r_{\text{zone}} > 0{,}85$ \`e sufficiente.
+frontiere combinato con il filtro $r_{\text{exp}}(f) > 0{,}85$ \`e sufficiente.
 
 \section{Anti-Clustering}
 
