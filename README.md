@@ -146,23 +146,36 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 ├── 📁 docs
 │   ├── 📁 benchmarks
 │   │   ├── 📁 A
-│   │   │   ├── 🖼️ benchmark-efficiency-2026-03-11.png
-│   │   │   ├── 🖼️ benchmark-energy-2026-03-11.png
-│   │   │   ├── 🖼️ benchmark-messages-2026-03-11.png
-│   │   │   ├── 🖼️ benchmark-retrieval-2026-03-11.png
-│   │   │   └── 🖼️ benchmark-table-2026-03-11.png
-│   │   ├── 📁 B
-│   │   │   ├── 🖼️ benchmark-efficiency-2026-03-11.png
-│   │   │   ├── 🖼️ benchmark-energy-2026-03-11.png
-│   │   │   ├── 🖼️ benchmark-messages-2026-03-11.png
-│   │   │   ├── 🖼️ benchmark-retrieval-2026-03-11.png
-│   │   │   └── 🖼️ benchmark-table-2026-03-11.png
-│   │   └── ⚙️ benchmark-runs-2026-03-11.json
+│   │   │   ├── 🖼️ efficiency.png
+│   │   │   ├── 🖼️ energy.png
+│   │   │   ├── 🖼️ messages.png
+│   │   │   ├── 🖼️ retrieval.png
+│   │   │   ├── 🖼️ snapshot_0S-0C-5R_map_known.png
+│   │   │   ├── 🖼️ snapshot_0S-0C-5R_unknown.png
+│   │   │   ├── 🖼️ snapshot_1S-1C-3R_map_known.png
+│   │   │   ├── 🖼️ snapshot_1S-1C-3R_map_known_no-seek.png
+│   │   │   ├── 🖼️ snapshot_1S-1C-3R_unknown.png
+│   │   │   ├── 🖼️ snapshot_1S-1C-3R_unknown__no-seek.png
+│   │   │   ├── 🖼️ steps_comparison.png
+│   │   │   └── 🖼️ summary_table.png
+│   │   └── 📁 B
+│   │       ├── 🖼️ efficiency.png
+│   │       ├── 🖼️ energy.png
+│   │       ├── 🖼️ messages.png
+│   │       ├── 🖼️ retrieval.png
+│   │       ├── 🖼️ snapshot_0S-0C-5R_map_known.png
+│   │       ├── 🖼️ snapshot_0S-0C-5R_unknown.png
+│   │       ├── 🖼️ snapshot_1S-1C-3R_map_known.png
+│   │       ├── 🖼️ snapshot_1S-1C-3R_map_known_no-seek.png
+│   │       ├── 🖼️ snapshot_1S-1C-3R_unknown.png
+│   │       ├── 🖼️ snapshot_1S-1C-3R_unknown__no-seek.png
+│   │       ├── 🖼️ steps_comparison.png
+│   │       └── 🖼️ summary_table.png
 │   ├── 📁 latex
+│   │   ├── 📁 assets
 │   │   ├── 📁 parts
 │   │   │   ├── 📄 baseagent.tex
 │   │   │   ├── 📄 benchmarks.tex
-│   │   │   ├── 📄 communication.tex
 │   │   │   ├── 📄 coordinator.tex
 │   │   │   ├── 📄 frontespizio.tex
 │   │   │   ├── 📄 retriever.tex
@@ -208,6 +221,7 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 ├── 📄 LICENSE
 ├── 📝 QUICK_START.md
 ├── 📝 README.md
+├── 🐍 evaluation.py
 ├── 📄 format.ps1
 ├── ⚙️ pyproject.toml
 ├── ⚙️ render.yaml
