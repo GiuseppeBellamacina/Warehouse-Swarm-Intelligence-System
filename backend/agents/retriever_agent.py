@@ -329,14 +329,23 @@ class RetrieverAgent(BaseAgent):
                                 f"{self.tag} REJECT-ASSIGN: {target} already personally "
                                 f"collected at step {self._personally_collected[target]}"
                             )
+                        elif self.known_objects_cleared.get(target, -1) >= message.timestamp:
+                            # We (or a peer via map share) already confirmed
+                            # this cell is empty — reject the stale assignment.
+                            print(
+                                f"{self.tag} REJECT-ASSIGN: {target} tombstoned at step "
+                                f"{self.known_objects_cleared.get(target)}"
+                            )
                         else:
                             self.dubious_objects[target] = message.priority
                             self.dubious_objects_step[target] = self.model.current_step
-                            if target not in self.task_queue:
-                                self.task_queue.append(target)
+                            # Do NOT add to task_queue — dubious objects are only
+                            # verified at P4b when the retriever is completely idle.
+                            # Adding them here would cause the retriever to chase
+                            # unconfirmed targets instead of delivering.
                             print(
                                 f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
-                                f"queued unknown task {target} (dubious)"
+                                f"noted unknown task {target} (dubious, not queued)"
                             )
 
             elif isinstance(message, TaskStatusMessage):
@@ -421,7 +430,7 @@ class RetrieverAgent(BaseAgent):
         # ---- P1: Deliver if carrying objects and warehouse sequence not started ----
         # Only head to the warehouse when:
         #   (a) fully loaded, OR
-        #   (b) carrying something but the task queue is exhausted (nothing left to pick up)
+        #   (b) carrying something but no CONFIRMED tasks remain (dubious-only doesn't count)
         if self.carrying_objects > 0 and self._wh_step is None:
             if self.carrying_objects >= self.carrying_capacity:
                 # Release ALL remaining claims immediately so peer retrievers
@@ -436,21 +445,33 @@ class RetrieverAgent(BaseAgent):
                 self._dubious_being_verified.clear()
                 self._start_warehouse_sequence("deliver")
                 return
-            elif not self.task_queue:
-                # Before committing to the warehouse, try to self-assign one
-                # more object — the retriever may have learned about new
-                # objects from peers while travelling.  This avoids a wasted
-                # trip when there are still nearby unclaimed packages.
-                if (
-                    self.carrying_objects < self.carrying_capacity
-                    and (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP)
-                    and self._try_self_assign_visible()
-                ):
-                    pass  # claimed something — fall through to P3
-                else:
-                    self._start_warehouse_sequence("deliver")
-                    return
-            # else: still have capacity AND queued tasks — fall through to P3
+            else:
+                # Only confirmed tasks (in known_objects) should delay delivery.
+                # Dubious-only entries are not worth chasing while carrying cargo.
+                confirmed_tasks = [t for t in self.task_queue if t in self.known_objects]
+                if not confirmed_tasks:
+                    # Drop dubious tasks from queue — they'll be re-evaluated at P4b
+                    # when idle, after delivery.
+                    dubious_tasks = [t for t in self.task_queue if t not in self.known_objects]
+                    for dt in dubious_tasks:
+                        self.model.comm_manager.release_claim(dt, self.unique_id)
+                        self._dubious_being_verified.discard(dt)
+                    self.task_queue = [t for t in self.task_queue if t in self.known_objects]
+
+                    # Before committing to the warehouse, try to self-assign one
+                    # more object — the retriever may have learned about new
+                    # objects from peers while travelling.  This avoids a wasted
+                    # trip when there are still nearby unclaimed packages.
+                    if (
+                        self.carrying_objects < self.carrying_capacity
+                        and (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP)
+                        and self._try_self_assign_visible()
+                    ):
+                        pass  # claimed something — fall through to P3
+                    else:
+                        self._start_warehouse_sequence("deliver")
+                        return
+                # else: confirmed tasks exist — fall through to P3
 
         # ---- P2: Recharge if energy critically low ----
         if self.energy < self.max_energy * self._RECHARGE_THRESHOLD and self._wh_step is None:
