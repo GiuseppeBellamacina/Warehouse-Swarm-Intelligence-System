@@ -1,6 +1,12 @@
 // Main App Component
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+} from "react";
 import { useSimulation } from "./hooks/useSimulation";
 import { useBenchmark } from "./hooks/useBenchmark";
 import { useStepHistory } from "./hooks/useStepHistory";
@@ -152,6 +158,13 @@ function App() {
     stepHistory.viewStep !== null
       ? (stepHistory.getViewState() ?? state)
       : state;
+
+  // Trail to display: when scrubbing timeline, reconstruct from snapshots
+  const displayTrail = useMemo(() => {
+    if (stepHistory.viewStep === null) return trailHistory;
+    return stepHistory.computeTrailUpTo(stepHistory.viewStep);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepHistory.viewStep, trailHistory]);
 
   // Wrap resetSimulation to also clear step history
   const wrappedResetSimulation = useCallback(async () => {
@@ -748,7 +761,7 @@ function App() {
                         state={displayState}
                         selectedAgentId={selectedAgentId}
                         onSelectAgent={setSelectedAgentId}
-                        trailHistory={trailHistory}
+                        trailHistory={displayTrail}
                         showTrails={showTrails}
                       />
                     ) : (
@@ -1153,7 +1166,7 @@ function App() {
                     state={displayState}
                     selectedAgentId={selectedAgentId}
                     onSelectAgent={setSelectedAgentId}
-                    trailHistory={trailHistory}
+                    trailHistory={displayTrail}
                     showTrails={showTrails}
                   />
                 ) : (

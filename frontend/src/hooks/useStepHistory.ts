@@ -3,6 +3,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { SimulationState } from "../types/simulation";
+import { TrailHistory } from "../components/GridCanvas";
 
 /** Maximum number of snapshots kept in memory. Oldest are discarded. */
 const MAX_SNAPSHOTS = 5000;
@@ -27,6 +28,9 @@ export interface StepHistory {
 
   /** Get the SimulationState for the currently viewed step (or null if unavailable). */
   getViewState: () => SimulationState | null;
+
+  /** Compute agent trails from stored snapshots up to (and including) the given step. */
+  computeTrailUpTo: (step: number) => TrailHistory;
 }
 
 export const useStepHistory = (): StepHistory => {
@@ -77,6 +81,33 @@ export const useStepHistory = (): StepHistory => {
     return snapshotsRef.current.get(viewStep) ?? null;
   }, [viewStep]);
 
+  const computeTrailUpTo = useCallback((targetStep: number): TrailHistory => {
+    const trail: TrailHistory = new Map();
+    const map = snapshotsRef.current;
+    // Collect step keys up to targetStep, sorted ascending
+    const keys: number[] = [];
+    for (const k of map.keys()) {
+      if (k <= targetStep) keys.push(k);
+    }
+    keys.sort((a, b) => a - b);
+    for (const k of keys) {
+      const snap = map.get(k);
+      if (!snap) continue;
+      for (const agent of snap.agents) {
+        let t = trail.get(agent.id);
+        if (!t) {
+          t = [];
+          trail.set(agent.id, t);
+        }
+        const last = t.length > 0 ? t[t.length - 1] : null;
+        if (!last || last.x !== agent.x || last.y !== agent.y) {
+          t.push({ x: agent.x, y: agent.y });
+        }
+      }
+    }
+    return trail;
+  }, []);
+
   return {
     recordTick,
     clear,
@@ -86,5 +117,6 @@ export const useStepHistory = (): StepHistory => {
     viewStep,
     setViewStep,
     getViewState,
+    computeTrailUpTo,
   };
 };
