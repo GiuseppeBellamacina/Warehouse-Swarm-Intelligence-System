@@ -154,7 +154,6 @@ async def get_config(config_name: str):
         with open(config_file, "r", encoding="utf-8") as f:
             config_data = json.load(f)
 
-        print(f"[DEBUG] Successfully loaded config: {config_name}")
         return config_data
     except HTTPException:
         raise
@@ -186,14 +185,11 @@ async def load_simulation_endpoint(request: Request, body: LoadGridRequest):
     try:
         mgr = _get_manager(request)
         sid = _session_id(request)
-        print("[DEBUG] Received load simulation request (grid format)")
         grid_config = GridConfigLoader.load_from_dict(body.scenario)
         agents_config = (
             SimulationAgentsConfig(**body.agents) if body.agents else SimulationAgentsConfig()
         )
-        print("[DEBUG] Configuration parsed — initializing and broadcasting step 0...")
         await mgr.load_from_grid(grid_config, agents_config, ws_manager, sid)
-        print("[DEBUG] Step 0 broadcast complete")
         meta = grid_config.metadata
         return {
             "status": "loaded",
@@ -254,12 +250,11 @@ async def start_simulation(request: Request):
     _total_obj = mgr.model.total_objects if mgr.model else None
     _map_known = getattr(mgr.model, "map_known", False) if mgr.model else False
 
-    print("[DEBUG] Starting simulation loop...")
+    print("\33[1;35mStarting simulation loop...\33[0m")
     print(f"  User IP: {user_ip}  UA: {(user_agent or '')[:80]}")
     print(f"  Config: {config_name}  Grid: {_grid_size}×{_grid_size}  Objects: {_total_obj}")
     print(f"  Agents: {agent_count} ({_scouts}S {_coords}C {_retrs}R)  map_known={_map_known}")
     mgr.simulation_task = asyncio.create_task(mgr.start_simulation(ws_manager))
-    print("[DEBUG] Simulation loop task created")
 
     # Fire-and-forget Telegram notification
     asyncio.create_task(
