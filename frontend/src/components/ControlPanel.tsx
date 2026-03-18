@@ -315,8 +315,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [coordOvOpen, setCoordOvOpen] = useState(false);
   const [retrOvOpen, setRetrOvOpen] = useState(false);
 
-  // Load defaults and available configs from backend on mount
+  // Load defaults and available configs from backend — only once connected
   useEffect(() => {
+    if (!connected) return;
     const init = async () => {
       try {
         const [defRes, cfgRes] = await Promise.all([
@@ -331,15 +332,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         setAvailableConfigs(cfgs);
         if (cfgs.length > 0) setConfigName(cfgs[0]);
       } catch {
-        /* backend not ready yet — retry handled by config fetch below */
+        /* backend not ready yet */
       }
     };
     init();
-  }, []);
+  }, [connected]);
 
   // Auto-fetch config JSON whenever the dropdown selection changes
   useEffect(() => {
-    if (!configName || !defaultsRef.current) return;
+    if (!connected || !configName || !defaultsRef.current) return;
     const load = async () => {
       setIsFetching(true);
       try {
@@ -356,7 +357,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       }
     };
     load();
-  }, [configName, defaults]);
+  }, [connected, configName, defaults]);
 
   // Read an uploaded JSON file locally (no server round-trip)
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
