@@ -54,6 +54,10 @@ CHART_COLORS = [
     "#ec4899",  # pink
     "#06b6d4",  # cyan
     "#f97316",  # orange
+    "#22c55e",  # green
+    "#eab308",  # yellow
+    "#db2777",  # rose
+    "#3d9970",  # teal
 ]
 
 THEME = {
