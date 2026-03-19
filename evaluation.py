@@ -10,7 +10,9 @@ saves them to docs/benchmarks/<map>/.
 Usage:
     python evaluation.py                      # quick summary, no images
     python evaluation.py -v                   # verbose (agent log lines)
-    python evaluation.py --imgs               # generate benchmark charts and snapshots
+    python evaluation.py --imgs               # generate both charts and snapshots
+    python evaluation.py --imgs bench         # generate only benchmark charts
+    python evaluation.py --imgs snaps         # generate only grid snapshots
     python evaluation.py --seed 42            # set random seed for reproducibility
     python evaluation.py --maps A B           # specify which maps to run (defaults to all)
     python evaluation.py --mode known unknown # specify map mode(s) to test (defaults to all)
@@ -32,9 +34,11 @@ sys.path.insert(0, ".")
 
 from backend.api.simulation_manager import SimulationManager
 from backend.config.schemas import (
-    AgentRoleParams,
+    CoordinatorParams,
     GridScenarioConfig,
+    RetrieverParams,
     ScoutBehaviorParams,
+    ScoutParams,
     SimulationAgentsConfig,
 )
 from backend.core.grid_manager import CellType
@@ -854,32 +858,82 @@ CONFIGS = [
     (
         "0S/0C/5R unknown",
         _default_agents(
-            scouts=AgentRoleParams(count=0),
-            coordinators=AgentRoleParams(count=0),
-            retrievers=AgentRoleParams(
-                count=5, vision_radius=3, communication_radius=3, carrying_capacity=2
-            ),
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5),
         ),
     ),
     (
         "0S/0C/5R map_known",
         _default_agents(
-            scouts=AgentRoleParams(count=0),
-            coordinators=AgentRoleParams(count=0),
-            retrievers=AgentRoleParams(
-                count=5, vision_radius=3, communication_radius=3, carrying_capacity=2
-            ),
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5),
             map_known=True,
         ),
     ),
     # ── seek_coordinator=False ──
     (
-        "1S/1C/3R unknown  no-seek",
+        "1S/1C/3R unknown no-seek",
         _default_agents(scout_behavior=ScoutBehaviorParams(seek_coordinator=False)),
     ),
     (
         "1S/1C/3R map_known no-seek",
         _default_agents(scout_behavior=ScoutBehaviorParams(seek_coordinator=False), map_known=True),
+    ),
+    # ── v3/c3: all agents with vision_radius=3, communication_radius=3 ──
+    (
+        "1S/1C/3R unknown v3c3",
+        _default_agents(
+            scouts=ScoutParams(vision_radius=3, communication_radius=3),
+            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
+            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
+        ),
+    ),
+    (
+        "1S/1C/3R map_known v3c3",
+        _default_agents(
+            scouts=ScoutParams(vision_radius=3, communication_radius=3),
+            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
+            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
+            map_known=True,
+        ),
+    ),
+    (
+        "0S/0C/5R unknown v3c3",
+        _default_agents(
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=3),
+        ),
+    ),
+    (
+        "0S/0C/5R map_known v3c3",
+        _default_agents(
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=3),
+            map_known=True,
+        ),
+    ),
+    (
+        "1S/1C/3R unknown no-seek v3c3",
+        _default_agents(
+            scouts=ScoutParams(vision_radius=3, communication_radius=3),
+            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
+            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
+            scout_behavior=ScoutBehaviorParams(seek_coordinator=False),
+        ),
+    ),
+    (
+        "1S/1C/3R map_known no-seek v3c3",
+        _default_agents(
+            scouts=ScoutParams(vision_radius=3, communication_radius=3),
+            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
+            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
+            scout_behavior=ScoutBehaviorParams(seek_coordinator=False),
+            map_known=True,
+        ),
     ),
 ]
 
@@ -930,70 +984,83 @@ def _generate_charts(
     map_name: str,
     results: list[tuple[str, int, list[dict], object, TrailHistory]],
     out_dir: str,
+    *,
+    bench: bool = True,
+    snaps: bool = True,
 ):
-    """Generate PNG charts + table + final snapshots for one map and save to out_dir."""
+    """Generate PNG charts and/or final snapshots for one map and save to out_dir."""
     os.makedirs(out_dir, exist_ok=True)
 
-    # 1) Line charts (one per metric, all configs overlaid)
-    for cdef in CHART_DEFS:
-        series = []
-        for i, (name, _steps, snapshots, _mdl, _trails) in enumerate(results):
-            ds = _downsample(snapshots)
-            series.append(
-                {
-                    "label": name,
-                    "color": _pick_color(i),
-                    "data": [{"x": sn["step"], "y": cdef["extract"](sn)} for sn in ds],
-                }
+    if bench:
+        # 1) Line charts (one per metric, all configs overlaid)
+        for cdef in CHART_DEFS:
+            series = []
+            for i, (name, _steps, snapshots, _mdl, _trails) in enumerate(results):
+                ds = _downsample(snapshots)
+                series.append(
+                    {
+                        "label": name,
+                        "color": _pick_color(i),
+                        "data": [{"x": sn["step"], "y": cdef["extract"](sn)} for sn in ds],
+                    }
+                )
+            _save_line_chart(
+                os.path.join(out_dir, f"{cdef['key']}.png"),
+                f"{cdef['title']}  —  {map_name}",
+                series,
+                cdef["y_label"],
             )
-        _save_line_chart(
-            os.path.join(out_dir, f"{cdef['key']}.png"),
-            f"{cdef['title']}  —  {map_name}",
-            series,
-            cdef["y_label"],
+
+        # 2) Bar chart — total steps comparison
+        labels = [name for name, _, _, _, _ in results]
+        values = [steps for _, steps, _, _, _ in results]
+        colors = [_pick_color(i) for i in range(len(results))]
+        _save_bar_chart(
+            os.path.join(out_dir, "steps_comparison.png"),
+            f"Total Steps Comparison  —  {map_name}",
+            labels,
+            values,
+            colors,
         )
 
-    # 2) Bar chart — total steps comparison
-    labels = [name for name, _, _, _, _ in results]
-    values = [steps for _, steps, _, _, _ in results]
-    colors = [_pick_color(i) for i in range(len(results))]
-    _save_bar_chart(
-        os.path.join(out_dir, "steps_comparison.png"),
-        f"Total Steps Comparison  —  {map_name}",
-        labels,
-        values,
-        colors,
-    )
-
-    # 3) Summary table
-    headers = ["Config", "Steps", "Retrieved", "Completion", "Efficiency", "Avg Energy", "Messages"]
-    rows = []
-    for name, steps, snapshots, _model, _trails in results:
-        last = snapshots[-1] if snapshots else {}
-        retrieved = last.get("objects_retrieved", 0)
-        total = last.get("total_objects", 0)
-        pct = f"{(retrieved / total * 100):.1f}%" if total else "—"
-        eff = f"{(retrieved / steps * 100):.2f}" if steps > 0 else "—"
-        avg_e = f"{last.get('average_energy', 0):.0f}"
-        msgs = str(last.get("messages_sent", 0))
-        rows.append([name, str(steps), f"{retrieved}/{total}", pct, eff, avg_e, msgs])
-    _save_table(
-        os.path.join(out_dir, "summary_table.png"),
-        f"Summary  —  {map_name}",
-        headers,
-        rows,
-        colors,
-    )
-
-    # 4) Final grid snapshots (one per config)
-    for i, (name, _steps, _snapshots, mdl, tr) in enumerate(results):
-        safe = name.replace("/", "-").replace(" ", "_").strip("_")
-        _save_grid_snapshot(
-            os.path.join(out_dir, f"snapshot_{safe}.png"),
-            mdl,
-            f"{name}  \u2014  {map_name}",
-            tr,
+        # 3) Summary table
+        headers = [
+            "Config",
+            "Steps",
+            "Retrieved",
+            "Completion",
+            "Efficiency",
+            "Avg Energy",
+            "Messages",
+        ]
+        rows = []
+        for name, steps, snapshots, _model, _trails in results:
+            last = snapshots[-1] if snapshots else {}
+            retrieved = last.get("objects_retrieved", 0)
+            total = last.get("total_objects", 0)
+            pct = f"{(retrieved / total * 100):.1f}%" if total else "—"
+            eff = f"{(retrieved / steps * 100):.2f}" if steps > 0 else "—"
+            avg_e = f"{last.get('average_energy', 0):.0f}"
+            msgs = str(last.get("messages_sent", 0))
+            rows.append([name, str(steps), f"{retrieved}/{total}", pct, eff, avg_e, msgs])
+        _save_table(
+            os.path.join(out_dir, "summary_table.png"),
+            f"Summary  —  {map_name}",
+            headers,
+            rows,
+            colors,
         )
+
+    if snaps:
+        # 4) Final grid snapshots (one per config)
+        for i, (name, _steps, _snapshots, mdl, tr) in enumerate(results):
+            safe = name.replace("/", "-").replace(" ", "_").strip("_")
+            _save_grid_snapshot(
+                os.path.join(out_dir, f"snapshot_{safe}.png"),
+                mdl,
+                f"{name}  \u2014  {map_name}",
+                tr,
+            )
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -1006,8 +1073,12 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Show agent log lines")
     parser.add_argument(
         "--imgs",
-        action="store_true",
-        help="Generate benchmark charts and final grid snapshots",
+        nargs="?",
+        const="all",
+        default=None,
+        choices=["all", "bench", "snaps"],
+        metavar="MODE",
+        help="Generate images: 'bench' (charts only), 'snaps' (snapshots only), or omit MODE for both",
     )
     parser.add_argument(
         "--seed",
@@ -1036,7 +1107,9 @@ def main():
     )
     args = parser.parse_args()
     verbose = args.verbose
-    generate_images = args.imgs
+    img_mode = args.imgs  # None | "all" | "bench" | "snaps"
+    generate_bench = img_mode in ("all", "bench")
+    generate_snaps = img_mode in ("all", "snaps")
     import builtins
 
     _real_print = builtins.print
@@ -1172,17 +1245,22 @@ def main():
             steps, snapshots, model, trails = _run(name, grid_cfg, agents_cfg)
             if not verbose:
                 builtins.print = _real_print
-                _real_print(f"  [{name:30s}]  => {steps:4d} steps")
+                _real_print(f"  [{name:32s}]  => {steps:4d} steps")
             results.append((name, steps, snapshots, model, trails))
 
         _real_print("-" * 80)
         _real_print(f"  Total steps: {sum(s for _, s, _, _, _ in results)}")
 
         # Generate charts & snapshots
-        if generate_images:
+        if generate_bench or generate_snaps:
             out_dir = os.path.join("docs", "benchmarks", map_name)
-            _generate_charts(map_name, results, out_dir)
-            _real_print(f"  Charts & snapshots saved to {out_dir}/")
+            _generate_charts(map_name, results, out_dir, bench=generate_bench, snaps=generate_snaps)
+            parts = [
+                p
+                for p in (["charts"] if generate_bench else [])
+                + (["snapshots"] if generate_snaps else [])
+            ]
+            _real_print(f"  {' & '.join(parts).capitalize()} saved to {out_dir}/")
         else:
             _real_print("  Image generation skipped (use --imgs to enable)")
         _real_print("=" * 80)
