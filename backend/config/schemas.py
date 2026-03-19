@@ -343,31 +343,38 @@ class AgentRoleParams(BaseModel):
     """Per-role agent parameters used with the new grid format"""
 
     count: int = Field(ge=0, default=1)
-    vision_radius: int = Field(ge=1, default=3)
+    vision_radius: int = Field(ge=1, default=2)
     communication_radius: int = Field(ge=1, default=2)
     max_energy: float = Field(gt=0, default=500.0)
     speed: float = Field(gt=0, default=1.0)
     carrying_capacity: int = Field(ge=0, default=0)
 
 
+class ScoutParams(AgentRoleParams):
+    """Parameters specific to scout agents"""
+
+    vision_radius: int = Field(ge=1, default=3)
+    speed: float = Field(gt=0, default=2.0)
+
+
+class CoordinatorParams(AgentRoleParams):
+    """Parameters specific to coordinator agents"""
+
+    communication_radius: int = Field(ge=1, default=3)
+
+
+class RetrieverParams(AgentRoleParams):
+    """Parameters specific to retriever agents"""
+
+    carrying_capacity: int = Field(ge=0, default=2)
+
+
 class SimulationAgentsConfig(BaseModel):
     """Agent composition config passed alongside a GridScenarioConfig"""
 
-    scouts: AgentRoleParams = Field(
-        default_factory=lambda: AgentRoleParams(
-            count=1, vision_radius=3, communication_radius=2, speed=2, carrying_capacity=0
-        )
-    )
-    coordinators: AgentRoleParams = Field(
-        default_factory=lambda: AgentRoleParams(
-            count=1, vision_radius=2, communication_radius=3, carrying_capacity=0
-        )
-    )
-    retrievers: AgentRoleParams = Field(
-        default_factory=lambda: AgentRoleParams(
-            count=3, vision_radius=2, communication_radius=2, carrying_capacity=2
-        )
-    )
+    scouts: ScoutParams = Field(default_factory=ScoutParams)
+    coordinators: CoordinatorParams = Field(default_factory=CoordinatorParams)
+    retrievers: RetrieverParams = Field(default_factory=lambda: RetrieverParams(count=3))
 
     scout_behavior: ScoutBehaviorParams = Field(default_factory=ScoutBehaviorParams)
     coordinator_behavior: CoordinatorBehaviorParams = Field(
