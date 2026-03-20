@@ -69,3 +69,5 @@ simulation_logs/
 *.gz
 *.toc
 *.lof
+.vercel
+.env*.local
