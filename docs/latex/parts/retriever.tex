@@ -252,23 +252,17 @@ a \texttt{FrontierExplorer.}%
 
 \subsection{Persistenza del Momento alla Frontiera}
 
-In precedenza, al momento di raggiungere una frontiera l'agente azzerava
-\texttt{\_explore\_target = None}.  Al passo successivo, l'algoritmo di selezione
-non aveva pi\`u un baricentro direzionale e poteva scegliere frontiere nella
-direzione opposta, causando un immediato \textit{backtracking} verso zone gi\`a
-note.
-
-\paragraph{Correzione.} Prima di azzerare il target raggiunto, il valore viene
-salvato in \texttt{\_last\_explore\_target}.  Nella funzione di utilit\`a, il
-bonus momento viene calcolato usando \texttt{\_last\_explore\_target}\linebreak[2] come
-direzione di riferimento se \texttt{\_explore\_target} \`e \texttt{None}:
+\begin{sloppypar}
+Quando il Retriever raggiunge una frontiera, il suo valore viene salvato in
+\texttt{\_last\_explore\_target} prima di azzerare il puntatore corrente. Il bonus
+momento usa questo riferimento se \texttt{\_explore\_target} \`e \texttt{None},
+mantenendo la direzione gi\`a intrapresa e prevenendo il backtracking verso
+zone gi\`a coperte:
+\end{sloppypar}
 
 $$B_{\text{mom}}(f) = \max(0,\;\cos\theta) \cdot 3{,}0, \quad
   \theta = \angle(\overrightarrow{p_{\text{last}} \to p}, \; \overrightarrow{p \to f})$$
 \noindent\hfill{\footnotesize\texttt{exploration.py | FrontierExplorer.select\_best\_frontier}}
-
-In questo modo l'agente mantiene la spinta nella direzione gi\`a intrapresa anche
-dopo aver toccato la frontiera, evitando oscillazioni su zone gi\`a coperte.
 
 \subsection{Esplorazione in Modalit\`a \texttt{map\_known}}
 
