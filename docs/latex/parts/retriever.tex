@@ -121,6 +121,7 @@ ottimale tra tutte quelle note all'agente. Il punteggio per ogni stazione combin
 \end{itemize}
 
 $$\text{score}(s) = d_{\text{A*}}(pos, s) + 8 \cdot n_{\text{heading}}(s) + \begin{cases} 200 & \text{se } d_{\text{A*}} \cdot 1{,}4 > E_{\text{agent}} \\ 0 & \text{altrimenti} \end{cases}$$
+\noindent\hfill{\footnotesize\texttt{backend/core/warehouse\_model.py | WarehouseModel.get\_best\_warehouse\_for}}
 
 \subsection{Ri-routing per Congestione}
 
@@ -144,8 +145,9 @@ I conflitti tra Retriever che puntano allo stesso oggetto si risolvono in due li
 
 \begin{enumerate}
     \item \textbf{Claim atomico}: Ogni auto-assegnazione passa per
-          \texttt{CommunicationManager.try\_claim\_object}, operazione atomica condivisa
-          da tutti gli agenti. Solo un Retriever ottiene il claim; i contendenti ricevono
+          l'operazione atomica \texttt{try\_claim\_object} di
+          \texttt{CommunicationManager}, condivisa da tutti gli agenti.
+          Solo un Retriever ottiene il claim; i contendenti ricevono
           immediatamente un fallimento e selezionano un altro oggetto.
     \item \textbf{Peer yield via TaskStatusMessage}: Dopo ogni claim
           riuscito, il Retriever diffonde un \texttt{TaskStatusMessage} a tutti i vicini.
@@ -164,8 +166,8 @@ sono rare e vengono risolte entro uno-due passi di comunicazione.
 I Retriever possono comunicare direttamente tra loro tramite
 \texttt{RetrieverEventMessage} con eventi \texttt{object\_spotted} e
 \texttt{cargo\_dropped}. Alla ricezione, la posizione dell'oggetto segnalato non
-viene inserita direttamente in \texttt{known\_objects} — poich\'e il peer non ha
-visione diretta — ma in \texttt{dubious\_objects} (Sezione~\ref{sec:dubious}).
+viene inserita direttamente in \texttt{known\_objects}, poich\'e il peer non ha
+visione diretta, ma in \texttt{dubious\_objects} (Sezione~\ref{sec:dubious}).
 L'oggetto verr\`a verificato dal Retriever ricevente quando idle (P4b), oppure
 sar\`a promosso a \texttt{known\_objects} non appena sar\`a avvistato direttamente.
 Questo crea catene di scoperta opportunistiche che propagano la conoscenza degli
@@ -201,7 +203,7 @@ Il Retriever mantiene due strutture parallele a \texttt{known\_objects}:
           l'informazione dubbia \`e stata registrata.
 \end{itemize}
 
-Una posizione viene classificata come \textit{dubbia} — anziché confermata — in
+Una posizione viene classificata come \textit{dubbia}, anziché confermata, in
 quattro circostanze:
 
 \begin{enumerate}
@@ -229,6 +231,7 @@ Un tombstone in \texttt{known\_objects\_cleared} cancella una voce dubbia
 dubbia stessa:
 
 $$\texttt{known\_objects\_cleared.get}(p, -1) \geq \texttt{dubious\_objects\_step.get}(p, 0)$$
+\noindent\hfill{\footnotesize\texttt{backend/agents/retriever\_agent.py | RetrieverAgent.step\_sense}}
 
 Questa condizione impedisce che tombstone vecchi (registrati \textit{prima} di
 ricevere un'informazione dubbia aggiornata) invalidino erroneamente la voce pi\`u
@@ -240,9 +243,12 @@ e all'inizio della fase P4b.
 \section{Frontiere di Esplorazione}
 \label{sec:retriever-explore}
 
-Quando il Retriever non ha n\'e task n\'e oggetti da verificare, invoca
-\texttt{\_update\_explore\_target} per selezionare una frontiera di esplorazione
-tramite \texttt{FrontierExplorer.select\_best\_frontier}.
+\begin{sloppypar}
+Quando il Retriever non ha n\'e task n\'e oggetti da verificare, richiama
+\texttt{\_update\_explore\_target}, che a sua volta delega la scelta della frontiera
+a \texttt{FrontierExplorer.}%
+\texttt{select\_best\_frontier}.
+\end{sloppypar}
 
 \subsection{Persistenza del Momento alla Frontiera}
 
@@ -254,11 +260,12 @@ note.
 
 \paragraph{Correzione.} Prima di azzerare il target raggiunto, il valore viene
 salvato in \texttt{\_last\_explore\_target}.  Nella funzione di utilit\`a, il
-bonus momento viene calcolato usando \texttt{\_last\_explore\_target} come
+bonus momento viene calcolato usando \texttt{\_last\_explore\_target}\linebreak[2] come
 direzione di riferimento se \texttt{\_explore\_target} \`e \texttt{None}:
 
 $$B_{\text{mom}}(f) = \max(0,\;\cos\theta) \cdot 3{,}0, \quad
   \theta = \angle(\overrightarrow{p_{\text{last}} \to p}, \; \overrightarrow{p \to f})$$
+\noindent\hfill{\footnotesize\texttt{exploration.py | FrontierExplorer.select\_best\_frontier}}
 
 In questo modo l'agente mantiene la spinta nella direzione gi\`a intrapresa anche
 dopo aver toccato la frontiera, evitando oscillazioni su zone gi\`a coperte.
@@ -278,17 +285,29 @@ come esplorate gonfiando artificialmente il rapporto vicino alle pareti.  La ver
 obstacle-aware restringe sia il numeratore (celle visivamente scansionate) sia il
 denominatore alle sole celle walkable:
 
-$$r_{\text{exp,mk}}(f) = \frac{\sum_{c \in W_f} \mathbf{1}[\texttt{vision\_explored}(c) = 1]}{|W_f|}, \quad W_f = \{c : \texttt{nav\_map}(c) = 0\}$$
+\begin{multline*}
+  r_{\text{exp,mk}}(f) = \frac{\sum_{c \in W_f} \mathbf{1}[\texttt{vision\_explored}(c) = 1]}{|W_f|},\\
+  W_f = \{c : \texttt{nav\_map}(c) = 0\}
+\end{multline*}
+\noindent\hfill{\footnotesize\texttt{RetrieverAgent.\_update\_explore\_target}}
 
-dove $\texttt{nav\_map}(c) = 0$ identifica celle percorribili (non ostacolo,
+dove $\texttt{nav\_map}(c) = 0$ indica celle percorribili (non ostacolo,
 non magazzino).
 
+\begin{sloppypar}
 \paragraph{Stima della massa inesplorata.}
-In modalit\`a \texttt{map\_known}, viene fornita a \texttt{select\_best\_frontier}
-una callback \texttt{unknown\_mass\_at} che conta le celle walkable e non ancora
+In modalit\`a \texttt{map\_known}, viene fornita a
+\texttt{select\_best\_fron\-tier}
+una callback \texttt{unknown\_mass\_at} (in \texttt{\_update\_explore\_target})
+che conta le celle walkable e non ancora
 scansionate entro raggio~8 attorno a ciascuna frontiera:
+\end{sloppypar}
 
-$$M(f) = |\{c : \|c - f\|_\infty \leq 8,\; \texttt{nav\_map}(c) = 0,\; \texttt{vision\_explored}(c) = 0\}|$$
+\begin{multline*}
+  M(f) = |\{c : \|c - f\|_\infty \leq 8,\\
+  \texttt{nav\_map}(c) = 0,\; \texttt{vision\_explored}(c) = 0\}|
+\end{multline*}
+\noindent\hfill{\footnotesize\texttt{RetrieverAgent.\_update\_explore\_target}}
 
 Questo sostituisce la semplice dimensione del cluster di frontiera con una stima
 pi\`u fedele del territorio realmente da scandire, orientando il Retriever verso
