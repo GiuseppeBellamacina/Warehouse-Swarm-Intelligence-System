@@ -18,6 +18,7 @@ nel \texttt{TaskStatusMessage}. Gli slot disponibili per nuove assegnazioni veng
 calcolati come:
 
 $$\text{available\_slots}(r) = \text{capacity}(r) - |\text{task\_queue}(r)| - \text{carrying}(r)$$
+\noindent\hfill{\footnotesize\texttt{backend/agents/coordinator\_agent.py | CoordinatorAgent.\_plan\_task\_assignments}}
 
 Questo approccio, basato sulla dichiarazione autoritativa del Retriever anziché su
 stime indirette, elimina le race condition tra assegnazione e auto-assegnazione.
@@ -28,6 +29,7 @@ La funzione \texttt{\_plan\_task\_assignments} calcola per ogni coppia (Retrieve
 una priorit\`a greedy:
 
 $$\text{priority}(o, r) = \frac{\text{value}(o)}{d(r, o) + 1} + b_{\text{spotted}}$$
+\noindent\hfill{\footnotesize\texttt{backend/agents/coordinator\_agent.py | CoordinatorAgent.\_plan\_task\_assignments}}
 
 dove $b_{\text{spotted}} = 0{,}5$ se il Retriever ha gi\`a visto l'oggetto direttamente
 (campo \texttt{\_spotted\_by}), altrimenti $0$. I candidati vengono ordinati per priorit\`a
@@ -59,6 +61,7 @@ Il centroide pu\`o essere opzionalmente biased verso le posizioni degli oggetti
 pendenti tramite il parametro \texttt{\_OBJECT\_BIASED\_CENTROID}:
 
 $$\text{centroid}_{\text{biased}} = \text{centroid}_{\text{ret}} \cdot (1 - b) + \text{centroid}_{\text{obj}} \cdot b$$
+\noindent\hfill{\footnotesize\texttt{backend/agents/coordinator\_agent.py | CoordinatorAgent.\_decide\_exploration}}
 
 dove $b = 0{,}05$ (default). Questo attira leggermente il Coordinator verso le zone
 ad alta densit\`a di oggetti senza allontanarlo eccessivamente dai Retriever.
@@ -124,12 +127,12 @@ inesplorate in zone sostanzialmente mappate.
 In configurazioni con pi\`u di un Coordinator, il rischio di doppia assegnazione aumenta.
 Il \texttt{CoordinatorSyncMessage} viene scambiato periodicamente tra Coordinator vicini
 e contiene la lista delle assegnazioni attive (\texttt{assigned\_tasks}) e degli oggetti
-in recupero (\texttt{objects\_being\_collected}). Alla ricezione, ogni Coordinator fonde
+in recupero \linebreak[2](\texttt{objects\_being\_collected}). Alla ricezione, ogni Coordinator fonde
 le informazioni ricevute con le proprie, aggiornando i set interni.
 
 La sincronizzazione \`e soggetta a rate limiting: un solo messaggio ogni
 \texttt{\_SYNC\_RATE\_LIMIT} passi (default~10) per coppia di Coordinator,
 controllato tramite timestamp per-Coordinator nel dizionario \texttt{last\_sync\_step}.
-Questa propagazione non \`e istantanea — si propaga a onde tramite la comunicazione
-locale — ma \`e sufficiente per eliminare la stragrande maggioranza delle doppie
+Questa propagazione non \`e istantanea, si propaga a onde tramite la comunicazione
+locale, ma \`e sufficiente per eliminare la stragrande maggioranza delle doppie
 assegnazioni in scenari realistici, bilanciando correttezza e overhead comunicativo.

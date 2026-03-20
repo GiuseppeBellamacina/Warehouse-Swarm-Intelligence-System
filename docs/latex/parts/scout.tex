@@ -16,7 +16,7 @@ La priorit\`a dello Scout \`e deterministica e segue questa sequenza:
     \item \textbf{Consegna scoperte al Coordinator}: Se lo Scout ha scoperto nuovi oggetti
           e un Coordinator si trova nel raggio di comunicazione, li trasmette immediatamente
           tramite \texttt{ObjectSpottedMessage}. Se nessun agente \`e stato in contatto
-          negli ultimi \texttt{\_SEEK\_COORDINATOR\_DELAY} passi (default~25) e il parametro
+          negli ultimi \linebreak[2]\texttt{\_SEEK\_COORDINATOR\_DELAY} passi (default~25) e il parametro
           \texttt{seek\_coordinator} \`e attivo, lo Scout si dirige verso l'ultima posizione
           nota del Coordinator per consegnare le informazioni. Se la posizione salvata
           risulta stale (il Coordinator non \`e presente all'arrivo), viene effettuata
@@ -61,16 +61,20 @@ $$U(f) = \frac{S_{\text{eff}}(f)}{d(f)^{0.4} + 1}
        + B_{\text{cov}}(f)
        + B_{\text{mom}}(f)$$
 
+\noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
+
 \paragraph{Dimensione Effettiva (Scaling Multiplicativo per Copertura).}
 La dimensione del cluster viene scalata dalla frazione inesplorata della zona circostante:
 
 $$S_{\text{eff}}(f) = \text{cluster\_size}(f) \cdot \max\!\big(1 - r_{\text{exp}}(f),\; 0{,}05\big)$$
+\noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
 
 dove $r_{\text{exp}}(f)$ \`e la frazione di celle gi\`a esplorate nella finestra
 $W_k$ centrata sulla frontiera ($k = 11$ in modalit\`a unknown, $k = 7$ in
 \texttt{map\_known}):
 
 $$r_{\text{exp}}(f) = \frac{|\{c \in W_k(f) : c \neq \texttt{UNKNOWN}\}|}{|W_k(f)|}$$
+\noindent\hfill{\footnotesize\texttt{backend/agents/scout\_agent.py | ScoutAgent.step\_decide}}
 
 In questo modo, una frontiera in una zona esplorata all'89\%
 con cluster di dimensione~21 ha $S_{\text{eff}} = 21 \times 0{,}11 \approx 2{,}3$:
@@ -82,21 +86,29 @@ prevalgano sistematicamente su cluster grandi e distanti.
 
 \paragraph{Penalizzazione Locale.}
 $$P_{\text{locale}}(f) = \sum_{\substack{a \in \text{agenti\_vicini} \\ d(f, a) < 10}} 0{,}5$$
+\noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
+
 Ogni agente entro 10~celle dalla frontiera aggiunge una penalizzazione di 0,5.
 Il fattore \`e raddoppiato ($\times 2$) nella formula finale.
 
 \paragraph{Penalizzazione Globale.}
 $$P_{\text{globale}}(f) = \sum_{t \in \text{peer\_targets}} \max\!\Big(0,\; \frac{8 - d(f, t)}{8}\Big) \cdot 1{,}5$$
+\noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
+
 Penalizzazione pi\`u debole basata sui target di esplorazione degli altri Scout,
 propagati via relay. Deconflitto a campo lontano.
 
 \paragraph{Bonus Copertura.}
 $$B_{\text{cov}}(f) = (1 - r_{\text{exp}}(f)) \cdot 5{,}0$$
-Bonus additivo che nudge lo Scout verso le zone meno esplorate, complementare allo
+\noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
+
+Bonus additivo che spinge lo Scout verso le zone meno esplorate, complementare allo
 scaling multiplicativo di $S_{\text{eff}}$.
 
 \paragraph{Bonus Momento.}
 $$B_{\text{mom}}(f) = \max(0,\; \cos\theta) \cdot 3{,}0$$
+\noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
+
 dove $\theta$ \`e l'angolo tra la direzione corrente dello Scout (dal target attuale)
 e la direzione verso la frontiera $f$. Questo bonus impedisce che lo Scout cambi
 continuamente direzione quando compare una nuova frontiera laterale leggermente pi\`u
@@ -125,7 +137,7 @@ molti cluster di frontiera adiacenti.
 \subsection{Blacklist dei Target Recenti}
 
 Dopo aver raggiunto una frontiera, la sua posizione viene inserita in una blacklist
-per \texttt{\_RECENT\_TARGET\_TTL} passi (default 200). Ci\`o previene l'oscillazione
+per \linebreak[2]\texttt{\_RECENT\_TARGET\_TTL} passi (default 200). Ci\`o previene l'oscillazione
 immediata tra cluster appena esplorati.
 
 \subsection{Preferenza per Frontiere Lontane}
@@ -151,6 +163,8 @@ e righe scegliendo la combinazione che rende ogni zona il pi\`u possibile quadra
 
 $$(\text{cols}, \text{rows}) = \arg\min_{\substack{c \cdot r = n \\ c | n}} \left| \frac{W}{c} - \frac{H}{r} \right|$$
 
+\noindent\hfill{\footnotesize\texttt{backend/agents/scout\_agent.py | ScoutAgent.\_zone\_grid}}
+
 Ad esempio, su una griglia $25 \times 25$ con $n = 6$, il risultato \`e $2 \times 3$
 (zone da $12{,}5 \times 8{,}3$ celle), anzich\'e $6 \times 1$ o $1 \times 6$.
 
@@ -160,6 +174,7 @@ Il metodo \texttt{\_select\_target\_zone()} assegna un punteggio a ciascuna zona
 combinando la frazione inesplorata (dominante) con una piccola componente di distanza:
 
 $$\text{score}(z) = r_{\text{unk}}(z) - \frac{d(z)}{W + H} \cdot 0{,}15$$
+\noindent\hfill{\footnotesize\texttt{backend/agents/scout\_agent.py | ScoutAgent.\_select\_target\_zone}}
 
 dove $r_{\text{unk}}(z)$ \`e la frazione di celle con \texttt{vision\_explored == 0}
 nella zona e $d(z)$ \`e la distanza Manhattan dal centroide della zona. Lo Scout
@@ -169,7 +184,7 @@ Due meccanismi prevengono il flip-flop tra zone:
 
 \begin{itemize}
     \item \textbf{Anti-flip-flop}: Lo Scout deve restare nella zona corrente per almeno
-          $2 \times \texttt{\_TARGET\_LOCK\_DURATION}$ passi prima di poter cambiare,
+          \linebreak[2]$2 \times \texttt{\_TARGET\_LOCK\_DURATION}$ passi prima di poter cambiare,
           a meno che la zona non sia gi\`a completamente esplorata
           ($r_{\text{unk}} < 5\%$).
     \item \textbf{Isteresi}: Se la zona corrente ha ancora pi\`u del 15\%
