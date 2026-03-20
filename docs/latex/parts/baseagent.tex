@@ -81,11 +81,9 @@ alcuna struttura di prenotazione globale.
 \subsection{Yield Cooldown}
 
 Dopo aver ceduto una cella in risposta a un \texttt{ClearWayMessage}, l'agente registra
-la posizione ceduta in un dizionario \texttt{\_yield\_cooldown} con un timer di 3~passi.
-Durante questo periodo, il pathfinder A* penalizza fortemente il passaggio attraverso
-quella cella, impedendo all'agente di tornare immediatamente sulla posizione appena
-liberata. Senza questo meccanismo, l'agente cederebbe la cella e nel passo successivo
-vi si dirigerebbe di nuovo, causando un'oscillazione infinita con il richiedente.
+la posizione in \texttt{\_yield\_cooldown} con un timer di 3~passi. In questo periodo
+A* penalizza fortemente quella cella, impedendo il ritorno immediato e prevenendo
+oscillazioni con il richiedente.
 
 \section{Navigazione nei Magazzini: Direzionalit\`a delle Porte}
 

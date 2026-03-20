@@ -80,10 +80,6 @@ In questo modo, una frontiera in una zona esplorata all'89\%
 con cluster di dimensione~21 ha $S_{\text{eff}} = 21 \times 0{,}11 \approx 2{,}3$:
 non pu\`o competere con piccole frontiere in territorio completamente inesplorato.
 
-\paragraph{Distanza Sub-lineare.}
-L'uso di $d^{0.4}$ anzich\'e $d$ lineare impedisce che cluster piccoli ma vicini
-prevalgano sistematicamente su cluster grandi e distanti.
-
 \paragraph{Penalizzazione Locale.}
 $$P_{\text{locale}}(f) = \sum_{\substack{a \in \text{agenti\_vicini} \\ d(f, a) < 10}} 0{,}5$$
 \noindent\hfill{\footnotesize\texttt{backend/algorithms/exploration.py | FrontierExplorer.select\_best\_frontier}}
@@ -139,12 +135,6 @@ molti cluster di frontiera adiacenti.
 Dopo aver raggiunto una frontiera, la sua posizione viene inserita in una blacklist
 per \linebreak[2]\texttt{\_RECENT\_TARGET\_TTL} passi (default 200). Ci\`o previene l'oscillazione
 immediata tra cluster appena esplorati.
-
-\subsection{Preferenza per Frontiere Lontane}
-
-Quando abilitata (\texttt{\_FAR\_FRONTIER\_ENABLED}), la selezione preferisce frontiere
-che richiedono uno spostamento superiore a $2\times$ il raggio di visione. In
-modalit\`a \texttt{map\_known}, questa euristica viene disattivata.
 
 \section{Routing a Zone (Map\_Known)} \label{sec:zone-routing}
 
@@ -226,10 +216,4 @@ $$\text{score}(c) = \frac{\text{age}(c)}{d(c) + 1}$$
 In modalit\`a \texttt{map\_known}, le celle con \texttt{vision\_explored == 0}
 hanno priorit\`a assoluta rispetto al ri-pattugliamento di celle gi\`a scansionate.
 
-\section{Finestra di Rilevamento Stallo Raddoppiata}
 
-A differenza degli altri agenti (che usano uno storico di 15 posizioni), lo Scout
-utilizza \texttt{max\_history\_length = 30}. Poich\'e gli Scout si muovono a
-$2\times$ la velocit\`a degli altri agenti, 15~posizioni coprono solo $\sim$7
-passi reali. Il raddoppio garantisce che la finestra di rilevamento loop copra
-$\sim$15 passi effettivi, evitando falsi positivi.

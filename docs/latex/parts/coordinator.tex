@@ -64,12 +64,7 @@ $$\text{centroid}_{\text{biased}} = \text{centroid}_{\text{ret}} \cdot (1 - b) +
 \noindent\hfill{\footnotesize\texttt{backend/agents/coordinator\_agent.py | CoordinatorAgent.\_decide\_exploration}}
 
 dove $b = 0{,}05$ (default). Questo attira leggermente il Coordinator verso le zone
-ad alta densit\`a di oggetti senza allontanarlo eccessivamente dai Retriever.
-
-Se la distanza \`e gi\`a entro la soglia, il Coordinator rimane fermo (\texttt{IDLE}):
-non esegue n\`e esplorazione frontier-based n\`e passeggiate casuali, poich\`e il suo
-compito non \`e esplorare ma coordinarsi. Questa scelta riduce il consumo energetico e
-evita che l'agente si allontani involontariamente dagli agenti che gestisce.
+ad alta densit\`a di oggetti senza allontanarlo dai Retriever.
 
 \subsection{Pattugliamento Anti-Inerzia (Boredom Patrol)}
 
@@ -97,30 +92,13 @@ Il Coordinator valuta se la propria posizione corrente \`e un \textit{chokepoint
 una cella con al massimo 2~vicini walkable. In tal caso, si sposta per evitare di
 bloccare il passaggio dei Retriever in corridoi stretti.
 
-\subsection{Rilevamento Blocco di Agenti Vicini}
-
-Se un agente adiacente ha \texttt{stuck\_counter $\geq$ 2} (bloccato da almeno due
-passi consecutivi), il Coordinator rileva di essere potenzialmente la causa del
-blocco e si sposta per liberare il passaggio. Questa euristica reattiva \`e
-complementare al protocollo ClearWay.
-
 \section{Esplorazione in Modalit\`a map\_known}
 
-In modalit\`a \texttt{map\_known}, il Coordinator utilizza \texttt{vision\_explored == 0}
-per identificare le celle non ancora scansionate visivamente. Quando ha task pendenti
-ed \`e gi\`a vicino al centroide, bias l'esplorazione verso le celle ignote pi\`u vicine
-al centroide. In assenza di task, tratta le celle non scansionate come frontiere normali.
-
-\subsection{Filtro Celle Boundary in Zone Esplorate}
-
-Nella strategia di esplorazione frontier-based, il Coordinator identifica le celle
-di confine (celle \texttt{UNKNOWN} adiacenti a celle esplorate) come candidati per
-il movimento. Prima della selezione, viene applicato un filtro analogo a quello
-dello Scout: per ogni cella boundary, si calcola la frazione esplorata in una
-finestra $7 \times 7$ centrata sulla cella. Se la frazione supera il 85\%, la cella
-viene scartata in quanto bordo residuo di una zona gi\`a quasi completamente coperta.
-Questo impedisce al Coordinator di sprecare passi per coprire micro-frange
-inesplorate in zone sostanzialmente mappate.
+In modalit\`a \texttt{map\_known}, il Coordinator usa \texttt{vision\_explored == 0}
+come maschera di inesplorato. Quando \'e gi\`a vicino al centroide, tende verso le
+celle ignote pi\`u prossime ad esso; in assenza di task le tratta come frontiere
+normali. Le celle boundary con oltre l'85\% della finestra $7\times7$ gi\`a esplorate
+vengono filtrate per evitare micro-frange residue.
 
 \section{Sincronizzazione tra Coordinator Multipli}
 
