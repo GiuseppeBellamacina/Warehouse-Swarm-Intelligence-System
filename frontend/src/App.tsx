@@ -22,6 +22,7 @@ import { BenchmarkPanel } from "./components/BenchmarkPanel";
 import { MapEditor } from "./components/MapEditor";
 import { AgentList } from "./components/AgentList";
 import { TimelineSlider } from "./components/TimelineSlider";
+import { Analytics } from "@vercel/analytics/react";
 import "./index.css";
 
 type ViewMode = "simulation" | "editor";
@@ -1286,6 +1287,7 @@ function App() {
           </div>
         </div>
       )}
+      <Analytics />
     </div>
   );
 }
