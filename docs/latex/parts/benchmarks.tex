@@ -4,6 +4,45 @@ I benchmark sono stati eseguiti su due configurazioni di magazzino (Preset~A e P
 con lo stesso numero di run per garantire significativit\`a statistica.
 Per ogni preset vengono riportati quattro grafici e una tabella riepilogativa.
 
+\section*{Configurazioni di test}
+
+Ogni esecuzione \`e identificata da un'etichetta composta che riflette tre assi di variazione
+ortogonali, applicati in modo identico a entrambi i preset.
+
+\paragraph{Composizione degli agenti.}
+La notazione \texttt{$x$S-$y$C-$z$R} indica il numero di Scout (\textbf{S}), Coordinator
+(\textbf{C}) e Retriever (\textbf{R}) presenti nella simulazione.
+Sono state testate due composizioni:
+\begin{itemize}
+  \item \textbf{1S-1C-3R} --- configurazione completa con gerarchia di ruoli: uno Scout esplora
+        la mappa e riporta le posizioni degli oggetti, un Coordinator raccoglie le segnalazioni
+        e assegna i compiti, tre Retriever prelevano e consegnano gli oggetti.
+  \item \textbf{0S-0C-5R} --- configurazione \emph{baseline} senza Scout n\'e Coordinator:
+        cinque Retriever operano in modo autonomo, scoprendo gli oggetti solo tramite visione
+        diretta.
+\end{itemize}
+
+\paragraph{Modalit\`a mappa.}
+\begin{itemize}
+  \item \texttt{unknown} --- gli agenti non conoscono \textit{a priori} la planimetria del
+        magazzino; l'ambiente viene scoperto progressivamente (fog-of-war).
+  \item \texttt{map\_known} --- la mappa \`e nota fin dall'inizio; gli agenti possono
+        pianificare percorsi ottimali senza dover esplorare.
+\end{itemize}
+
+\paragraph{Comportamento \texttt{seek\_coordinator}.}
+Nelle configurazioni con Scout, il flag \texttt{seek\_coordinator} (attivo per default) fa s\'i
+che lo Scout, dopo un periodo di isolamento, diriga autonomamente verso l'ultima posizione nota
+del Coordinator per consegnare le scoperte.
+Le varianti con suffisso \textbf{no-seek} disabilitano questo comportamento: lo Scout consegna
+le informazioni \emph{solo} quando il Coordinator entra nel suo raggio di comunicazione.
+
+\paragraph{Raggio aumentato ($v_r\!=\!3,\,c_r\!=\!3$).}
+Le varianti con suffisso \textbf{v3c3} aumentano a~3 il raggio di visione e di comunicazione
+di \emph{tutti} gli agenti (il default varia per ruolo: Scout $v_r\!=\!3$/$c_r\!=\!2$,
+Coordinator $v_r\!=\!2$/$c_r\!=\!3$, Retriever $v_r\!=\!2$/$c_r\!=\!2$).
+Questo scenario ipotetico serve a valutare l'impatto di una maggiore connettivit\`a sulla performance complessiva.
+
 %% ── Preset A ──────────────────────────────────────────────
 \section{Preset A}
 
