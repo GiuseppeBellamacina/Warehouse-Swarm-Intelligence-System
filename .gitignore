@@ -68,6 +68,8 @@ simulation_logs/
 *.fdb_latexmk
 *.gz
 *.toc
-*.lof
+*.log
+
+# Vercel
 .vercel
 .env*.local
