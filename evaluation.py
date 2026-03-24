@@ -58,6 +58,10 @@ CHART_COLORS = [
     "#eab308",  # yellow
     "#db2777",  # rose
     "#3d9970",  # teal
+    "#6366f1",  # indigo
+    "#a855f7",  # purple
+    "#84cc16",  # lime
+    "#0ea5e9",  # sky
 ]
 
 THEME = {
@@ -938,6 +942,42 @@ CONFIGS = [
             scout_behavior=ScoutBehaviorParams(seek_coordinator=False),
             map_known=True,
         ),
+    ),
+    (
+        "0S/0C/5R map_unknown v3c2",
+        _default_agents(
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=2),
+            map_known=False,
+        )
+    ),
+    (
+        "0S/0C/5R map_known v3c2",
+        _default_agents(
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=2),
+            map_known=True,
+        )
+    ),
+    (
+        "0S/0C/5R map_unknown v3c1",
+        _default_agents(
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=1),
+            map_known=False,
+        )
+    ),
+    (
+        "0S/0C/5R map_known v3c1",
+        _default_agents(
+            scouts=ScoutParams(count=0),
+            coordinators=CoordinatorParams(count=0),
+            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=1),
+            map_known=True,
+        )
     ),
 ]
 

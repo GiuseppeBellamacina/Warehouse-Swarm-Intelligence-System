@@ -43,6 +43,13 @@ di \emph{tutti} gli agenti (il default varia per ruolo: Scout $v_r\!=\!3$/$c_r\!
 Coordinator $v_r\!=\!2$/$c_r\!=\!3$, Retriever $v_r\!=\!2$/$c_r\!=\!2$).
 Questo scenario ipotetico serve a valutare l'impatto di una maggiore connettivit\`a sulla performance complessiva.
 
+\paragraph{Raggio di comunicazione ridotto ($v_r\!=\!3$, $c_r$ variabile).}
+Per la sola composizione \textbf{0S-0C-5R} sono state testate ulteriori varianti in cui il
+raggio di visione \`e fissato a~3 mentre il raggio di comunicazione assume valori decrescenti:
+$c_r\!=\!2$ (suffisso \textbf{v3c2}) e $c_r\!=\!1$ (suffisso \textbf{v3c1}).
+Queste configurazioni servono a isolare l'effetto della connettivit\`a comunicativa sulle
+prestazioni dei soli Retriever.
+
 %% ── Preset A ──────────────────────────────────────────────
 \section{Preset A}
 
@@ -105,6 +112,23 @@ Questo scenario ipotetico serve a valutare l'impatto di una maggiore connettivit
     \includegraphics[width=0.48\textwidth]{../benchmarks/A/snapshot_0S-0C-5R_unknown_v3c3.png}}%
   \caption{Snapshot finali --- 0S-0C-5R, Preset~A}
   \label{fig:snap-a-05r}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \subcaptionbox{0S-0C-5R --- \texttt{map\_known}, $v_r\!=\!3,c_r\!=\!2$\label{fig:snap-a-05r-mk-v3c2}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/A/snapshot_0S-0C-5R_map_known_v3c2.png}}%
+  \hfill
+  \subcaptionbox{0S-0C-5R --- \texttt{unknown}, $v_r\!=\!3,c_r\!=\!2$\label{fig:snap-a-05r-unk-v3c2}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/A/snapshot_0S-0C-5R_map_unknown_v3c2.png}}%
+  \\[1ex]
+  \subcaptionbox{0S-0C-5R --- \texttt{map\_known}, $v_r\!=\!3,c_r\!=\!1$\label{fig:snap-a-05r-mk-v3c1}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/A/snapshot_0S-0C-5R_map_known_v3c1.png}}%
+  \hfill
+  \subcaptionbox{0S-0C-5R --- \texttt{unknown}, $v_r\!=\!3,c_r\!=\!1$\label{fig:snap-a-05r-unk-v3c1}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/A/snapshot_0S-0C-5R_map_unknown_v3c1.png}}%
+  \caption{Snapshot finali --- 0S-0C-5R, raggio comunicativo ridotto, Preset~A}
+  \label{fig:snap-a-05r-reduced}
 \end{figure}
 
 \begin{figure}[H]
@@ -203,6 +227,23 @@ Questo scenario ipotetico serve a valutare l'impatto di una maggiore connettivit
     \includegraphics[width=0.48\textwidth]{../benchmarks/B/snapshot_0S-0C-5R_unknown_v3c3.png}}%
   \caption{Snapshot finali --- 0S-0C-5R, Preset~B}
   \label{fig:snap-b-05r}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \subcaptionbox{0S-0C-5R --- \texttt{map\_known}, $v_r\!=\!3,c_r\!=\!2$\label{fig:snap-b-05r-mk-v3c2}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/B/snapshot_0S-0C-5R_map_known_v3c2.png}}%
+  \hfill
+  \subcaptionbox{0S-0C-5R --- \texttt{unknown}, $v_r\!=\!3,c_r\!=\!2$\label{fig:snap-b-05r-unk-v3c2}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/B/snapshot_0S-0C-5R_map_unknown_v3c2.png}}%
+  \\[1ex]
+  \subcaptionbox{0S-0C-5R --- \texttt{map\_known}, $v_r\!=\!3,c_r\!=\!1$\label{fig:snap-b-05r-mk-v3c1}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/B/snapshot_0S-0C-5R_map_known_v3c1.png}}%
+  \hfill
+  \subcaptionbox{0S-0C-5R --- \texttt{unknown}, $v_r\!=\!3,c_r\!=\!1$\label{fig:snap-b-05r-unk-v3c1}}[0.48\textwidth]{%
+    \includegraphics[width=0.48\textwidth]{../benchmarks/B/snapshot_0S-0C-5R_map_unknown_v3c1.png}}%
+  \caption{Snapshot finali --- 0S-0C-5R, raggio comunicativo ridotto, Preset~B}
+  \label{fig:snap-b-05r-reduced}
 \end{figure}
 
 \begin{figure}[H]

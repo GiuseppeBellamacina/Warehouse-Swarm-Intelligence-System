@@ -69,6 +69,10 @@ const CHART_COLORS = [
   "#eab308", // yellow
   "#db2777", // rose
   "#3d9970", // teal
+  "#6366f1", // indigo
+  "#a855f7", // purple
+  "#84cc16", // lime
+  "#0ea5e9", // sky
 ];
 
 function pickColor(index: number) {
