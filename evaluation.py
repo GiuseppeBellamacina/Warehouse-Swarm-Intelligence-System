@@ -950,7 +950,7 @@ CONFIGS = [
             coordinators=CoordinatorParams(count=0),
             retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=2),
             map_known=False,
-        )
+        ),
     ),
     (
         "0S/0C/5R map_known v3c2",
@@ -959,7 +959,7 @@ CONFIGS = [
             coordinators=CoordinatorParams(count=0),
             retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=2),
             map_known=True,
-        )
+        ),
     ),
     (
         "0S/0C/5R map_unknown v3c1",
@@ -968,7 +968,7 @@ CONFIGS = [
             coordinators=CoordinatorParams(count=0),
             retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=1),
             map_known=False,
-        )
+        ),
     ),
     (
         "0S/0C/5R map_known v3c1",
@@ -977,7 +977,7 @@ CONFIGS = [
             coordinators=CoordinatorParams(count=0),
             retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=1),
             map_known=True,
-        )
+        ),
     ),
 ]
 

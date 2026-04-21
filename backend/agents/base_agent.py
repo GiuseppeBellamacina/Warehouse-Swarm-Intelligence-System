@@ -3,7 +3,7 @@ Base agent class with common functionality
 """
 
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Set, Tuple
 
 import numpy as np
 
@@ -21,6 +21,20 @@ from backend.core.grid_manager import CellType
 if TYPE_CHECKING:
     from backend.algorithms.pathfinding import AStarPathfinder
     from backend.core.warehouse_model import WarehouseModel
+
+
+def distance(
+    a: Tuple[int, int], b: Tuple[int, int], type: Literal["manhattan", "chebyshev"] = "manhattan"
+) -> int:
+    """Return distance between two points based on the specified type."""
+    dx = abs(a[0] - b[0])
+    dy = abs(a[1] - b[1])
+    if type == "manhattan":
+        return dx + dy
+    elif type == "chebyshev":
+        return max(dx, dy)
+    else:
+        raise ValueError(f"Unknown distance type: {type}")
 
 
 def pos_to_tuple(pos) -> Tuple[int, int]:
@@ -736,7 +750,7 @@ class BaseAgent(Agent):
                 continue
             if away_from is not None:
                 # Higher distance from away_from → tried first (negate for sort)
-                dist = abs(np_[0] - away_from[0]) + abs(np_[1] - away_from[1])
+                dist = distance(np_, away_from)
                 candidates.append((-dist, np_))
             else:
                 candidates.append((0, np_))
@@ -861,7 +875,7 @@ class BaseAgent(Agent):
         # Reset distance-progress tracking when the target changes
         if not hasattr(self, "_progress_last_target") or self._progress_last_target != target:
             self._progress_last_target = target
-            self._progress_best_dist = abs(pos_tuple[0] - target[0]) + abs(pos_tuple[1] - target[1])
+            self._progress_best_dist = distance(pos_tuple, target)
             self._progress_steps = 0
 
         # Determine whether warehouse doors may be used as transit nodes.
@@ -1265,7 +1279,7 @@ class BaseAgent(Agent):
             ct = self.model.grid.get_cell_type(*np_)
             if avoid_wh and ct in _WH_TYPES:
                 continue
-            dist = abs(target[0] - np_[0]) + abs(target[1] - np_[1])
+            dist = distance(target, np_)
             candidates.append((np_, dist))
 
         if not candidates:
@@ -1376,14 +1390,14 @@ class BaseAgent(Agent):
         if not head_on:
             b_target = getattr(blocking_agent, "target_position", None)
             if b_target is not None:
-                b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
-                b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+                b_dist_now = distance(b_pos, b_target)
+                b_dist_after = distance(my_pos, b_target)
                 if b_dist_after < b_dist_now:
                     # Blocker wants to go past us
                     my_target = getattr(self, "target_position", None)
                     if my_target is not None:
-                        my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
-                        my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                        my_dist_now = distance(my_pos, my_target)
+                        my_dist_after = distance(b_pos, my_target)
                         if my_dist_after < my_dist_now:
                             head_on = True  # both improve
 
@@ -1395,8 +1409,8 @@ class BaseAgent(Agent):
                 # Stuck escalation: no target on one side — swap if I'm
                 # stuck enough and the swap moves ME closer.
                 if self.stuck_counter >= 3 and my_target is not None:
-                    my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
-                    my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
+                    my_dist_now = distance(my_pos, my_target)
+                    my_dist_after = distance(b_pos, my_target)
                     if my_dist_after >= my_dist_now:
                         return False
                     # Accept — stuck escalation override
@@ -1404,11 +1418,11 @@ class BaseAgent(Agent):
                     return False
             else:
                 # Current distances
-                my_dist_now = abs(my_pos[0] - my_target[0]) + abs(my_pos[1] - my_target[1])
-                b_dist_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
+                my_dist_now = distance(my_pos, my_target)
+                b_dist_now = distance(b_pos, b_target)
                 # After-swap distances
-                my_dist_after = abs(b_pos[0] - my_target[0]) + abs(b_pos[1] - my_target[1])
-                b_dist_after = abs(my_pos[0] - b_target[0]) + abs(my_pos[1] - b_target[1])
+                my_dist_after = distance(b_pos, my_target)
+                b_dist_after = distance(my_pos, b_target)
                 total_now = my_dist_now + b_dist_now
                 total_after = my_dist_after + b_dist_after
                 if total_after > total_now:
@@ -1474,7 +1488,7 @@ class BaseAgent(Agent):
             if agent.pos is None or agent.energy <= 0:
                 continue
             ap = pos_to_tuple(agent.pos)
-            dist = abs(ap[0] - my_pos[0]) + abs(ap[1] - my_pos[1])
+            dist = distance(ap, my_pos)
             if dist <= 2:
                 cluster.append(agent)
 
@@ -1519,7 +1533,7 @@ class BaseAgent(Agent):
                     continue
                 b_pos = pos_to_tuple(b.pos)
                 # Only consider adjacent agents (incl. diagonal ≤ Manhattan 2)
-                mdist = abs(a_pos[0] - b_pos[0]) + abs(a_pos[1] - b_pos[1])
+                mdist = distance(a_pos, b_pos)
                 if mdist > 2 or mdist == 0:
                     continue
                 b_want = desires.get(b.unique_id)
@@ -1537,10 +1551,10 @@ class BaseAgent(Agent):
                 # total distance (at least neutral).
                 mutual_benefit = False
                 if not head_on and a_target is not None and b_target is not None:
-                    a_d_now = abs(a_pos[0] - a_target[0]) + abs(a_pos[1] - a_target[1])
-                    b_d_now = abs(b_pos[0] - b_target[0]) + abs(b_pos[1] - b_target[1])
-                    a_d_aft = abs(b_pos[0] - a_target[0]) + abs(b_pos[1] - a_target[1])
-                    b_d_aft = abs(a_pos[0] - b_target[0]) + abs(a_pos[1] - b_target[1])
+                    a_d_now = distance(a_pos, a_target)
+                    b_d_now = distance(b_pos, b_target)
+                    a_d_aft = distance(b_pos, a_target)
+                    b_d_aft = distance(a_pos, b_target)
                     if (a_d_aft + b_d_aft) <= (a_d_now + b_d_now):
                         mutual_benefit = True
 
@@ -1638,7 +1652,7 @@ class BaseAgent(Agent):
                     if not self._is_valid_cell_for_negotiation(agent, np_):
                         continue
                     if agent_target:
-                        score = abs(np_[0] - agent_target[0]) + abs(np_[1] - agent_target[1])
+                        score = distance(np_, agent_target)
                     else:
                         score = 0
                     if score < best_score:
@@ -1692,7 +1706,7 @@ class BaseAgent(Agent):
         for agent in self.model.agents:
             if getattr(agent, "role", None) == "coordinator" and agent.pos:
                 c_pos = pos_to_tuple(agent.pos)
-                dist = abs(c_pos[0] - my_pos[0]) + abs(c_pos[1] - my_pos[1])
+                dist = distance(c_pos, my_pos)
                 if dist <= self.vision_radius:
                     cid = agent.unique_id
                     self.coordinator_positions[cid] = c_pos
