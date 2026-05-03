@@ -4,6 +4,8 @@
 
 **[Relazione PDF](docs/latex/relazione.pdf)**
 
+![Warehouse](assets/warehouse-swarm.webp)
+
 A real-time swarm intelligence simulation where autonomous agents cooperate to explore warehouses and retrieve objects. Built with a Python/FastAPI backend and a React/TypeScript frontend.
 
 ---
