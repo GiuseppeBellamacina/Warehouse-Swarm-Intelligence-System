@@ -85,7 +85,6 @@ class RetrieverAgent(BaseAgent):
 
             behavior = RetrieverBehaviorParams().model_dump()
         _b = behavior
-        self._RECHARGE_THRESHOLD: float = _b["recharge_threshold"]
         self._STALE_CLAIM_AGE: int = _b["stale_claim_age"]
         self._EXPLORE_RETARGET: int = _b["explore_retarget_interval"]
         self._OPPORTUNISTIC_PICKUP: bool = _b["opportunistic_pickup"]
@@ -473,11 +472,6 @@ class RetrieverAgent(BaseAgent):
                         return
                 # else: confirmed tasks exist — fall through to P3
 
-        # ---- P2: Recharge if energy critically low ----
-        if self.energy < self.max_energy * self._RECHARGE_THRESHOLD and self._wh_step is None:
-            self._start_warehouse_sequence("recharge")
-            return
-
         # ---- P3: Execute next task in queue ----
         # Guard: never re-decide tasks while inside a warehouse sub-sequence
         if (
@@ -812,7 +806,6 @@ class RetrieverAgent(BaseAgent):
             details=f"queue={len(self.task_queue)}, carrying={self.carrying_objects}",
             target_ids=target_ids,
         )
-        self.consume_energy(self.energy_consumption["communicate"])
 
     def _count_agents_heading_to(self, entrance: Tuple[int, int]) -> int:
         """Count retriever agents whose warehouse target entrance matches *entrance*."""
@@ -828,7 +821,7 @@ class RetrieverAgent(BaseAgent):
     def _start_warehouse_sequence(self, purpose: str) -> None:
         """
         Begin entering the best warehouse for this agent.
-        purpose = "deliver" | "recharge"
+        purpose = "deliver"
 
         Selection considers:
         - Proximity (nearest entrance wins by default)
@@ -857,11 +850,7 @@ class RetrieverAgent(BaseAgent):
         self._wh_exit_stuck = 0
         self._wh_known_wh_count = len(self.known_warehouses)
         self.target_position = station["entrance"]
-
-        if purpose == "deliver":
-            self.state = AgentState.DELIVERING
-        else:
-            self.state = AgentState.RECHARGING
+        self.state = AgentState.DELIVERING
 
         print(
             f"{self.tag} WH-SEQ: starting {purpose} → " f"entrance={self._wh_station['entrance']}"
@@ -1447,9 +1436,6 @@ class RetrieverAgent(BaseAgent):
             dropped_positions.append(cell)
             self.carrying_objects -= 1
 
-        # Reset move cost
-        self.energy_consumption["move"] = 0.6
-
         my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
         print(
             f"{self.tag} CARGO DROP: energy depleted, "
@@ -1613,25 +1599,14 @@ class RetrieverAgent(BaseAgent):
                     self.target_position = interior
                     if my_pos != interior:
                         self.move_towards(interior)
-                elif self.energy >= self.max_energy * 0.80:
-                    # Enough energy — skip recharge entirely, exit immediately
-                    print(
-                        f"{self.tag} WH: energy sufficient "
-                        f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
-                    )
+                else:
+                    # Nothing to deposit — exit immediately
                     self._wh_step = "exit"
                     self._wh_exit_stuck = 0
                     exit_cell = station["exit"]
                     self.target_position = exit_cell
                     if my_pos != exit_cell:
                         self.move_towards(exit_cell)
-                else:
-                    # Need recharge — join queue near exit (FIFO slot)
-                    queue_cell = self.model.get_queue_slot(station)
-                    self._wh_step = "recharge_cell"
-                    self.target_position = queue_cell
-                    if my_pos != queue_cell:
-                        self.move_towards(queue_cell)
             else:
                 self._wh_approach_steps += 1
 
@@ -1719,59 +1694,21 @@ class RetrieverAgent(BaseAgent):
                 self.total_delivered += delivered
                 self.carrying_objects = 0
                 self._fruitless_explore_steps = 0
-                self.energy_consumption["move"] = 0.6  # normal move cost
                 print(
                     f"{self.tag} DELIVERY: "
                     f"delivered {delivered} → total "
                     f"{self.model.objects_retrieved}/{self.model.total_objects}"
                 )
                 self.pending_events.append("object_delivered")
-                # If low energy, recharge while still inside (use FIFO queue slot)
-                if self.energy < self.max_energy * 0.80:
-                    queue_cell = self.model.get_queue_slot(station)
-                    self._wh_step = "recharge_cell"
-                    self.target_position = queue_cell
-                    self.state = AgentState.RECHARGING
-                    # Move toward recharge immediately
-                    if my_pos != queue_cell:
-                        self.move_towards(queue_cell)
-                else:
-                    self._wh_step = "exit"
-                    self._wh_exit_stuck = 0
-                    self.target_position = station["exit"]
-                    # Move toward exit immediately
-                    if my_pos != station["exit"]:
-                        self.move_towards(station["exit"])
+                # After delivery, head to exit immediately
+                self._wh_step = "exit"
+                self._wh_exit_stuck = 0
+                self.target_position = station["exit"]
+                # Move toward exit immediately
+                if my_pos != station["exit"]:
+                    self.move_towards(station["exit"])
             else:
                 self.move_towards(deposit)
-
-        elif self._wh_step == "recharge_cell":
-            # target_position holds the assigned queue slot (set during approach transition)
-            recharge = self.target_position or station["recharge_cell"]
-            # Accept the target cell OR any interior WAREHOUSE cell
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            # Only recharge when exactly at the assigned queue slot
-            # (removes the broad fallback that caused premature recharging on any interior cell)
-            at_recharge = my_pos == recharge and cell_type not in (
-                CellType.WAREHOUSE_ENTRANCE,
-                CellType.WAREHOUSE_EXIT,
-            )
-            if at_recharge:
-                # Recharge here
-                rate = self.model.config.warehouse.recharge_rate
-                self.recharge_energy(rate)
-                if self.energy >= self.max_energy * 0.90:
-                    print(f"{self.tag} RECHARGED: heading to exit")
-                    self._wh_step = "exit"
-                    self._wh_exit_stuck = 0
-                    self.target_position = station["exit"]
-                    self.state = AgentState.RECHARGING
-                    # Move toward exit immediately
-                    if my_pos != station["exit"]:
-                        self.move_towards(station["exit"])
-                # else stay and keep recharging
-            else:
-                self.move_towards(recharge)
 
         elif self._wh_step == "exit":
             exit_cell = station["exit"]
@@ -1857,7 +1794,6 @@ class RetrieverAgent(BaseAgent):
             success = self.model.grid.retrieve_object(*pos_tuple)
             if success:
                 self.carrying_objects += 1
-                self.energy_consumption["move"] = 0.6 + self.carrying_objects * 0.2
                 print(
                     f"{self.tag} PICKUP: {pos_tuple} "
                     f"(carrying {self.carrying_objects}/{self.carrying_capacity})"
@@ -1990,7 +1926,6 @@ class RetrieverAgent(BaseAgent):
                 details=f"object_spotted x{len(self.newly_spotted_objects)} to peers",
                 target_ids=peer_ids,
             )
-        self.consume_energy(self.energy_consumption["communicate"])
 
     def _send_status_to_coordinators(self) -> None:
         """Send TaskStatusMessage + pending events + spotted objects to nearby coordinators."""
@@ -2068,5 +2003,4 @@ class RetrieverAgent(BaseAgent):
         self.pending_events = []
         self.newly_spotted_objects = []
 
-        self.consume_energy(self.energy_consumption["communicate"])
         self.last_communication_step = self.model.current_step

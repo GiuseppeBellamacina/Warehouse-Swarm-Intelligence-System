@@ -8,6 +8,11 @@ from typing import List, Optional, Set, Tuple
 import numpy as np
 from scipy.spatial import KDTree
 
+from backend.algorithms.numba_core import (
+    bresenham_line_of_sight,
+    get_neighbors_in_radius_numba,
+    get_visible_cells_numba,
+)
 from backend.core.framework import MultiGrid
 
 
@@ -96,31 +101,13 @@ class GridManager(MultiGrid):
         self, x: int, y: int, radius: float, include_center: bool = False
     ) -> List[Tuple[int, int]]:
         """
-        Get all cells within a given radius
-
-        Args:
-            x, y: Center position
-            radius: Search radius
-            include_center: Whether to include the center cell
-
-        Returns:
-            List of (x, y) positions within radius
+        Get all cells within a given radius.
+        Delegates to Numba-compiled implementation.
         """
-        neighbors = []
-        radius_sq = radius * radius
-
-        for dx in range(-int(radius), int(radius) + 1):
-            for dy in range(-int(radius), int(radius) + 1):
-                if not include_center and dx == 0 and dy == 0:
-                    continue
-
-                nx, ny = x + dx, y + dy
-
-                if 0 <= nx < self.width and 0 <= ny < self.height:
-                    dist_sq = dx * dx + dy * dy
-                    if dist_sq <= radius_sq:
-                        neighbors.append((nx, ny))
-
+        raw = get_neighbors_in_radius_numba(x, y, int(radius), self.width, self.height)
+        neighbors = [(int(row[0]), int(row[1])) for row in raw]
+        if include_center:
+            neighbors.append((x, y))
         return neighbors
 
     def update_agent_spatial_index(self, agent_positions: List[Tuple[int, int]]) -> None:
@@ -162,45 +149,9 @@ class GridManager(MultiGrid):
     def _has_line_of_sight(self, x0: int, y0: int, x1: int, y1: int) -> bool:
         """
         Check line-of-sight using Bresenham's algorithm with obstacle occlusion.
-
-        Traces a line from (x0, y0) to (x1, y1).  Any intermediate cell (i.e.
-        every cell except the origin) that is an OBSTACLE blocks the ray and
-        returns False.  The target cell itself is NOT tested for obstruction so
-        that observers can "see" the obstacle that blocks them.
-
-        Args:
-            x0, y0: Observer position
-            x1, y1: Target position
-
-        Returns:
-            True if there is clear line-of-sight
+        Delegates to Numba-compiled implementation.
         """
-        dx = abs(x1 - x0)
-        dy = abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx - dy
-
-        cx, cy = x0, y0
-        while (cx, cy) != (x1, y1):
-            # Check all intermediate cells (not the origin)
-            if (cx, cy) != (x0, y0):
-                if (
-                    0 <= cx < self.width
-                    and 0 <= cy < self.height
-                    and self.cell_types[cx, cy] == CellType.OBSTACLE
-                ):
-                    return False
-
-            e2 = 2 * err
-            if e2 > -dy:
-                err -= dy
-                cx += sx
-            if e2 < dx:
-                err += dx
-                cy += sy
-
-        return True
+        return bresenham_line_of_sight(x0, y0, x1, y1, self.cell_types, self.width, self.height)
 
     def get_visible_cells(
         self, x: int, y: int, vision_radius: int
@@ -208,36 +159,10 @@ class GridManager(MultiGrid):
         """
         Get all visible cells within vision radius using Manhattan distance and
         Bresenham ray-casting for obstacle occlusion.
-
-        Args:
-            x, y: Observer position
-            vision_radius: Vision range (Manhattan distance)
-
-        Returns:
-            List of (x, y, cell_type) tuples for all visible cells
+        Delegates to Numba-compiled implementation.
         """
-        visible = []
-
-        for dx in range(-vision_radius, vision_radius + 1):
-            for dy in range(-vision_radius, vision_radius + 1):
-                # Manhattan distance check
-                if abs(dx) + abs(dy) > vision_radius:
-                    continue
-
-                nx, ny = x + dx, y + dy
-                if not (0 <= nx < self.width and 0 <= ny < self.height):
-                    continue
-
-                # Observer's own cell is always visible
-                if dx == 0 and dy == 0:
-                    visible.append((nx, ny, self.get_cell_type(nx, ny)))
-                    continue
-
-                # Check line-of-sight with Bresenham occlusion
-                if self._has_line_of_sight(x, y, nx, ny):
-                    visible.append((nx, ny, self.get_cell_type(nx, ny)))
-
-        return visible
+        raw = get_visible_cells_numba(x, y, vision_radius, self.cell_types, self.width, self.height)
+        return [(int(row[0]), int(row[1]), CellType(row[2])) for row in raw]
 
     _WH_TYPES = frozenset(
         {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}

@@ -66,7 +66,6 @@ class ScoutAgent(BaseAgent):
         self._ANTI_CLUSTER_DIST: int = _b["anti_cluster_distance"]
         self._TARGET_HYSTERESIS: int = _b["target_hysteresis"]
         self._STUCK_THRESHOLD: int = _b["stuck_threshold"]
-        self._RECHARGE_THRESHOLD: float = _b["recharge_threshold"]
         self._FAR_FRONTIER_ENABLED: bool = _b["far_frontier_enabled"]
         self._STALE_COVERAGE_PATROL: bool = _b["stale_coverage_patrol"]
         self._ANTI_CLUSTERING: bool = _b["anti_clustering"]
@@ -106,11 +105,6 @@ class ScoutAgent(BaseAgent):
         # Used to decide whether passive relay (MapDataMessage) is likely propagating
         # discoveries, avoiding the need to actively seek a coordinator.
         self._last_agent_contact_step: int = 0
-
-        # Warehouse recharge sub-state machine (avoids getting stuck on entrance/exit)
-        # Values: None | "approach" | "recharge" | "exit"
-        self._scout_wh_step: Optional[str] = None
-        self._scout_wh_station: Optional[dict] = None
 
         # Deferred seek-coordinator: when True, the scout will seek the
         # coordinator as soon as it finishes (or abandons) its current
@@ -318,39 +312,6 @@ class ScoutAgent(BaseAgent):
         """Decide next action based on utility"""
         # Reset communication flag
         self.should_communicate_this_step = False
-
-        # If the recharge sub-machine is already running, let step_act handle it
-        if self._scout_wh_step is not None:
-            return
-
-        # ---- Priority 1: Recharge if critically low (< 25 %) ----
-        # MUST be checked before discoveries so a scout carrying pending discoveries
-        # never starves to death while looping on the coordinator-broadcast path.
-        if self.energy < self.max_energy * self._RECHARGE_THRESHOLD:
-            if self._scout_wh_step is None:
-                # Start the warehouse recharge sub-state machine
-                my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-                visible_entrances = [
-                    wh
-                    for wh in self.known_warehouses
-                    if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
-                ]
-                station = self.model.get_best_warehouse_for(
-                    pos=my_pos,
-                    known_entrances=visible_entrances,
-                    agent_energy=self.energy,
-                )
-                self._scout_wh_station = station
-                self._scout_wh_step = "approach"
-                self._explore_target = None  # not exploring while recharging
-                self.state = AgentState.RECHARGING
-                self.target_position = station.get("entrance")
-                print(
-                    f"{self.tag} LOW-E ({self.energy:.1f}), "
-                    f"heading to WH entrance {self.target_position}"
-                )
-            # Sub-machine runs in step_act — just return here
-            return
 
         # ---- Priority 2: Communicate discoveries to any nearby coordinator ----
         #
@@ -959,12 +920,7 @@ class ScoutAgent(BaseAgent):
                 self._discovery_age = 0
             return  # Don't move this step regardless (avoid double-action)
 
-        # OPTION 2: Warehouse recharge sub-state machine
-        if self._scout_wh_step is not None:
-            self._execute_scout_recharge_step()
-            return
-
-        # OPTION 3: Move based on state (one move per step to prevent
+        # OPTION 2: Move based on state (one move per step to prevent
         #           visual teleportation / jumping over other agents)
         for _ in range(1):
             if self.energy <= 0:
@@ -1029,132 +985,6 @@ class ScoutAgent(BaseAgent):
                         self.move_towards(self.target_position)
                         self.target_position = None  # don't persist stale centroid
 
-            elif self.state == AgentState.RECHARGING:
-                if self.target_position:
-                    self.move_towards(self.target_position)
-                break  # Only one move per step when recharging
-
-    def _execute_scout_recharge_step(self) -> None:
-        """
-        Three-phase warehouse recharge: approach entrance → recharge at interior cell → exit.
-        Ensures the scout never stays parked on entrance/exit cells.
-        """
-        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-        station = self._scout_wh_station or {}
-
-        if self._scout_wh_step == "approach":
-            entrance = station.get("entrance")
-            if not entrance:
-                self._scout_wh_step = None
-                self._scout_wh_station = None
-                self.state = AgentState.EXPLORING
-                return
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            at_or_inside = (
-                my_pos == entrance
-                or cell_type == CellType.WAREHOUSE
-                or cell_type == CellType.WAREHOUSE_ENTRANCE
-                or cell_type == CellType.WAREHOUSE_EXIT
-            )
-            if at_or_inside:
-                if self.energy >= self.max_energy * 0.80:
-                    # Enough energy — skip recharge, exit immediately
-                    print(
-                        f"{self.tag} WH: energy sufficient "
-                        f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
-                    )
-                    exit_cell = station.get("exit") or entrance
-                    self._scout_wh_step = "exit"
-                    self.target_position = exit_cell
-                    if my_pos != exit_cell:
-                        self.move_towards(exit_cell)
-                else:
-                    # Need recharge — join FIFO queue near exit
-                    queue_cell = self.model.get_queue_slot(station)
-                    self._scout_wh_step = "recharge"
-                    self.target_position = queue_cell
-                    print(f"{self.tag} WH: at entrance, joining queue at {queue_cell}")
-                    if my_pos != queue_cell:
-                        self.move_towards(queue_cell)
-            else:
-                # If the entrance cell is occupied, ask the blocker to move
-                blocker = self._get_agent_at_pos(entrance)
-                if blocker is not None:
-                    self._send_clear_way_request(entrance, blocker)
-                self.move_towards(entrance)
-
-        elif self._scout_wh_step == "recharge":
-            # target_position holds the assigned FIFO queue slot (set during approach)
-            recharge_cell = self.target_position or station.get("recharge_cell")
-            # Only recharge when exactly at the assigned FIFO queue slot
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            at_recharge = (
-                recharge_cell is not None
-                and my_pos == recharge_cell
-                and cell_type
-                not in (
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                )
-            )
-            if at_recharge:
-                rate = self.model.config.warehouse.recharge_rate
-                self.recharge_energy(rate)
-                if self.energy >= self.max_energy * 0.90:
-                    exit_cell = station.get("exit") or station.get("entrance")
-                    self._scout_wh_step = "exit"
-                    self.target_position = exit_cell
-                    print(f"{self.tag} WH: recharged, heading to exit {exit_cell}")
-                    # Move toward exit immediately
-                    if exit_cell and my_pos != exit_cell:
-                        self.move_towards(exit_cell)
-            else:
-                if recharge_cell:
-                    self.move_towards(recharge_cell)
-                # recharge_cell should always be set by approach; if not, just wait
-
-        elif self._scout_wh_step == "exit":
-            exit_cell = station.get("exit") or station.get("entrance")
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            # Finish when on the exit cell OR when already outside warehouse
-            left_wh = (
-                not exit_cell
-                or my_pos == exit_cell
-                or cell_type
-                not in (
-                    CellType.WAREHOUSE,
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                )
-            )
-            if left_wh:
-                print(f"{self.tag} WH: exited, resuming exploration")
-                self._scout_wh_step = None
-                self._scout_wh_station = None
-                self.state = AgentState.EXPLORING
-                self.target_position = None
-                self.path = []
-                # Move off the exit cell immediately so it doesn't block
-                if my_pos == exit_cell and self.pos:
-                    for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                        np_ = (my_pos[0] + dx, my_pos[1] + dy)
-                        if (
-                            0 <= np_[0] < self.model.grid.width
-                            and 0 <= np_[1] < self.model.grid.height
-                        ):
-                            nc = self.model.grid.get_cell_type(*np_)
-                            if nc not in (
-                                CellType.WAREHOUSE,
-                                CellType.WAREHOUSE_ENTRANCE,
-                                CellType.WAREHOUSE_EXIT,
-                                CellType.OBSTACLE,
-                            ) and self.model.grid.is_cell_empty(np_):
-                                self.model.grid.move_agent(self, np_)
-                                break
-            else:
-                if exit_cell:
-                    self.move_towards(exit_cell)
-
     def _broadcast_discovered_objects(self) -> bool:
         """Send object location messages to nearby coordinators.
 
@@ -1213,7 +1043,5 @@ class ScoutAgent(BaseAgent):
                 target_ids=coordinator_ids,
             )
 
-        # Consume energy for broadcast
-        self.consume_energy(self.energy_consumption["communicate"] * len(coordinators))
         self.last_communication_step = self.model.current_step
         return True

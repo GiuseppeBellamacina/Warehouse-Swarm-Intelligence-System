@@ -7,6 +7,10 @@ from typing import List, Optional, Set, Tuple
 
 import numpy as np
 
+from backend.algorithms.numba_core import (
+    euclidean_heuristic,
+    is_walkable_for_agent_numba,
+)
 from backend.core.grid_manager import CellType
 
 
@@ -24,17 +28,8 @@ class AStarPathfinder:
         self.grid = grid_manager
 
     def heuristic(self, a: Tuple[int, int], b: Tuple[int, int]) -> float:
-        """
-        Euclidean distance heuristic
-
-        Args:
-            a: Start position
-            b: Goal position
-
-        Returns:
-            Estimated distance
-        """
-        return np.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
+        """Euclidean distance heuristic — delegates to Numba."""
+        return euclidean_heuristic(a[0], a[1], b[0], b[1])
 
     def _is_walkable_for_agent(
         self,
@@ -44,23 +39,13 @@ class AStarPathfinder:
     ) -> bool:
         """Check walkability using the agent's navigation map.
 
-        Accepts either the agent's local_map (fog-of-war / unknown mode)
-        or the full-grid nav_map (map_known mode).
-
-        - UNKNOWN (0) cells are treated as walkable so A* can plan through
-          unexplored territory (optimistic assumption).
-        - OBSTACLE cells block.
-        - All other cell types (FREE, WAREHOUSE, …) are walkable.
-
-        Falls back to the global ``grid.is_walkable()`` when no map is
-        provided (legacy callers).
+        Delegates to Numba-compiled function when a local map is provided.
+        Falls back to global grid.is_walkable() otherwise.
         """
+        if agent_local_map is not None:
+            return is_walkable_for_agent_numba(x, y, agent_local_map)
         if not (0 <= x < self.grid.width and 0 <= y < self.grid.height):
             return False
-        if agent_local_map is not None:
-            cell = int(agent_local_map[y, x])
-            # UNKNOWN (0) is treated as walkable; only OBSTACLE blocks
-            return cell != CellType.OBSTACLE
         return self.grid.is_walkable(x, y)
 
     def get_neighbors(

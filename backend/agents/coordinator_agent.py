@@ -67,7 +67,6 @@ class CoordinatorAgent(BaseAgent):
         _b = behavior
         self._BOREDOM_THRESHOLD: int = _b["boredom_threshold"]
         self._POS_MAX_AGE: int = _b["pos_max_age"]
-        self._RECHARGE_THRESHOLD: float = _b["recharge_threshold"]
         self._CENTROID_OBJECT_BIAS: float = _b["centroid_object_bias"]
         self._SYNC_RATE_LIMIT: int = _b["sync_rate_limit"]
         self._SEEK_RETRIEVERS: bool = _b["seek_retrievers"]
@@ -106,9 +105,6 @@ class CoordinatorAgent(BaseAgent):
         # Coordinator sync: track last step we synced with each other coordinator
         self.last_sync_step: Dict[int, int] = {}
 
-        # Track recharge attempts to avoid getting stuck
-        self.recharge_attempt_start: Optional[int] = None
-
         # Consecutive steps spent IDLE in _decide_exploration.
         # When this exceeds _BOREDOM_THRESHOLD the coordinator forces a waypoint
         # patrol pass rather than continuing to sit near the agent centroid.
@@ -117,12 +113,6 @@ class CoordinatorAgent(BaseAgent):
         # Exploration state (retriever-style continuous movement)
         self._explore_target: Optional[Tuple[int, int]] = None
         self._explore_steps: int = 0
-
-        # Warehouse recharge sub-state machine (analogous to retriever _wh_step)
-        self._coord_wh_step: Optional[str] = None  # None | "approach" | "recharge" | "exit"
-        self._coord_wh_station: Optional[Dict] = None
-        # Dedicated slot for the recharge queue cell so target_position can't corrupt it
-        self._coord_wh_recharge_cell: Optional[Tuple[int, int]] = None
 
     def process_received_messages(self) -> None:
         """Process incoming messages (base handles MapData / ObjectLocation)."""
@@ -293,43 +283,6 @@ class CoordinatorAgent(BaseAgent):
         self.should_communicate_this_step = False
         self.tasks_to_assign = []
 
-        # Check if need to recharge — only start the sub-machine when energy is
-        # genuinely low.  Skip if already at or above the recharge trigger range to
-        # avoid the coordinator wandering into a warehouse and immediately exiting.
-        if self.energy < self.max_energy * self._RECHARGE_THRESHOLD:
-            if self.state != AgentState.RECHARGING:
-                closest_wh = self.get_closest_warehouse()
-                if closest_wh:
-                    print(f"{self.tag} LOW-E ({self.energy:.1f}), heading to WH {closest_wh}")
-                    self.state = AgentState.RECHARGING
-                    self.target_position = closest_wh
-                    self.recharge_attempt_start = self.model.current_step
-                    # Always reset sub-machine so it re-initialises cleanly
-                    self._coord_wh_step = None
-                    self._coord_wh_station = None
-                    self._coord_wh_recharge_cell = None
-            else:
-                if self.recharge_attempt_start is not None:
-                    steps_attempting = self.model.current_step - self.recharge_attempt_start
-                    if steps_attempting > 50:
-                        print(
-                            f"{self.tag} EMERGENCY: cannot reach WH after {steps_attempting} steps"
-                        )
-                        # Full reset — sub-machine MUST be cleared or step_act will keep running it
-                        self._coord_wh_step = None
-                        self._coord_wh_station = None
-                        self._coord_wh_recharge_cell = None
-                        self.state = AgentState.IDLE
-                        self.target_position = None
-                        self.recharge_attempt_start = None
-                        return
-            return
-
-        if self.recharge_attempt_start is not None:
-            self.recharge_attempt_start = None
-            if self.state == AgentState.RECHARGING:
-                self.state = AgentState.IDLE
-
         # Sync with any nearby coordinators
         self._sync_with_nearby_coordinators()
 
@@ -366,7 +319,7 @@ class CoordinatorAgent(BaseAgent):
             return
 
         # Priority 2: Explore / reposition — runs every step so state is always current
-        if self.state in (AgentState.IDLE, AgentState.EXPLORING) and self._coord_wh_step is None:
+        if self.state in (AgentState.IDLE, AgentState.EXPLORING):
             self._decide_exploration()
 
     def _identify_available_retrievers(self) -> None:
@@ -542,8 +495,6 @@ class CoordinatorAgent(BaseAgent):
         """
         if self.available_retrievers:
             return False  # already have retrievers in range
-        if self._coord_wh_step is not None:
-            return False  # busy with warehouse sequence
 
         # Check for objects that still need assigning
         pending = [
@@ -867,11 +818,6 @@ class CoordinatorAgent(BaseAgent):
         if self.should_communicate_this_step and self.tasks_to_assign:
             self._send_task_assignments()
 
-        # Execute recharge sub-state machine
-        if self.state == AgentState.RECHARGING or self._coord_wh_step is not None:
-            self._execute_recharge_step()
-            return
-
         # Move based on exploration state
         if self.state == AgentState.EXPLORING:
             if self.target_position:
@@ -902,182 +848,6 @@ class CoordinatorAgent(BaseAgent):
 
             # No target — generate one immediately so the coordinator never stands still
             self._decide_exploration()
-
-    def _execute_recharge_step(self) -> None:
-        """Sub-state machine: approach warehouse → recharge → exit."""
-        my_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
-
-        # --- initialise sub-machine ---
-        if self._coord_wh_step is None:
-            # Use congestion-aware warehouse selection (same as retrievers)
-            visible_entrances = [
-                wh
-                for wh in self.known_warehouses
-                if self.model.grid.get_cell_type(*wh) == CellType.WAREHOUSE_ENTRANCE
-            ]
-            station = self.model.get_best_warehouse_for(
-                pos=my_pos,
-                known_entrances=visible_entrances,
-                agent_energy=self.energy,
-            )
-            self._coord_wh_station = station
-            entrance = station.get("entrance")
-            if entrance:
-                self._coord_wh_step = "approach"
-                self.target_position = entrance
-                print(f"{self.tag} RECHARGE: heading to entrance {entrance}")
-            else:
-                # No station found — abort recharge
-                self.state = AgentState.IDLE
-                self.recharge_attempt_start = None
-                return
-
-        station = self._coord_wh_station or {}
-
-        # --- approach entrance ---
-        if self._coord_wh_step == "approach":
-            entrance = station.get("entrance")
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            at_or_inside = (
-                not entrance
-                or my_pos == entrance
-                or cell_type
-                in (
-                    CellType.WAREHOUSE,
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                )
-            )
-            if at_or_inside:
-                if self.energy >= self.max_energy * 0.80:
-                    # Enough energy — skip recharge entirely, exit immediately
-                    print(
-                        f"{self.tag} RECHARGE: energy sufficient "
-                        f"({self.energy:.1f}/{self.max_energy}), skipping recharge"
-                    )
-                    exit_cell = station.get("exit") or station.get("entrance")
-                    self._coord_wh_step = "exit"
-                    self.target_position = exit_cell
-                    if exit_cell and my_pos != exit_cell:
-                        self.move_towards(exit_cell)
-                else:
-                    # Need recharge — join FIFO queue near exit
-                    queue_cell = self.model.get_queue_slot(station)
-                    self._coord_wh_step = "recharge"
-                    # Store in dedicated attribute so target_position changes can't corrupt it
-                    self._coord_wh_recharge_cell = queue_cell
-                    self.target_position = queue_cell
-                    print(f"{self.tag} RECHARGE: at entrance, joining queue at {queue_cell}")
-                    if my_pos != queue_cell:
-                        self.move_towards(queue_cell)
-            else:
-                # Guard against getting stuck.
-                # Ensure recharge_attempt_start is always set (may be None if we arrived
-                # here after an EMERGENCY reset wiped it while _coord_wh_step was left set).
-                if self.recharge_attempt_start is None:
-                    self.recharge_attempt_start = self.model.current_step
-                steps = self.model.current_step - self.recharge_attempt_start
-                if steps > 60:
-                    print(f"{self.tag} RECHARGE TIMEOUT: cannot reach WH, aborting")
-                    self._coord_wh_step = None
-                    self._coord_wh_station = None
-                    self._coord_wh_recharge_cell = None
-                    self.state = AgentState.IDLE
-                    self.target_position = None
-                    self.recharge_attempt_start = None
-                    return
-                if entrance:
-                    # If the entrance cell is occupied, ask the blocker to move
-                    blocker = self._get_agent_at_pos(entrance)
-                    if blocker is not None:
-                        self._send_clear_way_request(entrance, blocker)
-                    self.move_towards(entrance)
-            return
-
-        # --- walk to recharge cell and recharge ---
-        if self._coord_wh_step == "recharge":
-            # Use the dedicated attribute so that target_position changes (e.g. REPOSITION)
-            # can never send the coordinator toward the wrong cell while recharging.
-            recharge_cell = self._coord_wh_recharge_cell or station.get("recharge_cell") or my_pos
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            # Only recharge on true interior cells — never on entrance or exit
-            if my_pos != recharge_cell:
-                self.move_towards(recharge_cell)
-                return
-            if cell_type in (CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT):
-                # Shouldn't happen, but move further inside just in case
-                self.move_towards(recharge_cell)
-                return
-            # At interior recharge cell — recharge
-            rate = self.model.config.warehouse.recharge_rate
-            self.recharge_energy(rate)
-            if self.energy >= self.max_energy * 0.95:
-                exit_cell = station.get("exit") or station.get("entrance")
-                self._coord_wh_step = "exit"
-                self.target_position = exit_cell
-                print(
-                    f"{self.tag} RECHARGE: full ({self.energy:.1f}), "
-                    f"heading to exit {exit_cell}"
-                )
-                # Move toward exit immediately
-                if exit_cell and my_pos != exit_cell:
-                    self.move_towards(exit_cell)
-            return
-
-        # --- walk to exit cell ---
-        if self._coord_wh_step == "exit":
-            exit_cell = station.get("exit") or station.get("entrance")
-            cell_type = self.model.grid.get_cell_type(*my_pos)
-            left_wh = (
-                not exit_cell
-                or my_pos == exit_cell
-                or cell_type
-                not in (
-                    CellType.WAREHOUSE,
-                    CellType.WAREHOUSE_ENTRANCE,
-                    CellType.WAREHOUSE_EXIT,
-                )
-            )
-            if left_wh:
-                print(f"{self.tag} RECHARGE: exited warehouse, resuming")
-                self._coord_wh_step = None
-                self._coord_wh_station = None
-                self._coord_wh_recharge_cell = None
-                self.state = AgentState.IDLE
-                self.recharge_attempt_start = None
-                # Find a walkable cell just outside the warehouse to move to immediately
-                if self.pos:
-                    for dx, dy in [
-                        (1, 0),
-                        (-1, 0),
-                        (0, 1),
-                        (0, -1),
-                        (1, 1),
-                        (-1, 1),
-                        (1, -1),
-                        (-1, -1),
-                    ]:
-                        np_ = (my_pos[0] + dx, my_pos[1] + dy)
-                        if (
-                            0 <= np_[0] < self.model.grid.width
-                            and 0 <= np_[1] < self.model.grid.height
-                        ):
-                            nc = self.model.grid.get_cell_type(*np_)
-                            if nc not in (
-                                CellType.WAREHOUSE,
-                                CellType.WAREHOUSE_ENTRANCE,
-                                CellType.WAREHOUSE_EXIT,
-                                CellType.OBSTACLE,
-                            ) and self.model.grid.is_cell_empty(np_):
-                                self.target_position = np_
-                                self.model.grid.move_agent(self, np_)
-                                break
-                    else:
-                        self.target_position = None
-            else:
-                if exit_cell:
-                    self.move_towards(exit_cell)
-            return
 
     def _send_task_assignments(self) -> None:
         """Send task assignments to retrievers and update local tracking."""
@@ -1149,8 +919,6 @@ class CoordinatorAgent(BaseAgent):
 
             # Remove the spotted-by hint once assigned
             self._spotted_by.pop(obj_pos, None)
-
-            self.consume_energy(self.energy_consumption["communicate"])
 
         self.tasks_to_assign = []
         self.last_communication_step = self.model.current_step

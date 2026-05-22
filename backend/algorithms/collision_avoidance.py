@@ -6,6 +6,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from backend.algorithms.numba_core import compute_collision_cone_numba
+
 
 class VelocityObstacles:
     """
@@ -24,63 +26,23 @@ class VelocityObstacles:
         time_horizon: float = 2.0,
     ) -> Optional[Tuple[float, float]]:
         """
-        Compute if a collision cone exists
-
-        Args:
-            agent_pos: Agent position
-            agent_vel: Agent velocity
-            other_pos: Other agent position
-            other_vel: Other agent velocity
-            agent_radius: Agent collision radius
-            time_horizon: Look-ahead time
-
-        Returns:
-            None if no collision, or avoidance vector if collision predicted
+        Compute if a collision cone exists. Delegates to Numba.
         """
-        # Relative position and velocity
-        rel_pos = (other_pos[0] - agent_pos[0], other_pos[1] - agent_pos[1])
-        rel_vel = (agent_vel[0] - other_vel[0], agent_vel[1] - other_vel[1])
-
-        # Distance between agents
-        dist = np.sqrt(rel_pos[0] ** 2 + rel_pos[1] ** 2)
-
-        if dist < 0.1:  # Too close, emergency avoidance
-            return (-rel_pos[0], -rel_pos[1])
-
-        # Time to collision
-        if rel_vel[0] ** 2 + rel_vel[1] ** 2 < 0.01:
-            # Agents not moving relative to each other
-            return None
-
-        # Check if on collision course
-        dot_product = rel_pos[0] * rel_vel[0] + rel_pos[1] * rel_vel[1]
-
-        if dot_product >= 0:
-            # Moving away from each other
-            return None
-
-        # Time to closest approach
-        t = -dot_product / (rel_vel[0] ** 2 + rel_vel[1] ** 2)
-
-        if t > time_horizon:
-            # Collision too far in future
-            return None
-
-        # Closest approach distance
-        closest_dist = np.sqrt(
-            (rel_pos[0] + t * rel_vel[0]) ** 2 + (rel_pos[1] + t * rel_vel[1]) ** 2
+        has_collision, avoid_x, avoid_y = compute_collision_cone_numba(
+            agent_pos[0],
+            agent_pos[1],
+            agent_vel[0],
+            agent_vel[1],
+            other_pos[0],
+            other_pos[1],
+            other_vel[0],
+            other_vel[1],
+            agent_radius,
+            time_horizon,
         )
-
-        if closest_dist > agent_radius * 2:
-            # No collision
-            return None
-
-        # Collision predicted, compute avoidance direction
-        # Perpendicular to relative position
-        avoid_x = -rel_pos[1] / dist
-        avoid_y = rel_pos[0] / dist
-
-        return (avoid_x, avoid_y)
+        if has_collision:
+            return (avoid_x, avoid_y)
+        return None
 
     @staticmethod
     def select_safe_velocity(

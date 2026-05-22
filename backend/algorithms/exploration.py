@@ -7,6 +7,7 @@ from typing import Callable, List, Optional, Tuple, cast
 import numpy as np
 from scipy.ndimage import label
 
+from backend.algorithms.numba_core import compute_exploration_potential_numba
 from backend.core.grid_manager import CellType
 
 
@@ -340,57 +341,22 @@ class PotentialFieldExplorer:
         sample_radius: int = 20,
     ) -> Tuple[int, int]:
         """
-        Compute potential field and return direction
-
-        Args:
-            agent_position: Current position
-            local_map: Local exploration map
-            nearby_agent_positions: Nearby agents
-            sample_radius: Radius to sample for potential
-
-        Returns:
-            Target position to move towards
+        Compute potential field and return direction.
+        Delegates to Numba-compiled implementation.
         """
         ax, ay = agent_position
 
-        # Sample grid around agent
-        force_x = 0.0
-        force_y = 0.0
+        if nearby_agent_positions:
+            nearby_x = np.array([p[0] for p in nearby_agent_positions], dtype=np.int32)
+            nearby_y = np.array([p[1] for p in nearby_agent_positions], dtype=np.int32)
+        else:
+            nearby_x = np.empty(0, dtype=np.int32)
+            nearby_y = np.empty(0, dtype=np.int32)
 
-        # Attractive force towards unexplored areas
-        for dx in range(-sample_radius, sample_radius + 1):
-            for dy in range(-sample_radius, sample_radius + 1):
-                x, y = ax + dx, ay + dy
-
-                if 0 <= y < local_map.shape[0] and 0 <= x < local_map.shape[1]:
-                    if local_map[y, x] == CellType.UNKNOWN:
-                        # Attractive force inversely proportional to distance
-                        dist = max(np.sqrt(dx * dx + dy * dy), 1.0)
-                        force_x += dx / (dist * dist)
-                        force_y += dy / (dist * dist)
-
-        # Repulsive force from other agents
-        for other_x, other_y in nearby_agent_positions:
-            dx = ax - other_x
-            dy = ay - other_y
-            dist = max(np.sqrt(dx * dx + dy * dy), 1.0)
-
-            if dist < 10:  # Only repel if close
-                force_x += dx / (dist * dist) * 5.0
-                force_y += dy / (dist * dist) * 5.0
-
-        # Normalize and apply
-        force_magnitude = np.sqrt(force_x * force_x + force_y * force_y)
-
-        if force_magnitude > 0:
-            force_x /= force_magnitude
-            force_y /= force_magnitude
-
-            # Move in direction of force
-            target_x = int(ax + force_x * 3)
-            target_y = int(ay + force_y * 3)
-
-            return (target_x, target_y)
+        result = compute_exploration_potential_numba(
+            ax, ay, local_map, nearby_x, nearby_y, sample_radius
+        )
+        return (int(result[0]), int(result[1]))
 
         # No force, stay in place
         return agent_position

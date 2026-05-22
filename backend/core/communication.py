@@ -7,6 +7,11 @@ from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from backend.algorithms.numba_core import (
+    apply_shared_map_data_numba,
+    extract_explored_cells_numba,
+)
+
 
 @dataclass
 class Stamped:
@@ -339,49 +344,24 @@ class MapSharingSystem:
     @staticmethod
     def extract_explored_cells(local_map: np.ndarray) -> List[Tuple[int, int, int]]:
         """
-        Extract all explored (non-UNKNOWN) cells from a map
-
-        Args:
-            local_map: Agent's local exploration map
-
-        Returns:
-            List of (x, y, cell_type) tuples for explored cells
+        Extract all explored (non-UNKNOWN) cells from a map.
+        Delegates to Numba-compiled implementation.
         """
-        explored = []
-        height, width = local_map.shape
-
-        for y in range(height):
-            for x in range(width):
-                cell_type = local_map[y, x]
-                if cell_type != 0:  # Not UNKNOWN
-                    explored.append((x, y, int(cell_type)))
-
-        return explored
+        raw = extract_explored_cells_numba(local_map)
+        return [(int(row[0]), int(row[1]), int(row[2])) for row in raw]
 
     @staticmethod
     def apply_shared_map_data(
         local_map: np.ndarray, shared_cells: List[Tuple[int, int, int]]
     ) -> np.ndarray:
         """
-        Apply shared map data to local map
-
-        Args:
-            local_map: Agent's local map
-            shared_cells: List of (x, y, cell_type) from other agent
-
-        Returns:
-            Updated local map
+        Apply shared map data to local map. Only updates UNKNOWN (0) cells.
+        Delegates to Numba-compiled implementation.
         """
-        updated = local_map.copy()
-        height, width = updated.shape
-
-        for x, y, cell_type in shared_cells:
-            if 0 <= x < width and 0 <= y < height:
-                # Only update if currently UNKNOWN
-                if updated[y, x] == 0:
-                    updated[y, x] = cell_type
-
-        return updated
+        if not shared_cells:
+            return local_map.copy()
+        shared_arr = np.array(shared_cells, dtype=np.int32)
+        return apply_shared_map_data_numba(local_map, shared_arr)
 
 
 class CoordinationSystem:

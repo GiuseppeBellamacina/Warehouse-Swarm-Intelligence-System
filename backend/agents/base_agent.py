@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Set, Tuple
 
 import numpy as np
 
+from backend.algorithms.numba_core import chebyshev_distance, manhattan_distance
 from backend.core.communication import (
     ClearWayMessage,
     MapDataMessage,
@@ -27,12 +28,10 @@ def distance(
     a: Tuple[int, int], b: Tuple[int, int], type: Literal["manhattan", "chebyshev"] = "manhattan"
 ) -> int:
     """Return distance between two points based on the specified type."""
-    dx = abs(a[0] - b[0])
-    dy = abs(a[1] - b[1])
     if type == "manhattan":
-        return dx + dy
+        return manhattan_distance(a[0], a[1], b[0], b[1])
     elif type == "chebyshev":
-        return max(dx, dy)
+        return chebyshev_distance(a[0], a[1], b[0], b[1])
     else:
         raise ValueError(f"Unknown distance type: {type}")
 
@@ -81,6 +80,7 @@ class AgentState(Enum):
     DELIVERING = "delivering"
     RECHARGING = "recharging"
     IDLE = "idle"
+    DEAD = "dead"
 
 
 class BaseAgent(Agent):
@@ -120,11 +120,8 @@ class BaseAgent(Agent):
         # Energy system
         self.max_energy = max_energy
         self.energy = max_energy
-        self.energy_consumption = energy_consumption or {
-            "base": 0.0,
-            "move": 1.0,
-            "communicate": 0.0,
-        }
+        # Energy consumption: 1 unit per cell moved (only way to consume energy)
+        self.energy_consumption = {"move": 1.0}
 
         # Local map memory (initialized to UNKNOWN)
         grid_width = model.grid.width
@@ -233,12 +230,21 @@ class BaseAgent(Agent):
         return (self.energy / self.max_energy) * 100.0
 
     def consume_energy(self, amount: float) -> None:
-        """Consume energy, ensuring it doesn't go below 0"""
+        """Consume energy, ensuring it doesn't go below 0. Triggers death at 0."""
         self.energy = max(0.0, self.energy - amount)
+        if self.energy <= 0.0 and self.state != AgentState.DEAD:
+            self._die()
 
-    def recharge_energy(self, amount: float) -> None:
-        """Recharge energy, capped at max_energy"""
-        self.energy = min(self.max_energy, self.energy + amount)
+    def _die(self) -> None:
+        """Mark this agent as dead. It stays on the grid as an obstacle."""
+        self.state = AgentState.DEAD
+        self.target_position = None
+        self.path = []
+        # Mark the cell as an obstacle so pathfinding treats it as blocked
+        if self.pos:
+            pos = (self.pos[0], self.pos[1]) if not isinstance(self.pos, tuple) else self.pos
+            self.model.grid.set_cell_type(pos[0], pos[1], CellType.OBSTACLE)
+        print(f"{self.tag} DEAD: energy depleted at {self.pos}")
 
     def log_message(
         self,
@@ -523,8 +529,6 @@ class BaseAgent(Agent):
                 target_ids=recipient_ids,
             )
 
-        # Consume energy
-        self.consume_energy(self.energy_consumption["communicate"])
         self.last_communication_step = self.model.current_step
 
         return len(nearby)
@@ -1688,9 +1692,6 @@ class BaseAgent(Agent):
 
     def step_sense(self) -> None:
         """Stage 0: Perceive environment (everyone always does this)"""
-        # Base energy consumption (reduced to avoid draining when stuck)
-        self.consume_energy(self.energy_consumption["base"] * 0.1)
-
         # Perceive visible cells
         visible = self.perceive_environment()
         self.update_local_map(visible)
@@ -1780,8 +1781,8 @@ class BaseAgent(Agent):
         Sense/Communicate/Decide run once; Act runs int(speed) times so
         faster agents cover more ground per simulation step.
         """
-        if self.energy <= 0:
-            return  # Agent is out of energy
+        if self.state == AgentState.DEAD or self.energy <= 0:
+            return  # Agent is dead — acts as obstacle
 
         # Respect global tick limit (ticks are incremented per individual move)
         if not self.model.running or self.model.current_step >= self.model.max_steps:
