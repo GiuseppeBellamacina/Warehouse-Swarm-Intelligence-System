@@ -557,9 +557,11 @@ class SimulationManager:
         self.model.map_hybrid = True
         # Store obstacle positions for frontend highlight
         from backend.core.grid_manager import CellType as _CT
+
         self.model._pre_known_obstacles = [
             {"x": x, "y": y}
-            for x in range(w) for y in range(h)
+            for x in range(w)
+            for y in range(h)
             if _CT(grid.cell_types[x, y]) in _OBSTACLE_TYPES
         ]
         print(f"  Hybrid topology knowledge applied to {len(self.model.agents)} agents")

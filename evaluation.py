@@ -1298,7 +1298,7 @@ def main():
     for inst in instances:
         print(f"    • {inst.stem}")
     print(f"  Seeds: {seeds}")
-    print(f"  Mode: hybrid")
+    print("  Mode: hybrid")
     if unlimited_energy:
         print("  Energy: UNLIMITED (999999)")
     else:

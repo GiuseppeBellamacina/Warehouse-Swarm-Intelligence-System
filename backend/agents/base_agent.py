@@ -968,8 +968,7 @@ class BaseAgent(Agent):
             # - unknown: local_map → optimistic about UNKNOWN cells
             _is_model_mk = getattr(self.model, "map_known", False)
             if self.nav_map is not None and (
-                _is_model_mk
-                or self.state in (AgentState.DELIVERING, AgentState.RETRIEVING)
+                _is_model_mk or self.state in (AgentState.DELIVERING, AgentState.RETRIEVING)
             ):
                 _astar_map = self.nav_map
             else:

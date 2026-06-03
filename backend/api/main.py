@@ -125,9 +125,7 @@ async def list_configs():
 
         logistics_path = configs_path / "logistics"
         if logistics_path.exists():
-            logistics = sorted(
-                f.stem for f in logistics_path.glob("mapd_*.json")
-            )
+            logistics = sorted(f.stem for f in logistics_path.glob("mapd_*.json"))
 
         return {"configs": legacy, "logistics": logistics}
     except Exception as e:
