@@ -1149,7 +1149,81 @@ def main():
         metavar="N1-N2",
         help="Search best seed in range N1-N2 (e.g. 0-99)",
     )
+    parser.add_argument(
+        "--logistic",
+        action="store_true",
+        help="Run multi-seed benchmark with MAPD logistics-grid instances (see evaluation_logistic.py)",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        default=30,
+        metavar="N",
+        help="Number of seeds for --logistic mode (default: 30)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of parallel workers for --logistic mode (default: cpu_count - 1)",
+    )
+    parser.add_argument(
+        "--instances",
+        nargs="+",
+        metavar="FILTER",
+        help="Filter MAPD instances for --logistic mode (e.g. '50x50', 'medium', 'border')",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip plot generation in --logistic mode (just print summary)",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        metavar="PATH",
+        help="Path to a JSON config file for --logistic mode (CLI args override config values)",
+    )
+    parser.add_argument(
+        "--no-json",
+        action="store_true",
+        help="Skip JSON results export in --logistic mode",
+    )
+    parser.add_argument(
+        "--unlimited-energy",
+        action="store_true",
+        help="Give agents unlimited energy in --logistic mode",
+    )
     args = parser.parse_args()
+
+    # ── Dispatch to logistic multi-benchmark if requested ─────────────────
+    if args.logistic:
+        from evaluation_logistic import main as logistic_main
+
+        # Rebuild sys.argv for the sub-script
+        sys.argv = ["evaluation_logistic.py"]
+        if args.verbose:
+            sys.argv.append("-v")
+        if args.seeds != 30:
+            sys.argv.extend(["--seeds", str(args.seeds)])
+        if args.workers is not None:
+            sys.argv.extend(["--workers", str(args.workers)])
+        if args.instances:
+            sys.argv.extend(["--instances"] + args.instances)
+        if args.mode:
+            sys.argv.extend(["--mode"] + args.mode)
+        if getattr(args, "no_plots", False):
+            sys.argv.append("--no-plots")
+        if getattr(args, "config", None):
+            sys.argv.extend(["--config", args.config])
+        if getattr(args, "no_json", False):
+            sys.argv.append("--no-json")
+        if getattr(args, "unlimited_energy", False):
+            sys.argv.append("--unlimited-energy")
+        logistic_main()
+        return
+
     verbose = args.verbose
     img_mode = args.imgs  # None | "all" | "bench" | "snaps"
     generate_bench = img_mode in ("all", "bench")

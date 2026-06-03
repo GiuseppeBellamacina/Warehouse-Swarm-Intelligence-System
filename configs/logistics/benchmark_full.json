@@ -1,0 +1,11 @@
+{
+  "seeds": 30,
+  "workers": null,
+  "instances": null,
+  "mode": ["known", "unknown"],
+  "out": "docs/benchmarks/logistic",
+  "unlimited_energy": true,
+  "no_plots": false,
+  "no_json": false,
+  "verbose": false
+}

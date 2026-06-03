@@ -1031,7 +1031,8 @@ class BaseAgent(Agent):
                         # Move to next position
                         self.model.grid.move_agent(self, next_pos)
                         self.consume_energy(self.energy_consumption["move"])
-                        self.path.pop(0)  # Remove reached waypoint
+                        if self.path:
+                            self.path.pop(0)  # Remove reached waypoint
                         moved = True
                     else:
                         # Position temporarily occupied by another agent
