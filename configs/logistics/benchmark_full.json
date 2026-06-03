@@ -1,6 +1,6 @@
 {
-  "seeds": 30,
-  "workers": null,
+  "seeds": 1,
+  "workers": 4,
   "instances": null,
   "mode": ["known", "unknown"],
   "out": "docs/benchmarks/logistic",
