@@ -1,8 +1,7 @@
 {
-  "seeds": 1,
-  "workers": 4,
+  "seeds": 30,
+  "workers": 1,
   "instances": null,
-  "mode": ["known", "unknown"],
   "out": "docs/benchmarks/logistic",
   "unlimited_energy": true,
   "no_plots": false,

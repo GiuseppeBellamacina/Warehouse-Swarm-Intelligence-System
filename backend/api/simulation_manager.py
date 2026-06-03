@@ -424,6 +424,8 @@ class SimulationManager:
         # Pre-knowledge: reveal full map (terrain + warehouses) to every agent
         if agents_config.map_known:
             self._apply_map_knowledge()
+        elif getattr(agents_config, "map_hybrid", False):
+            self._apply_hybrid_knowledge()
 
         # Snapshot RNG state so that step() can isolate itself from external
         # async consumers (WebSocket, Telegram notifier, etc.)
@@ -491,6 +493,76 @@ class SimulationManager:
         # Store flag on the model so get_state_dict can forward it to the frontend
         self.model.map_known = True
         print(f"  Map pre-knowledge applied to {len(self.model.agents)} agents")
+
+    def _apply_hybrid_knowledge(self) -> None:
+        """Apply topology knowledge without enabling map_known mode.
+
+        Agents get:
+          1) nav_map with obstacles/warehouses → wall-aware pathfinding for
+             delivery/retrieval (exploration still uses local_map optimistically)
+          2) known_warehouses → immediate delivery routing
+          3) local_map pre-filled with warehouse cells only → matches what
+             flood_fill would do on first warehouse sighting in unknown mode
+
+        Obstacles are NOT marked in local_map — frontier detection treats them
+        as unknown, preserving the "bump into walls = explore" dynamics.
+
+        model.map_known stays False → scouts explore stochastically, no zone
+        routing, objects must still be discovered by vision.
+        """
+        if not self.model:
+            return
+        grid = self.model.grid
+        w, h = grid.width, grid.height
+
+        import numpy as np
+
+        from backend.agents.base_agent import BaseAgent
+
+        _OBSTACLE_TYPES = {CellType.OBSTACLE}
+        _WH = {CellType.WAREHOUSE, CellType.WAREHOUSE_ENTRANCE, CellType.WAREHOUSE_EXIT}
+
+        wh_cells = [
+            (x, y) for x in range(w) for y in range(h) if CellType(grid.cell_types[x, y]) in _WH
+        ]
+
+        for agent in self.model.agents:
+            if not isinstance(agent, BaseAgent):
+                continue
+            # Build nav_map with obstacles + warehouses (same as map_known)
+            sanitized = np.zeros_like(agent.local_map)
+            for x in range(w):
+                for y in range(h):
+                    ct = CellType(grid.cell_types[x, y])
+                    if ct in _OBSTACLE_TYPES or ct in _WH:
+                        sanitized[y, x] = int(ct)
+            agent.nav_map = sanitized
+
+            # Mark warehouse cells in local_map (same as flood_fill would do)
+            # This prevents the flood_fill skip issue in step_sense.
+            # Obstacles are NOT marked — they stay UNKNOWN for exploration.
+            lm = agent.local_map
+            for x, y in wh_cells:
+                ct = CellType(grid.cell_types[x, y])
+                lm[y, x] = int(ct)
+
+            # Populate known_warehouses
+            existing = set(agent.known_warehouses)
+            for wc in wh_cells:
+                if wc not in existing:
+                    agent.known_warehouses.append(wc)
+
+        # model.map_known stays False — scouts explore stochastically
+        # Mark hybrid mode for frontend rendering
+        self.model.map_hybrid = True
+        # Store obstacle positions for frontend highlight
+        from backend.core.grid_manager import CellType as _CT
+        self.model._pre_known_obstacles = [
+            {"x": x, "y": y}
+            for x in range(w) for y in range(h)
+            if _CT(grid.cell_types[x, y]) in _OBSTACLE_TYPES
+        ]
+        print(f"  Hybrid topology knowledge applied to {len(self.model.agents)} agents")
 
     async def load_from_grid(
         self,

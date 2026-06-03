@@ -143,36 +143,15 @@ Receive a message when a simulation starts, completes or is stopped (see [Enviro
 │   │   └── 🐍 collector.py
 │   └── 🐍 __init__.py
 ├── 📁 configs
-│   ├── ⚙️ A.json
-│   └── ⚙️ B.json
+│   ├── ⚙️ A.json                          (legacy)
+│   ├── ⚙️ B.json                          (legacy)
+│   └── 📁 logistics
+│       ├── ⚙️ mapd_50x50_few_random_…     (18 MAPD instances)
+│       ├── ⚙️ benchmark_full.json
+│       └── ⚙️ benchmark_example.json
 ├── 📁 docs
 │   ├── 📁 benchmarks
-│   │   ├── 📁 A
-│   │   │   ├── 🖼️ efficiency.png
-│   │   │   ├── 🖼️ energy.png
-│   │   │   ├── 🖼️ messages.png
-│   │   │   ├── 🖼️ retrieval.png
-│   │   │   ├── 🖼️ snapshot_0S-0C-5R_map_known.png
-│   │   │   ├── 🖼️ snapshot_0S-0C-5R_unknown.png
-│   │   │   ├── 🖼️ snapshot_1S-1C-3R_map_known.png
-│   │   │   ├── 🖼️ snapshot_1S-1C-3R_map_known_no-seek.png
-│   │   │   ├── 🖼️ snapshot_1S-1C-3R_unknown.png
-│   │   │   ├── 🖼️ snapshot_1S-1C-3R_unknown__no-seek.png
-│   │   │   ├── 🖼️ steps_comparison.png
-│   │   │   └── 🖼️ summary_table.png
-│   │   └── 📁 B
-│   │       ├── 🖼️ efficiency.png
-│   │       ├── 🖼️ energy.png
-│   │       ├── 🖼️ messages.png
-│   │       ├── 🖼️ retrieval.png
-│   │       ├── 🖼️ snapshot_0S-0C-5R_map_known.png
-│   │       ├── 🖼️ snapshot_0S-0C-5R_unknown.png
-│   │       ├── 🖼️ snapshot_1S-1C-3R_map_known.png
-│   │       ├── 🖼️ snapshot_1S-1C-3R_map_known_no-seek.png
-│   │       ├── 🖼️ snapshot_1S-1C-3R_unknown.png
-│   │       ├── 🖼️ snapshot_1S-1C-3R_unknown__no-seek.png
-│   │       ├── 🖼️ steps_comparison.png
-│   │       └── 🖼️ summary_table.png
+│   │   └── 📁 logistic                    (generated plots + results.json)
 │   ├── 📁 latex
 │   │   ├── 📁 assets
 │   │   ├── 📁 parts
@@ -334,20 +313,21 @@ Or run the helper script:
 
 ## Evaluation script
 
-`evaluation.py` runs all reference configurations and reports results. It mirrors the same `SimulationManager` / `SimulationAgentsConfig` defaults used by the backend API.
+`evaluation.py` runs a multi-seed benchmark across 18 MAPD logistics-grid instances (from `configs/logistics/`). All configurations use hybrid mode (topology-aware A\* for delivery, frontier-based exploration for discovery).
 
 ```text
-python evaluation.py                        # quick summary, no images
-python evaluation.py -v                     # verbose (agent log lines)
-python evaluation.py --imgs                 # generate benchmark charts and snapshots
-python evaluation.py --seed 42              # override random seed for all maps
-python evaluation.py --maps A B             # run only the specified map(s)
-python evaluation.py --mode known           # run only map_known configs
-python evaluation.py --mode unknown         # run only unknown configs
-python evaluation.py --seed-mine 0-199      # find the best seed in a range
+python evaluation.py                          # all instances, 30 seeds
+python evaluation.py --seeds 10               # fewer seeds (faster)
+python evaluation.py --instances 50x50        # filter by grid size
+python evaluation.py --instances medium       # filter by obstacle density
+python evaluation.py --instances border       # filter by object distribution
+python evaluation.py --config cfg.json        # use JSON config file
+python evaluation.py --unlimited-energy       # infinite agent energy
+python evaluation.py --no-plots               # skip charts, just JSON + summary
+python evaluation.py -v                       # verbose agent logs
 ```
 
-`--maps` and `--mode` filters are applied to both normal evaluation and `--seed-mine` mode. Charts and per-config PNG snapshots are saved to `docs/benchmarks/<map>/`.
+Results (plots + JSON) are saved to `docs/benchmarks/logistic/`. If all agents die during a simulation, it stops early and moves on to the next seed.
 
 ---
 

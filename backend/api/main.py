@@ -110,18 +110,26 @@ async def get_defaults():
 @app.get("/api/configs")
 async def list_configs():
     """
-    List all available configuration files
+    List all available configuration files grouped by category.
 
     Returns:
-        List of available config names
+        configs: legacy configs (A, B)
+        logistics: MAPD logistics instances (from configs/logistics/)
     """
     try:
-        if not configs_path.exists():
-            return {"configs": []}
+        legacy: list[str] = []
+        logistics: list[str] = []
 
-        # Get all .json files in configs directory
-        config_files = [f.stem for f in configs_path.glob("*.json")]
-        return {"configs": sorted(config_files)}
+        if configs_path.exists():
+            legacy = sorted(f.stem for f in configs_path.glob("*.json"))
+
+        logistics_path = configs_path / "logistics"
+        if logistics_path.exists():
+            logistics = sorted(
+                f.stem for f in logistics_path.glob("mapd_*.json")
+            )
+
+        return {"configs": legacy, "logistics": logistics}
     except Exception as e:
         print(f"[ERROR] Error listing configs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error listing configs: {str(e)}")
@@ -130,21 +138,29 @@ async def list_configs():
 @app.get("/configs/{config_name}")
 async def get_config(config_name: str):
     """
-    Get a configuration file
+    Get a configuration file by name (searches configs/ and configs/logistics/).
 
     Args:
-        config_name: Name of the config file (e.g., 'simple_scenario.json')
+        config_name: Name of the config file (e.g., 'A.json' or 'mapd_50x50_few_random_objects25_seed42.json')
 
     Returns:
         Configuration JSON
     """
     try:
+        # Guard against path traversal
+        if ".." in config_name or "/" in config_name or "\\" in config_name:
+            raise HTTPException(status_code=400, detail="Invalid config name")
+
         config_file = configs_path / config_name
+
+        # Fallback: search in logistics subfolder
+        if not config_file.exists():
+            config_file = configs_path / "logistics" / config_name
 
         if not config_file.exists():
             raise HTTPException(
                 status_code=404,
-                detail=f"Configuration file '{config_name}' not found at {config_file}",
+                detail=f"Configuration file '{config_name}' not found",
             )
 
         if not config_file.is_file():

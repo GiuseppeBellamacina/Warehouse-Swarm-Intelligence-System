@@ -102,6 +102,10 @@ export interface SimulationState {
   global_object_explored?: number[];
   /** Whether agents started with full map knowledge */
   map_known?: boolean;
+  /** Whether agents use hybrid mode (topology known, objects unknown) */
+  map_hybrid?: boolean;
+  /** Obstacle cells pre-known to agents in hybrid mode */
+  pre_known_obstacles?: Position[];
   status?: {
     running: boolean;
     paused: boolean;
@@ -226,6 +230,7 @@ export interface SimulationAgentsConfig {
   coordinator_behavior: CoordinatorBehaviorParams;
   retriever_behavior: RetrieverBehaviorParams;
   map_known?: boolean;
+  map_hybrid?: boolean;
 }
 
 /**

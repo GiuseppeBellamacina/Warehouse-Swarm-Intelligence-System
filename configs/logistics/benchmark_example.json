@@ -2,7 +2,6 @@
   "seeds": 5,
   "workers": 4,
   "instances": ["50x50"],
-  "mode": ["unknown"],
   "out": "docs/benchmarks/logistic",
   "no_plots": false,
   "no_json": false,

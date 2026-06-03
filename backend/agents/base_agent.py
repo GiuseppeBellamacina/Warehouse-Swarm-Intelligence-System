@@ -962,9 +962,18 @@ class BaseAgent(Agent):
             _known_mask = self.local_map
 
             # Choose the map that A* uses for walkability:
-            # - map_known: nav_map (full grid) → avoids all real walls
-            # - map_unknown: local_map → optimistic about UNKNOWN cells
-            _astar_map = self.nav_map if self.nav_map is not None else self.local_map
+            # - map_known (model.map_known=True): nav_map always → avoids all real walls
+            # - hybrid (nav_map set, map_known=False): nav_map only for delivery/retrieval,
+            #   local_map for exploration (preserves "bump into walls = explore" dynamics)
+            # - unknown: local_map → optimistic about UNKNOWN cells
+            _is_model_mk = getattr(self.model, "map_known", False)
+            if self.nav_map is not None and (
+                _is_model_mk
+                or self.state in (AgentState.DELIVERING, AgentState.RETRIEVING)
+            ):
+                _astar_map = self.nav_map
+            else:
+                _astar_map = self.local_map
 
             # Recompute path if:
             # - we don't have one yet

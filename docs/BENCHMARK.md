@@ -23,19 +23,16 @@ So with default settings: **18 instances × 4 configs × 30 seeds = 2160 runs**.
 
 ```bash
 # Full benchmark (all instances, 30 seeds, all modes)
-python evaluation_logistic.py
+python evaluation.py
 
 # Quick test: one instance, 5 seeds
-python evaluation_logistic.py --instances 50x50_few_random --seeds 5
+python evaluation.py --instances 50x50_few_random --seeds 5
 
 # Using a config file
-python evaluation_logistic.py --config configs/benchmark_example.json
+python evaluation.py --config configs/benchmark_example.json
 
 # Config file + CLI override (CLI wins)
-python evaluation_logistic.py --config configs/benchmark_example.json --seeds 10
-
-# Via the unified entrypoint
-python evaluation.py --logistic --seeds 10 --instances 50x50
+python evaluation.py --config configs/benchmark_example.json --seeds 10
 ```
 
 ---
@@ -48,7 +45,7 @@ python evaluation.py --logistic --seeds 10 --instances 50x50
 | `--seeds N`             | 30                         | Number of random seeds per configuration                           |
 | `--workers N`           | cpu_count - 1              | Parallel workers for multiprocessing                               |
 | `--instances FILTER...` | all                        | Filter instances by substring(s). Multiple filters are ANDed       |
-| `--mode MODE...`        | `known unknown`            | Map modes to test: `known`, `unknown`, or both                     |
+| `--unlimited-energy`    | false                      | Give agents unlimited energy (999999)                              |
 | `--out DIR`             | `docs/benchmarks/logistic` | Output directory for plots and JSON                                |
 | `--no-plots`            | false                      | Skip plot generation (just print summary + JSON)                   |
 | `--no-json`             | false                      | Skip JSON results export                                           |
@@ -98,7 +95,7 @@ All fields are optional. Omitted fields use their defaults.
 
 ```bash
 # Uses config but overrides seeds to 5
-python evaluation_logistic.py --config my_config.json --seeds 5
+python evaluation.py --config my_config.json --seeds 5
 ```
 
 ---
@@ -177,17 +174,17 @@ Agents that run out of energy die and become obstacles.
 
 ```bash
 # Fast sanity check
-python evaluation_logistic.py --instances 50x50_few_random --seeds 2 --workers 1 --no-plots
+python evaluation.py --instances 50x50_few_random --seeds 2 --workers 1 --no-plots
 
-# Only unknown mode, 50x50 maps, 10 seeds
-python evaluation_logistic.py --instances 50x50 --mode unknown --seeds 10
+# Only 50x50 maps, 10 seeds
+python evaluation.py --instances 50x50 --seeds 10
 
 # Full benchmark with JSON config
-python evaluation_logistic.py --config configs/benchmark_example.json
+python evaluation.py --config configs/benchmark_example.json
 
 # Generate only JSON data, no plots
-python evaluation_logistic.py --no-plots --seeds 30
+python evaluation.py --no-plots --seeds 30
 
 # Generate only plots, no JSON
-python evaluation_logistic.py --no-json --seeds 30
+python evaluation.py --no-json --seeds 30
 ```

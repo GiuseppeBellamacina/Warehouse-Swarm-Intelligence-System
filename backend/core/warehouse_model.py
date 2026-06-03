@@ -65,6 +65,8 @@ class WarehouseModel(Model):
         self.current_step = 0
         self.max_steps = config.simulation.max_steps
         self.map_known = False  # set True by simulation_manager if pre-knowledge enabled
+        self.map_hybrid = False  # set True by simulation_manager for hybrid mode
+        self._pre_known_obstacles: list[dict] | None = None  # obstacle coords for frontend
 
         # Warehouse info
         self.warehouse_position = (config.warehouse.position.x, config.warehouse.position.y)
@@ -915,4 +917,6 @@ class WarehouseModel(Model):
                 "messages_sent": getattr(self.comm_manager, "messages_sent", 0),
             },
             "map_known": getattr(self, "map_known", False),
+            "map_hybrid": getattr(self, "map_hybrid", False),
+            "pre_known_obstacles": getattr(self, "_pre_known_obstacles", None),
         }

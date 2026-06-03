@@ -1,34 +1,44 @@
 """
-Standard test suite — run all reference configurations and report results.
+Multi-seed benchmark using MAPD logistics-grid instances.
 
-Uses the same SimulationManager and SimulationAgentsConfig defaults used by
-the backend API, so results are identical to the web UI.
-
-Generates PNG charts (same visual style as the frontend BenchmarkPanel) and
-saves them to docs/benchmarks/<map>/.
+Runs the 18 pre-generated instances from configs/logistics/
+with diversified seeding and produces statistical plots (mean ± std) and
+JSON results.
 
 Usage:
-    python evaluation.py                      # quick summary, no images
-    python evaluation.py -v                   # verbose (agent log lines)
-    python evaluation.py --imgs               # generate both charts and snapshots
-    python evaluation.py --imgs bench         # generate only benchmark charts
-    python evaluation.py --imgs snaps         # generate only grid snapshots
-    python evaluation.py --seed 42            # set random seed for reproducibility
-    python evaluation.py --maps A B           # specify which maps to run (defaults to all)
-    python evaluation.py --mode known unknown # specify map mode(s) to test (defaults to all)
-    python evaluation.py --help               # show all options
+    python evaluation.py                          # all instances, 30 seeds
+    python evaluation.py --seeds 10               # fewer seeds (faster)
+    python evaluation.py --instances 50x50        # filter by grid size
+    python evaluation.py --instances medium       # filter by density
+    python evaluation.py --instances border       # filter by distribution
+    python evaluation.py --instances 75x75 few    # combine filters
+    python evaluation.py --workers 4              # limit parallelism
+    python evaluation.py --config cfg.json        # use JSON config file
+    python evaluation.py --config cfg.json --seeds 5  # config + CLI override
+    python evaluation.py --no-plots               # skip charts, just JSON + summary
+    python evaluation.py --no-json                # skip JSON export
+    python evaluation.py --unlimited-energy       # infinite agent energy
+    python evaluation.py -v                       # verbose agent logs
+
+See docs/BENCHMARK.md for full documentation.
 """
+
+from __future__ import annotations
 
 import argparse
 import copy
 import json
 import math
+import multiprocessing as mp
 import os
 import sys
 import time
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from tqdm import tqdm
 
 sys.path.insert(0, ".")
 
@@ -37,31 +47,35 @@ from backend.config.schemas import (
     CoordinatorParams,
     GridScenarioConfig,
     RetrieverParams,
-    ScoutBehaviorParams,
     ScoutParams,
     SimulationAgentsConfig,
 )
-from backend.core.grid_manager import CellType
 
-# ── PNG chart renderer (Pillow — mirrors frontend BenchmarkPanel) ────────────
+# ── Constants ────────────────────────────────────────────────────────────────
+
+INSTANCES_DIR = Path("configs/logistics")
+
+# Total energy budget per grid size (floor(0.8 * medium_traversable_cells))
+# From README: medium traversable counts are 1726, 3841, 7192
+_TOTAL_ENERGY = {
+    50: 1380,
+    75: 3072,
+    100: 5753,
+}
+
+NUM_AGENTS = 10  # fixed across all configs
+
+# ── Chart styling ─────────────────────────────────────────────────────────────
 
 CHART_COLORS = [
     "#3b82f6",  # blue
+    "#ef4444",  # red
     "#10b981",  # emerald
     "#f59e0b",  # amber
-    "#ef4444",  # red
     "#8b5cf6",  # violet
     "#ec4899",  # pink
     "#06b6d4",  # cyan
     "#f97316",  # orange
-    "#22c55e",  # green
-    "#eab308",  # yellow
-    "#db2777",  # rose
-    "#3d9970",  # teal
-    "#6366f1",  # indigo
-    "#a855f7",  # purple
-    "#84cc16",  # lime
-    "#0ea5e9",  # sky
 ]
 
 THEME = {
@@ -75,18 +89,15 @@ THEME = {
 }
 
 
-def _pick_color(i: int) -> str:
-    return CHART_COLORS[i % len(CHART_COLORS)]
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _hex(c: str) -> tuple[int, int, int]:
-    """Convert hex colour to RGB tuple."""
     c = c.lstrip("#")
     return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
 
 
 def _font(size: int, mono: bool = False):
-    """Load a TrueType font with fallback to Pillow default."""
     names = (
         ["consola.ttf", "Consolas.ttf", "DejaVuSansMono.ttf"]
         if mono
@@ -100,20 +111,7 @@ def _font(size: int, mono: bool = False):
     return ImageFont.load_default()
 
 
-def _font_bold(size: int):
-    """Load a bold TrueType font — mirrors Canvas `bold Xpx sans-serif`."""
-    names = ["arialbd.ttf", "Arial Bold.ttf", "Arial_Bold.ttf", "DejaVuSans-Bold.ttf"]
-    for n in names:
-        try:
-            return ImageFont.truetype(n, size)
-        except OSError:
-            pass
-    # Fallback: regular font (still renders, just not bold)
-    return _font(size)
-
-
 def _tw(draw: ImageDraw.ImageDraw, text: str, font) -> int:
-    """Measure text width."""
     bb = draw.textbbox((0, 0), text, font=font)
     return int(bb[2] - bb[0])
 
@@ -121,7 +119,6 @@ def _tw(draw: ImageDraw.ImageDraw, text: str, font) -> int:
 def _paste_rotated(
     img: Image.Image, text: str, font, fill: tuple, cx: int, cy: int, angle: int = 90
 ) -> None:
-    """Paste text rotated CCW by *angle* degrees, centred at (cx, cy)."""
     tmp = Image.new("RGBA", (800, 80), (0, 0, 0, 0))
     d = ImageDraw.Draw(tmp)
     bb = d.textbbox((0, 0), text, font=font)
@@ -133,23 +130,494 @@ def _paste_rotated(
     img.paste(rotated, (x, y), rotated)
 
 
-# ── Pillow chart savers ──────────────────────────────────────────────────────
+def _pick_color(i: int) -> str:
+    return CHART_COLORS[i % len(CHART_COLORS)]
 
 
-def _save_line_chart(
+# ── Instance loading ─────────────────────────────────────────────────────────
+
+
+def compute_energy_per_agent(grid_size: int, num_agents: int = NUM_AGENTS) -> int:
+    """Compute per-agent energy budget from README formula."""
+    total = _TOTAL_ENERGY.get(grid_size)
+    if total is None:
+        raise ValueError(f"No energy budget defined for grid_size={grid_size}")
+    return math.ceil(total / num_agents)
+
+
+def load_mapd_instance(path: str | Path) -> GridScenarioConfig:
+    """Load a MAPD instance JSON and return a GridScenarioConfig."""
+    with open(path) as f:
+        data = json.load(f)
+
+    # Inject max_steps if missing (grid_size * 10)
+    meta = data.get("metadata", {})
+    grid_size = meta.get("grid_size", 50)
+    if "max_steps" not in meta:
+        meta["max_steps"] = grid_size * 10
+
+    # Keep only fields GridScenarioConfig expects
+    cfg_data = {
+        "metadata": {
+            "grid_size": meta["grid_size"],
+            "num_warehouses": meta["num_warehouses"],
+            "num_objects": meta["num_objects"],
+            "max_steps": meta["max_steps"],
+            "seed": meta.get("seed"),
+        },
+        "grid": data["grid"],
+        "warehouses": data["warehouses"],
+        "objects": data["objects"],
+    }
+    return GridScenarioConfig(**cfg_data)
+
+
+def list_instances(filters: list[str] | None = None) -> list[Path]:
+    """List instance files, optionally filtered by substrings."""
+    files = sorted(INSTANCES_DIR.glob("mapd_*.json"))
+    if filters:
+        filtered = []
+        for f in files:
+            name = f.stem
+            if all(flt in name for flt in filters):
+                filtered.append(f)
+        return filtered
+    return files
+
+
+# ── Agent configurations ─────────────────────────────────────────────────────
+
+
+def build_configs(
+    grid_size: int, unlimited_energy: bool = False
+) -> list[tuple[str, SimulationAgentsConfig]]:
+    """
+    Build the 2 agent configurations for a given grid size.
+
+    Configs:
+      - 0S/0C/10R: 10 retrievers only
+      - 2S/2C/6R: 2 scouts + 2 coordinators + 6 retrievers
+
+    Both use hybrid mode (topology-aware pathfinding + unknown-style exploration),
+    vision_radius=6, communication_radius=4, energy=computed.
+    If unlimited_energy is True, agents get 999999 energy (effectively infinite).
+    """
+    energy = 999999 if unlimited_energy else compute_energy_per_agent(grid_size, NUM_AGENTS)
+
+    configs: list[tuple[str, SimulationAgentsConfig]] = []
+
+    # Config 1: 10 retrievers only
+    configs.append(
+        (
+            "0S/0C/10R",
+            SimulationAgentsConfig(
+                scouts=ScoutParams(count=0),
+                coordinators=CoordinatorParams(count=0),
+                retrievers=RetrieverParams(
+                    count=10,
+                    vision_radius=6,
+                    communication_radius=4,
+                    max_energy=float(energy),
+                    carrying_capacity=2,
+                ),
+                map_hybrid=True,
+            ),
+        )
+    )
+
+    # Config 2: 2S/2C/6R
+    configs.append(
+        (
+            "2S/2C/6R",
+            SimulationAgentsConfig(
+                scouts=ScoutParams(
+                    count=2,
+                    vision_radius=6,
+                    communication_radius=4,
+                    max_energy=float(energy),
+                    speed=2.0,
+                ),
+                coordinators=CoordinatorParams(
+                    count=2,
+                    vision_radius=6,
+                    communication_radius=4,
+                    max_energy=float(energy),
+                ),
+                retrievers=RetrieverParams(
+                    count=6,
+                    vision_radius=6,
+                    communication_radius=4,
+                    max_energy=float(energy),
+                    carrying_capacity=2,
+                ),
+                map_hybrid=True,
+            ),
+        )
+    )
+
+    return configs
+
+
+# ── Single-run worker (picklable for multiprocessing) ────────────────────────
+
+
+def _run_single(args: tuple) -> dict[str, Any]:
+    """Run one simulation. Designed to be called from Pool.map()."""
+    instance_path, config_name, agents_cfg_dict, seed, verbose = args
+
+    # Suppress prints unless verbose
+    import builtins
+
+    _real_print = builtins.print
+    if not verbose:
+        builtins.print = lambda *a, **kw: None
+
+    try:
+        grid_cfg = load_mapd_instance(instance_path)
+        grid_cfg = copy.deepcopy(grid_cfg)
+        grid_cfg.metadata.seed = seed
+
+        mgr = SimulationManager()
+        agents_cfg = SimulationAgentsConfig(**agents_cfg_dict)
+        mgr.initialize_from_grid(grid_cfg, agents_cfg)
+        model = mgr.model
+
+        # Collect per-step data for line charts
+        step_data: list[dict] = []
+        while model.running:
+            model.step()
+            step_data.append(
+                {
+                    "step": model.current_step,
+                    "objects_retrieved": model.objects_retrieved,
+                    "average_energy": float(
+                        np.mean([getattr(a, "energy", 0) for a in model.agents])
+                    ),
+                    "messages_sent": model.comm_manager.messages_sent,
+                }
+            )
+            # Early stop if all agents are dead
+            if all(getattr(a, "energy", 0) <= 0 for a in model.agents):
+                model.running = False
+
+        steps = model.current_step
+        retrieved = model.objects_retrieved
+        total = model.total_objects
+        avg_energy = float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
+        messages = model.comm_manager.messages_sent
+        active = len([a for a in model.agents if getattr(a, "energy", 0) > 0])
+        completed = retrieved >= total
+
+        return {
+            "instance": str(instance_path),
+            "config": config_name,
+            "seed": seed,
+            "steps": steps,
+            "objects_retrieved": retrieved,
+            "total_objects": total,
+            "avg_energy_final": avg_energy,
+            "messages_sent": messages,
+            "active_agents": active,
+            "completed": completed,
+            "step_data": step_data,
+        }
+    finally:
+        builtins.print = _real_print
+
+
+# ── Multi-seed orchestrator ──────────────────────────────────────────────────
+
+
+def run_multiseed_benchmark(
+    instances: list[Path],
+    num_seeds: int = 30,
+    num_workers: int | None = None,
+    verbose: bool = False,
+    unlimited_energy: bool = False,
+) -> dict[str, dict[str, list[dict]]]:
+    """
+    Run all instances × configs × seeds in parallel.
+
+    Returns: {instance_name: {config_name: [result_dicts]}}
+    """
+    if num_workers is None:
+        num_workers = max(1, mp.cpu_count() - 1)
+
+    # Build work items
+    work: list[tuple] = []
+    for inst_path in instances:
+        grid_size = json.loads(inst_path.read_text())["metadata"]["grid_size"]
+        configs = build_configs(grid_size, unlimited_energy=unlimited_energy)
+        for cfg_name, agents_cfg in configs:
+            agents_dict = agents_cfg.model_dump()
+            # 10R is fully deterministic (no random calls) → single seed
+            is_deterministic = cfg_name == "0S/0C/10R"
+            seeds_for_cfg = 1 if is_deterministic else num_seeds
+            for seed in range(seeds_for_cfg):
+                work.append((str(inst_path), cfg_name, agents_dict, seed, verbose))
+
+    total = len(work)
+    print(
+        f"  Total runs: {total} "
+        f"({len(instances)} inst × [0S/0C/10R ×1 + 2S/2C/6R ×{num_seeds} seeds])"
+    )
+    print(f"  Workers: {num_workers}")
+    print()
+
+    t0 = time.perf_counter()
+
+    # Run with multiprocessing
+    results_flat: list[dict] = []
+    pbar = tqdm(total=total, desc="  Benchmark", unit="run", ncols=80)
+    if num_workers <= 1:
+        for item in work:
+            r = _run_single(item)
+            results_flat.append(r)
+            pbar.update(1)
+    else:
+        with mp.Pool(num_workers) as pool:
+            for r in pool.imap_unordered(_run_single, work):
+                results_flat.append(r)
+                pbar.update(1)
+    pbar.close()
+
+    elapsed = time.perf_counter() - t0
+    print(f"  Completed in {elapsed:.1f}s ({elapsed/total:.2f}s per run avg)")
+
+    # Organize results: {instance_name: {config: [results]}}
+    organized: dict[str, dict[str, list[dict]]] = {}
+    for r in results_flat:
+        inst_name = Path(r["instance"]).stem
+        cfg = r["config"]
+        organized.setdefault(inst_name, {}).setdefault(cfg, []).append(r)
+
+    return organized
+
+
+# ── Plot: Bar chart (mean ± std) ─────────────────────────────────────────────
+
+
+def _save_bar_chart_mean_std(
+    path: str,
+    title: str,
+    labels: list[str],
+    means: list[float],
+    stds: list[float],
+    colors: list[str],
+    y_label: str = "Steps",
+    width: int = 700,
+    height: int = 400,
+    scale: int = 2,
+) -> None:
+    """Bar chart with error bars (mean ± stddev)."""
+    S = scale
+    W, H = width * S, height * S
+    img = Image.new("RGB", (W, H), _hex(THEME["bg"]))
+    draw = ImageDraw.Draw(img)
+    ft, fs, fl, fb = _font(13 * S), _font(10 * S), _font(8 * S), _font(10 * S)
+
+    pt, pr, pb, pl = 40 * S, 20 * S, 100 * S, 68 * S
+    cw, ch = W - pl - pr, H - pt - pb
+
+    ym = max(m + s for m, s in zip(means, stds)) * 1.15 if means else 1
+
+    def sy(v: float) -> int:
+        return pt + ch - int(v / ym * ch)
+
+    gap = 12 * S
+    n = max(len(labels), 1)
+    bw = (cw - gap * (n + 1)) // n
+
+    # Title
+    tw_t = _tw(draw, title, ft)
+    draw.text(((W - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
+
+    # Y label
+    _paste_rotated(img, y_label, fs, _hex(THEME["axisLabel"]), 10 * S, pt + ch // 2)
+    draw = ImageDraw.Draw(img)
+
+    # Grid + ticks
+    gc, tc = _hex(THEME["grid"]), _hex(THEME["tickLabel"])
+    for i in range(5):
+        v = ym * i / 4
+        yy = sy(v)
+        draw.line([(pl, yy), (pl + cw, yy)], fill=gc, width=1)
+        lbl = str(int(round(v)))
+        lw = _tw(draw, lbl, fl)
+        draw.text((pl - lw - 4 * S, yy - 4 * S), lbl, fill=tc, font=fl)
+
+    # Axes
+    ac = _hex(THEME["axis"])
+    draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
+    draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
+
+    # Bars
+    for i, (lbl, mean, std, col) in enumerate(zip(labels, means, stds, colors)):
+        bx = pl + gap + i * (bw + gap)
+        by = sy(mean)
+        draw.rectangle([(bx, by), (bx + bw, pt + ch)], fill=_hex(col))
+
+        # Error bar (vertical line ± std)
+        center_x = bx + bw // 2
+        top = sy(mean + std)
+        bot = sy(max(0, mean - std))
+        draw.line([(center_x, top), (center_x, bot)], fill=(255, 255, 255), width=S)
+        draw.line([(center_x - 4 * S, top), (center_x + 4 * S, top)], fill=(255, 255, 255), width=S)
+        draw.line([(center_x - 4 * S, bot), (center_x + 4 * S, bot)], fill=(255, 255, 255), width=S)
+
+        # Value on top
+        vtxt = f"{mean:.0f}"
+        vw = _tw(draw, vtxt, fb)
+        draw.text((bx + (bw - vw) // 2, top - 16 * S), vtxt, fill=_hex(THEME["legend"]), font=fb)
+
+        # Label below (rotated)
+        _paste_rotated(
+            img, lbl, fl, _hex(THEME["tickLabel"]), bx + bw // 2, pt + ch + pb // 2, angle=35
+        )
+        draw = ImageDraw.Draw(img)
+
+    img.save(path, "PNG")
+
+
+# ── Plot: Box plot ───────────────────────────────────────────────────────────
+
+
+def _save_box_plot(
+    path: str,
+    title: str,
+    labels: list[str],
+    data_arrays: list[list[float]],
+    colors: list[str],
+    y_label: str = "Steps",
+    width: int = 700,
+    height: int = 400,
+    scale: int = 2,
+) -> None:
+    """Box plot showing distribution per config."""
+    S = scale
+    W, H = width * S, height * S
+    img = Image.new("RGB", (W, H), _hex(THEME["bg"]))
+    draw = ImageDraw.Draw(img)
+    ft, fs, fl = _font(13 * S), _font(10 * S), _font(8 * S)
+
+    pt, pr, pb, pl = 40 * S, 20 * S, 100 * S, 68 * S
+    cw, ch = W - pl - pr, H - pt - pb
+
+    # Compute stats
+    all_vals = [v for arr in data_arrays for v in arr]
+    ym = max(all_vals) * 1.1 if all_vals else 1
+    yn = 0
+
+    def sy(v: float) -> int:
+        return pt + ch - int((v - yn) / (ym - yn) * ch)
+
+    gap = 16 * S
+    n = max(len(labels), 1)
+    bw = (cw - gap * (n + 1)) // n
+
+    # Title
+    tw_t = _tw(draw, title, ft)
+    draw.text(((W - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
+
+    # Y label
+    _paste_rotated(img, y_label, fs, _hex(THEME["axisLabel"]), 10 * S, pt + ch // 2)
+    draw = ImageDraw.Draw(img)
+
+    # Grid
+    gc, tc = _hex(THEME["grid"]), _hex(THEME["tickLabel"])
+    for i in range(5):
+        v = yn + (ym - yn) * i / 4
+        yy = sy(v)
+        draw.line([(pl, yy), (pl + cw, yy)], fill=gc, width=1)
+        lbl = str(int(round(v)))
+        lw = _tw(draw, lbl, fl)
+        draw.text((pl - lw - 4 * S, yy - 4 * S), lbl, fill=tc, font=fl)
+
+    # Axes
+    ac = _hex(THEME["axis"])
+    draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
+    draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
+
+    # Draw boxes
+    for i, (lbl, arr, col) in enumerate(zip(labels, data_arrays, colors)):
+        if not arr:
+            continue
+        sorted_arr = sorted(arr)
+        q1 = np.percentile(sorted_arr, 25)
+        q2 = np.percentile(sorted_arr, 50)
+        q3 = np.percentile(sorted_arr, 75)
+        iqr = q3 - q1
+        whisker_lo = max(min(sorted_arr), q1 - 1.5 * iqr)
+        whisker_hi = min(max(sorted_arr), q3 + 1.5 * iqr)
+
+        bx = pl + gap + i * (bw + gap)
+        cx = bx + bw // 2
+
+        # Whiskers
+        draw.line([(cx, sy(whisker_hi)), (cx, sy(q3))], fill=_hex(col), width=S)
+        draw.line([(cx, sy(q1)), (cx, sy(whisker_lo))], fill=_hex(col), width=S)
+        draw.line(
+            [(bx + bw // 4, sy(whisker_hi)), (bx + 3 * bw // 4, sy(whisker_hi))],
+            fill=_hex(col),
+            width=S,
+        )
+        draw.line(
+            [(bx + bw // 4, sy(whisker_lo)), (bx + 3 * bw // 4, sy(whisker_lo))],
+            fill=_hex(col),
+            width=S,
+        )
+
+        # Box
+        box_top = sy(q3)
+        box_bot = sy(q1)
+        if box_bot > box_top:
+            draw.rectangle(
+                [(bx + 2, box_top), (bx + bw - 2, box_bot)], outline=_hex(col), width=S + 1
+            )
+            # Fill with darker shade
+            r, g, b = _hex(col)
+            fill_col = (r // 3, g // 3, b // 3)
+            if box_bot - box_top > 2:
+                draw.rectangle([(bx + 3, box_top + 1), (bx + bw - 3, box_bot - 1)], fill=fill_col)
+        else:
+            # Zero-height box (all values identical) — draw a single line
+            draw.line([(bx + 2, box_top), (bx + bw - 2, box_top)], fill=_hex(col), width=S + 1)
+
+        # Median line
+        med_y = sy(q2)
+        draw.line([(bx + 2, med_y), (bx + bw - 2, med_y)], fill=(255, 255, 255), width=S + 1)
+
+        # Label
+        _paste_rotated(
+            img, lbl, fl, _hex(THEME["tickLabel"]), bx + bw // 2, pt + ch + pb // 2, angle=35
+        )
+        draw = ImageDraw.Draw(img)
+
+    img.save(path, "PNG")
+
+
+# ── Plot: Line chart with confidence interval band ───────────────────────────
+
+
+def _save_line_chart_ci(
     path: str,
     title: str,
     series: list[dict],
     y_label: str,
     x_label: str = "Step",
-    width: int = 620,
-    height: int = 320,
+    width: int = 700,
+    height: int = 380,
     scale: int = 2,
 ) -> None:
-    """Draw a line chart with Pillow and save as PNG."""
+    """
+    Line chart with shaded confidence band.
+
+    Each series: {label, color, x, mean, std}
+    where x, mean, std are lists of the same length.
+    """
     S = scale
     W, H = width * S, height * S
-    img = Image.new("RGB", (W, H), _hex(THEME["bg"]))
+    img = Image.new("RGBA", (W, H), (*_hex(THEME["bg"]), 255))
     draw = ImageDraw.Draw(img)
     ft, fs, fl = _font(13 * S), _font(10 * S), _font(9 * S)
 
@@ -157,16 +625,11 @@ def _save_line_chart(
     cw, ch = W - pl - pr, H - pt - pb
 
     # Data bounds
-    xn = yn = float("inf")
-    xx = yx = float("-inf")
-    for sr in series:
-        for d in sr["data"]:
-            xn, xx = min(xn, d["x"]), max(xx, d["x"])
-            yn, yx = min(yn, d["y"]), max(yx, d["y"])
-    if xn > xx:
-        xn, xx, yn, yx = 0, 1, 0, 1
-    yr = (yx - yn) or 1
-    yn, yx = max(0, yn - yr * 0.05), yx + yr * 0.05
+    xn = min(min(sr["x"]) for sr in series if sr["x"])
+    xx = max(max(sr["x"]) for sr in series if sr["x"])
+    yn = 0.0
+    yx = max(max(m + s for m, s in zip(sr["mean"], sr["std"])) for sr in series if sr["mean"])
+    yx *= 1.05
     xr = (xx - xn) or 1
 
     def sx(x: float) -> int:
@@ -179,7 +642,7 @@ def _save_line_chart(
     tw_t = _tw(draw, title, ft)
     draw.text(((W - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
 
-    # Y label (vertical)
+    # Y label
     _paste_rotated(img, y_label, fs, _hex(THEME["axisLabel"]), 10 * S, pt + ch // 2)
     draw = ImageDraw.Draw(img)
 
@@ -193,7 +656,7 @@ def _save_line_chart(
         v = yn + (yx - yn) * i / 4
         yy = sy(v)
         draw.line([(pl, yy), (pl + cw, yy)], fill=gc, width=1)
-        lbl = str(int(v)) if v == int(v) else f"{v:.1f}"
+        lbl = str(int(round(v)))
         lw = _tw(draw, lbl, fl)
         draw.text((pl - lw - 4 * S, yy - 5 * S), lbl, fill=tc, font=fl)
     for i in range(5):
@@ -209,38 +672,32 @@ def _save_line_chart(
     draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
     draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
 
-    # Data lines — collect pixel points for legend placement
-    all_pts: list[tuple[int, int]] = []
+    # Confidence bands (semi-transparent fill)
     for sr in series:
-        if len(sr["data"]) < 2:
+        if len(sr["x"]) < 2:
             continue
-        pts = [(sx(d["x"]), sy(d["y"])) for d in sr["data"]]
-        all_pts.extend(pts)
-        draw.line(pts, fill=_hex(sr["color"]), width=S + 1)
+        r, g, b = _hex(sr["color"])
+        band_img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        band_draw = ImageDraw.Draw(band_img)
 
-    # Legend — auto-place in the corner with fewest data points
-    legend_h = len(series) * 14 * S + 6 * S
-    legend_w = 120 * S  # approximate legend width
-    margin = 8 * S
-    corners = {
-        "tl": (pl + margin, pt + margin),
-        "tr": (pl + cw - legend_w - margin, pt + margin),
-        "bl": (pl + margin, pt + ch - legend_h - margin),
-        "br": (pl + cw - legend_w - margin, pt + ch - legend_h - margin),
-    }
-    best_corner = "tl"
-    best_count = float("inf")
-    for key, (cx0, cy0) in corners.items():
-        count = sum(
-            1
-            for px_, py_ in all_pts
-            if cx0 <= px_ <= cx0 + legend_w and cy0 <= py_ <= cy0 + legend_h
-        )
-        if count < best_count:
-            best_count = count
-            best_corner = key
-    leg_x, leg_y = corners[best_corner]
+        # Build polygon points: upper bound forward, lower bound backward
+        upper = [(sx(x), sy(min(m + s, yx))) for x, m, s in zip(sr["x"], sr["mean"], sr["std"])]
+        lower = [(sx(x), sy(max(m - s, 0))) for x, m, s in zip(sr["x"], sr["mean"], sr["std"])]
+        polygon = upper + lower[::-1]
+        if len(polygon) >= 3:
+            band_draw.polygon(polygon, fill=(r, g, b, 80))
+        img = Image.alpha_composite(img, band_img)
+        draw = ImageDraw.Draw(img)
 
+    # Mean lines
+    for sr in series:
+        if len(sr["x"]) < 2:
+            continue
+        pts = [(sx(x), sy(m)) for x, m in zip(sr["x"], sr["mean"])]
+        draw.line(pts, fill=_hex(sr["color"]), width=2 * S)
+
+    # Legend
+    leg_x, leg_y = pl + 12 * S, pt + 8 * S
     lc = _hex(THEME["legend"])
     for i, sr in enumerate(series):
         lx = leg_x
@@ -248,78 +705,11 @@ def _save_line_chart(
         draw.line([(lx, ly), (lx + 16 * S, ly)], fill=_hex(sr["color"]), width=S + 1)
         draw.text((lx + 20 * S, ly - 5 * S), sr["label"], fill=lc, font=fl)
 
+    img = img.convert("RGB")
     img.save(path, "PNG")
 
 
-def _save_bar_chart(
-    path: str,
-    title: str,
-    labels: list[str],
-    values: list[int],
-    colors: list[str],
-    y_label: str = "Steps",
-    width: int = 620,
-    height: int = 360,
-    scale: int = 2,
-) -> None:
-    """Draw a bar chart with Pillow and save as PNG."""
-    S = scale
-    W, H = width * S, height * S
-    img = Image.new("RGB", (W, H), _hex(THEME["bg"]))
-    draw = ImageDraw.Draw(img)
-    ft, fs, fl, fb = _font(13 * S), _font(10 * S), _font(8 * S), _font(10 * S)
-
-    pt, pr, pb, pl = 40 * S, 20 * S, 100 * S, 58 * S
-    cw, ch = W - pl - pr, H - pt - pb
-
-    ym = max(values) * 1.12 if values else 1
-
-    def sy(v: float) -> int:
-        return pt + ch - int(v / ym * ch)
-
-    gap = 8 * S
-    n = max(len(labels), 1)
-    bw = (cw - gap * (n + 1)) // n
-
-    # Title
-    tw_t = _tw(draw, title, ft)
-    draw.text(((W - tw_t) // 2, 6 * S), title, fill=_hex(THEME["title"]), font=ft)
-
-    # Y label
-    _paste_rotated(img, y_label, fs, _hex(THEME["axisLabel"]), 10 * S, pt + ch // 2)
-    draw = ImageDraw.Draw(img)
-
-    # Grid
-    gc, tc = _hex(THEME["grid"]), _hex(THEME["tickLabel"])
-    for i in range(5):
-        v = round(ym * i / 4)
-        yy = sy(v)
-        draw.line([(pl, yy), (pl + cw, yy)], fill=gc, width=1)
-        lbl = str(v)
-        lw = _tw(draw, lbl, fl)
-        draw.text((pl - lw - 4 * S, yy - 4 * S), lbl, fill=tc, font=fl)
-
-    # Axes
-    ac = _hex(THEME["axis"])
-    draw.line([(pl, pt), (pl, pt + ch)], fill=ac, width=S)
-    draw.line([(pl, pt + ch), (pl + cw, pt + ch)], fill=ac, width=S)
-
-    # Bars + labels
-    for i, (lbl, val, col) in enumerate(zip(labels, values, colors)):
-        bx = pl + gap + i * (bw + gap)
-        by = sy(val)
-        draw.rectangle([(bx, by), (bx + bw, pt + ch)], fill=_hex(col))
-        # Value on top
-        vtxt = str(val)
-        vw = _tw(draw, vtxt, fb)
-        draw.text((bx + (bw - vw) // 2, by - 14 * S), vtxt, fill=_hex(THEME["legend"]), font=fb)
-        # Label below (rotated 35° CCW)
-        _paste_rotated(
-            img, lbl, fl, _hex(THEME["tickLabel"]), bx + bw // 2, pt + ch + pb // 2, angle=35
-        )
-        draw = ImageDraw.Draw(img)
-
-    img.save(path, "PNG")
+# ── Plot: Summary table ──────────────────────────────────────────────────────
 
 
 def _save_table(
@@ -381,1008 +771,579 @@ def _save_table(
         draw.line([(0, y + row_h), (total_w, y + row_h)], fill=_hex("#1f2937"), width=1)
         x = 0
         for ci, cell in enumerate(row):
-            if ci == 0:
-                col = _hex(colors[ri]) if ri < len(colors) else _hex("#6b7280")
-                r_dot = 4 * S
-                draw.ellipse(
-                    [
-                        (x + pad_x, y + row_h // 2 - r_dot),
-                        (x + pad_x + r_dot * 2, y + row_h // 2 + r_dot),
-                    ],
-                    fill=col,
-                )
-                draw.text(
-                    (x + pad_x + r_dot * 3, y + row_h // 4), cell, fill=_hex("#d1d5db"), font=fm
-                )
-            else:
-                fill = _hex("#6b7280") if ci >= 6 else _hex("#d1d5db")
-                draw.text((x + pad_x, y + row_h // 4), cell, fill=fill, font=fm)
+            col = colors[ri] if ci == 0 and ri < len(colors) else "#e5e7eb"
+            draw.text((x + pad_x, y + row_h // 4), cell, fill=_hex(col), font=fm)
             x += col_w[ci]
 
     img.save(path, "PNG")
 
 
-# ── Grid snapshot renderer ────────────────────────────────────────────────────
-
-# Agent colors matching the frontend GridCanvas
-_ROLE_COLORS = {
-    "scout": "#22c55e",
-    "coordinator": "#3b82f6",
-    "retriever": "#f97316",
-}
-_ROLE_SHORT = {"scout": "SCO", "coordinator": "COO", "retriever": "RET"}
-
-# Cell → colour map
-_CELL_COLORS = {
-    CellType.FREE: "#0c0e14",
-    CellType.OBSTACLE: "#4a4a4a",
-    CellType.WAREHOUSE: "#1e3a5f",  # rgba(59,130,246,0.3) on bg
-    CellType.WAREHOUSE_ENTRANCE: "#10b981",
-    CellType.WAREHOUSE_EXIT: "#ef4444",
-    CellType.OBJECT_ZONE: "#0c0e14",
-    CellType.OBJECT: "#0c0e14",
-    CellType.UNKNOWN: "#0c0e14",
-}
+# ── Plot generation from results ─────────────────────────────────────────────
 
 
-def _save_grid_snapshot(
-    path: str,
-    model,
-    title: str,
-    trail_history: dict[int, list[tuple[int, int]]],
-    cell_px: int = 20,
-    scale: int = 2,
-) -> None:
+def _downsample_step_data(
+    all_runs: list[dict], max_pts: int = 200, metric: str = "objects_retrieved"
+) -> tuple[list[float], list[float], list[float]]:
     """
-    Render the final simulation state as a PNG grid snapshot.
+    Compute mean ± std of a metric across runs at uniform x points.
 
-    Faithfully replicates the frontend GridCanvas + exportSnapshot rendering:
-    same layer order, same colours, same fog-of-war, same semi-transparent
-    warehouse cells, same trail dots, same agent shapes / energy bars.
+    metric can be: "objects_retrieved", "average_energy", "messages_sent", "efficiency"
+    Returns (x_values, means, stds).
     """
-    S = scale
-    cp = cell_px * S  # pixels per cell
-    gw, gh = model.grid.width, model.grid.height
-    grid_w, grid_h = gw * cp, gh * cp
-    panel_w = 260 * S
-    W, H = grid_w + panel_w, max(grid_h, 400 * S)
-    fsm = _font(9 * S)
+    if not all_runs:
+        return [], [], []
 
-    # ── 1. Classify cells ──
-    cell_types = model.grid.cell_types  # ndarray [width, height], indexed [x, y]
-    wh_cells: list[tuple[int, int]] = []
-    ent_cells: list[tuple[int, int]] = []
-    exit_cells: list[tuple[int, int]] = []
-    obs_cells: list[tuple[int, int]] = []
-    for x in range(gw):
-        for y in range(gh):
-            ct = CellType(cell_types[x, y])
-            if ct == CellType.WAREHOUSE:
-                wh_cells.append((x, y))
-            elif ct == CellType.WAREHOUSE_ENTRANCE:
-                ent_cells.append((x, y))
-            elif ct == CellType.WAREHOUSE_EXIT:
-                exit_cells.append((x, y))
-            elif ct == CellType.OBSTACLE:
-                obs_cells.append((x, y))
+    # Find the longest run
+    max_steps = max(len(r["step_data"]) for r in all_runs)
+    if max_steps == 0:
+        return [], [], []
 
-    # ── 2. Build global explored masks ──
-    # local_map / vision_explored are shaped [height, width], indexed [y, x]
-    is_map_known = getattr(model, "map_known", False)
-    g_explored: np.ndarray | None = None
-    g_obj_explored: np.ndarray | None = None
-    for agent in model.agents:
-        lm = getattr(agent, "local_map", None)
-        if lm is not None:
-            m = (lm != 0).astype(np.uint8)
-            g_explored = m if g_explored is None else (g_explored | m)
-        ve = getattr(agent, "vision_explored", None)
-        if ve is not None:
-            g_obj_explored = ve.copy() if g_obj_explored is None else (g_obj_explored | ve)
+    # Sample at uniform intervals
+    step_size = max(1, max_steps // max_pts)
+    x_indices = list(range(0, max_steps, step_size))
+    if x_indices[-1] != max_steps - 1:
+        x_indices.append(max_steps - 1)
 
-    # ── 3. Base image — panel bg #0f1117, grid bg #0c0e14 ──
-    img = Image.new("RGBA", (W, H), (15, 17, 23, 255))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([(0, 0), (grid_w - 1, grid_h - 1)], fill=(12, 14, 20, 255))
+    x_vals: list[float] = []
+    means: list[float] = []
+    stds: list[float] = []
 
-    # ── 4. Grid lines (semi-transparent white, matching Canvas) ──
-    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(ov)
-    lc = (255, 255, 255, 10)  # ~rgba(255,255,255,0.04)
-    for x in range(gw + 1):
-        od.line([(x * cp, 0), (x * cp, grid_h)], fill=lc, width=1)
-    for y in range(gh + 1):
-        od.line([(0, y * cp), (grid_w, y * cp)], fill=lc, width=1)
-    img = Image.alpha_composite(img, ov)
-
-    # ── 5. Warehouse cells — semi-transparent blue fill + stroke ──
-    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(ov)
-    wh_fill = (59, 130, 246, 77)  # rgba(59,130,246,0.3)
-    wh_stroke = (59, 130, 246, 128)  # rgba(59,130,246,0.5)
-    for x, y in wh_cells:
-        px, py = x * cp, y * cp
-        od.rectangle([(px, py), (px + cp - 1, py + cp - 1)], fill=wh_fill)
-        od.rectangle([(px, py), (px + cp - 1, py + cp - 1)], outline=wh_stroke, width=1)
-    img = Image.alpha_composite(img, ov)
-
-    # Entrances (solid #10b981)
-    draw = ImageDraw.Draw(img)
-    for x, y in ent_cells:
-        draw.rectangle(
-            [(x * cp, y * cp), (x * cp + cp - 1, y * cp + cp - 1)],
-            fill=(16, 185, 129, 255),
-        )
-    # Exits (solid #ef4444)
-    for x, y in exit_cells:
-        draw.rectangle(
-            [(x * cp, y * cp), (x * cp + cp - 1, y * cp + cp - 1)],
-            fill=(239, 68, 68, 255),
-        )
-    # Obstacles (solid #4a4a4a)
-    for x, y in obs_cells:
-        draw.rectangle(
-            [(x * cp, y * cp), (x * cp + cp - 1, y * cp + cp - 1)],
-            fill=(74, 74, 74, 255),
-        )
-
-    # ── 6. Fog-of-war ──
-    if is_map_known and g_obj_explored is not None:
-        # map_known mode: amber tint + dot on unscanned cells
-        ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        od = ImageDraw.Draw(ov)
-        for gy in range(gh):
-            for gx in range(gw):
-                if g_obj_explored[gy, gx] == 0:
-                    px, py = gx * cp, gy * cp
-                    od.rectangle(
-                        [(px, py), (px + cp - 1, py + cp - 1)],
-                        fill=(180, 140, 60, 46),  # rgba(180,140,60,0.18)
-                    )
-                    cx, cy = px + cp // 2, py + cp // 2
-                    r = max(1, int(cp * 0.12))
-                    od.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=(250, 200, 50, 38))
-        img = Image.alpha_composite(img, ov)
-
-    elif not is_map_known and g_explored is not None:
-        # Normal mode: dark fog on unexplored, bright tint on explored
-        fog_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        fd = ImageDraw.Draw(fog_ov)
-        fog_a = 166  # ~0.65 * 255 (global view)
-        for gy in range(gh):
-            for gx in range(gw):
-                px, py = gx * cp, gy * cp
-                if g_explored[gy, gx] == 0:
-                    fd.rectangle(
-                        [(px, py), (px + cp - 1, py + cp - 1)],
-                        fill=(0, 0, 0, fog_a),
-                    )
-                else:
-                    fd.rectangle(
-                        [(px, py), (px + cp - 1, py + cp - 1)],
-                        fill=(200, 220, 255, 18),  # rgba(200,220,255,0.07)
-                    )
-        img = Image.alpha_composite(img, fog_ov)
-
-        # Diagonal hash pattern on unexplored cells
-        hash_step = max(4 * S, cp // 3)
-        hash_tile = Image.new("RGBA", (cp, cp), (0, 0, 0, 0))
-        hd = ImageDraw.Draw(hash_tile)
-        hc = (255, 255, 255, 15)  # rgba(255,255,255,0.06)
-        for d in range(-cp, 2 * cp, hash_step):
-            hd.line([(d, 0), (d - cp, cp)], fill=hc, width=max(1, S // 2))
-        hash_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        for gy in range(gh):
-            for gx in range(gw):
-                if g_explored[gy, gx] == 0:
-                    hash_ov.paste(hash_tile, (gx * cp, gy * cp))
-        img = Image.alpha_composite(img, hash_ov)
-
-    # ── 7. Objects (not retrieved — yellow circles, matching Canvas) ──
-    draw = ImageDraw.Draw(img)
-    for ox, oy in model.grid.objects:
-        cx = int((ox + 0.5) * cp)
-        cy = int((oy + 0.5) * cp)
-        r = int(cp * 0.3)
-        draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=_hex("#facc15"))
-
-    # ── 8. Agent trails ──
-    _offset_patterns = [
-        (0.0, 0.0),
-        (-0.2, -0.2),
-        (0.2, -0.2),
-        (-0.2, 0.2),
-        (0.2, 0.2),
-        (0.0, -0.25),
-        (0.0, 0.25),
-        (-0.25, 0.0),
-        (0.25, 0.0),
-    ]
-
-    cell_visitors: dict[tuple[int, int], list[int]] = {}
-    agent_roles: dict[int, str] = {}
-    for agent in model.agents:
-        agent_roles[agent.unique_id] = getattr(agent, "role", "unknown")
-    for aid, positions in trail_history.items():
-        for pos in positions:
-            arr = cell_visitors.setdefault(pos, [])
-            if aid not in arr:
-                arr.append(aid)
-
-    trail_ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    td = ImageDraw.Draw(trail_ov)
-    dot_r = max(1, int(cp * 0.12))
-    trail_alpha = 89  # ~0.35 * 255
-
-    for aid, positions in trail_history.items():
-        role = agent_roles.get(aid, "unknown")
-        base_col = _hex(_ROLE_COLORS.get(role, "#ffffff"))
-        fill_col = base_col + (trail_alpha,)
-        for pos in positions:
-            visitors = cell_visitors.get(pos, [aid])
-            idx = visitors.index(aid) if aid in visitors else 0
-            if len(visitors) > 1:
-                ox, oy = _offset_patterns[idx % len(_offset_patterns)]
+    for idx in x_indices:
+        values = []
+        for r in all_runs:
+            sd = r["step_data"]
+            actual_idx = min(idx, len(sd) - 1)
+            entry = sd[actual_idx]
+            if metric == "efficiency":
+                step_num = entry["step"]
+                val = (entry["objects_retrieved"] / step_num * 100) if step_num > 0 else 0
             else:
-                ox, oy = 0.0, 0.0
-            cx = int((pos[0] + 0.5 + ox) * cp)
-            cy = int((pos[1] + 0.5 + oy) * cp)
-            td.ellipse(
-                [(cx - dot_r, cy - dot_r), (cx + dot_r, cy + dot_r)],
-                fill=fill_col,
+                val = entry.get(metric, 0)
+            values.append(val)
+        x_val = all_runs[0]["step_data"][min(idx, len(all_runs[0]["step_data"]) - 1)]["step"]
+        x_vals.append(x_val)
+        means.append(float(np.mean(values)))
+        stds.append(float(np.std(values)))
+
+    return x_vals, means, stds
+
+
+def generate_plots(
+    results: dict[str, dict[str, list[dict]]],
+    out_base: str = "docs/benchmarks/logistic",
+) -> None:
+    """Generate all plots from benchmark results."""
+    os.makedirs(out_base, exist_ok=True)
+
+    # Per-instance plots
+    for inst_name, cfg_results in results.items():
+        # Parse instance name for directory structure
+        # e.g. "mapd_50x50_few_random_objects25_seed42"
+        parts = inst_name.split("_")
+        grid_str = parts[1] if len(parts) > 1 else "unknown"
+        density = parts[2] if len(parts) > 2 else "unknown"
+        distribution = parts[3] if len(parts) > 3 else "unknown"
+
+        inst_dir = os.path.join(out_base, grid_str, f"{density}_{distribution}")
+        os.makedirs(inst_dir, exist_ok=True)
+
+        config_names = list(cfg_results.keys())
+        colors = [_pick_color(i) for i in range(len(config_names))]
+
+        # 1) Bar chart: mean steps ± std (only if there's actual variance)
+        means_steps = []
+        stds_steps = []
+        all_steps_flat: list[float] = []
+        for cfg in config_names:
+            steps_arr = [r["steps"] for r in cfg_results[cfg]]
+            means_steps.append(float(np.mean(steps_arr)))
+            stds_steps.append(float(np.std(steps_arr)))
+            all_steps_flat.extend(steps_arr)
+
+        # Skip steps charts if all values are identical (e.g. all hit max_steps)
+        has_steps_variance = len(set(all_steps_flat)) > 1
+
+        if has_steps_variance:
+            _save_bar_chart_mean_std(
+                os.path.join(inst_dir, "steps_mean_std.png"),
+                f"Steps (mean ± std) — {grid_str} {density} {distribution}",
+                config_names,
+                means_steps,
+                stds_steps,
+                colors,
             )
 
-    img = Image.alpha_composite(img, trail_ov)
-    draw = ImageDraw.Draw(img)
-
-    # ── 9. Agents — shapes, energy bars, carrying count ──
-    for agent in model.agents:
-        if not agent.pos:
-            continue
-        ax, ay = agent.pos
-        cx = int((ax + 0.5) * cp)
-        cy = int((ay + 0.5) * cp)
-        r = int(cp * 0.4)
-        role = getattr(agent, "role", "unknown")
-        colour = _hex(_ROLE_COLORS.get(role, "#ffffff"))
-
-        if role == "scout":
-            draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=colour)
-        elif role == "coordinator":
-            pts = [
-                (
-                    cx + int(r * math.cos(math.pi / 3 * i)),
-                    cy + int(r * math.sin(math.pi / 3 * i)),
-                )
-                for i in range(6)
-            ]
-            draw.polygon(pts, fill=colour)
-        else:
-            draw.rectangle([(cx - r, cy - r), (cx + r, cy + r)], fill=colour)
-
-        # Energy bar
-        bar_w = int(cp * 0.8)
-        bar_h = max(2 * S, 3)
-        bx = ax * cp + int(cp * 0.1)
-        by_ = int((ay + 0.9) * cp)
-        draw.rectangle([(bx, by_), (bx + bar_w, by_ + bar_h)], fill=_hex("#334155"))
-        max_e = getattr(agent, "max_energy", 100)
-        ep = min(getattr(agent, "energy", 0) / max_e, 1.0) if max_e else 0
-        e_col = "#22c55e" if ep > 0.5 else ("#facc15" if ep > 0.25 else "#ef4444")
-        draw.rectangle([(bx, by_), (bx + int(bar_w * ep), by_ + bar_h)], fill=_hex(e_col))
-
-        # Agent number label (type_index) — centred on the agent body
-        # Matches the GridCanvas: bold sans-serif, white, dark shadow.
-        type_index = getattr(model, "_frozen_type_index", {}).get(
-            agent.unique_id, getattr(agent, "type_index", agent.unique_id + 1)
-        )
-        lbl = str(type_index)
-        label_size = max(int(r * 0.9), 7 * S)
-        f_lbl = _font_bold(label_size)
-        bb = draw.textbbox((0, 0), lbl, font=f_lbl)
-        lbl_w, lbl_h = bb[2] - bb[0], bb[3] - bb[1]
-        # Precise vertical centre: account for top bearing
-        lx = cx - lbl_w // 2 - bb[0]
-        ly_ = cy - lbl_h // 2 - bb[1]
-        # Shadow pass (1px offset, ~70% opacity)
-        draw.text((lx + S, ly_ + S), lbl, fill=(0, 0, 0, 178), font=f_lbl)
-        # White text
-        draw.text((lx, ly_), lbl, fill=(255, 255, 255, 255), font=f_lbl)
-
-        # Carrying count (yellow, above the agent)
-        carrying = getattr(agent, "carrying_objects", 0)
-        if carrying > 0:
-            ct_label = str(carrying)
-            ct_w = _tw(draw, ct_label, fsm)
-            draw.text(
-                (cx - ct_w // 2, cy - int(r * 1.5) - 2 * S),
-                ct_label,
-                fill=_hex("#facc15"),
-                font=fsm,
+        # 2) Box plot: steps distribution (only if there's variance)
+        if has_steps_variance:
+            data_arrays = [[r["steps"] for r in cfg_results[cfg]] for cfg in config_names]
+            _save_box_plot(
+                os.path.join(inst_dir, "steps_boxplot.png"),
+                f"Steps Distribution — {grid_str} {density} {distribution}",
+                config_names,
+                data_arrays,
+                colors,
             )
 
-    # ── 10. Info panel (matches frontend exportSnapshot) ──
-    padding = 16 * S
-    px0 = grid_w + padding
-    line_h = 18 * S
-    ly = padding
-
-    f_title = _font(16 * S)
-    f_section = _font(11 * S)
-    f_label = _font(12 * S, mono=True)
-    f_value = _font(12 * S, mono=True)
-    f_small = _font(10 * S)
-
-    label_off = 130 * S
-
-    def _draw_label(label: str, value: str, color: str = "#e5e7eb") -> None:
-        nonlocal ly
-        draw.text((px0, ly), label, fill=_hex("#9ca3af"), font=f_label)
-        draw.text((px0 + label_off, ly), value, fill=_hex(color), font=f_value)
-        ly += line_h
-
-    def _draw_section(section_title: str) -> None:
-        nonlocal ly
-        ly += 6 * S
-        draw.text((px0, ly), section_title.upper(), fill=_hex("#6b7280"), font=f_section)
-        bb = draw.textbbox((px0, ly), section_title.upper(), font=f_section)
-        ly = bb[3] + 4 * S  # line starts below the actual text bottom
-        draw.line([(px0, ly), (W - padding, ly)], fill=_hex("#374151"), width=S)
-        ly += line_h - 4 * S
-
-    # Title
-    draw.text((px0, ly + 4 * S), "Warehouse Swarm Intelligence", fill=_hex("#f3f4f6"), font=f_title)
-    ly += 28 * S
-
-    # Simulation section
-    _draw_section("Simulation")
-    _draw_label("Step", str(model.current_step), "#60a5fa")
-    _draw_label(
-        "Retrieved",
-        f"{model.objects_retrieved} / {model.total_objects}",
-        "#34d399",
-    )
-    progress = model.objects_retrieved / model.total_objects if model.total_objects > 0 else 0
-    _draw_label(
-        "Progress",
-        f"{progress * 100:.1f}%",
-        "#34d399" if progress > 0.5 else "#fbbf24",
-    )
-    avg_energy = (
-        float(np.mean([getattr(a, "energy", 0) for a in model.agents])) if model.agents else 0.0
-    )
-    _draw_label("Avg Energy", f"{avg_energy:.1f}")
-    active = len([a for a in model.agents if getattr(a, "energy", 0) > 0])
-    _draw_label("Active Agents", str(active))
-    _draw_label("Messages", str(model.comm_manager.messages_sent))
-
-    # Agents section — per-agent listing (matches frontend exportSnapshot)
-    _draw_section("Agents")
-    role_colors = {"scout": "#22c55e", "coordinator": "#3b82f6", "retriever": "#f97316"}
-    for role in ("scout", "coordinator", "retriever"):
-        group = [a for a in model.agents if getattr(a, "role", "") == role]
-        if not group:
-            continue
-        short = _ROLE_SHORT[role]
-        for a in group:
-            tag = f"{short} {getattr(a, 'type_index', a.unique_id + 1)}"
-            draw.text((px0, ly), tag, fill=_hex(role_colors[role]), font=f_label)
-            dl = getattr(a, "total_delivered", 0)
-            if dl > 0:
-                draw.text(
-                    (px0 + 80 * S, ly),
-                    f"delivered {dl}",
-                    fill=_hex("#34d399"),
-                    font=f_value,
-                )
-            ly += line_h
-
-    # Config name
-    ly += 6 * S
-    draw.text((px0, ly), title, fill=_hex("#6b7280"), font=f_small)
-    ly += line_h
-
-    # Watermark
-    draw.text(
-        (px0, H - padding),
-        f"Step {model.current_step}",
-        fill=_hex("#4b5563"),
-        font=f_small,
-    )
-
-    img = img.convert("RGB")
-    img.save(path, "PNG")
-
-
-# ── Snapshot collection ──────────────────────────────────────────────────────
-
-# Type alias for trail data
-TrailHistory = dict[int, list[tuple[int, int]]]
-
-
-def _run(name: str, grid_cfg: GridScenarioConfig, agents_cfg: SimulationAgentsConfig):
-    """Run a single simulation, collect per-step snapshots.  Returns (steps, snapshots, model, trails)."""
-    mgr = SimulationManager()
-    mgr.initialize_from_grid(grid_cfg, agents_cfg)
-    assert mgr.model is not None, "initialize_from_grid failed to create model"
-    model = mgr.model
-
-    snapshots: list[dict] = []
-    trails: TrailHistory = {}
-    t0 = time.perf_counter()
-    while model.running:
-        model.step()
-        # Record agent positions for trail rendering
-        for agent in model.agents:
-            if agent.pos:
-                trails.setdefault(agent.unique_id, []).append((agent.pos[0], agent.pos[1]))
-        snapshots.append(
-            {
-                "step": model.current_step,
-                "objects_retrieved": model.objects_retrieved,
-                "total_objects": model.total_objects,
-                "average_energy": (
-                    float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
-                    if model.agents
-                    else 0.0
-                ),
-                "active_agents": len([a for a in model.agents if getattr(a, "energy", 0) > 0]),
-                "messages_sent": model.comm_manager.messages_sent,
-            }
-        )
-    elapsed = time.perf_counter() - t0
-
-    # Freeze each agent's type_index NOW, while _type_index_map still belongs
-    # to this run.  By the time _generate_charts renders snapshots, subsequent
-    # simulations will have cleared the module-level map and the values would
-    # be wrong without this snapshot.
-    frozen: dict[int, int] = {
-        a.unique_id: getattr(a, "type_index", a.unique_id + 1) for a in model.agents
-    }
-    setattr(model, "_frozen_type_index", frozen)
-
-    steps = model.current_step
-    done = model.objects_retrieved >= model.total_objects
-    tag = "" if done else "  ** INCOMPLETE **"
-    print(
-        f"[{name:30s}]  {model.objects_retrieved}/{model.total_objects}"
-        f"  in {steps:4d} steps  ({elapsed:.2f}s){tag}"
-    )
-    return steps, snapshots, model, trails
-
-
-# ── Test configurations ─────────────────────────────────────────────────────
-
-
-def _default_agents(**overrides) -> SimulationAgentsConfig:
-    """Return default SimulationAgentsConfig with optional field overrides."""
-    return SimulationAgentsConfig(**overrides)
-
-
-CONFIGS = [
-    # ── seek_coordinator=True (default) ──
-    ("1S/1C/3R unknown", _default_agents()),
-    ("1S/1C/3R map_known", _default_agents(map_known=True)),
-    (
-        "0S/0C/5R unknown",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5),
-        ),
-    ),
-    (
-        "0S/0C/5R map_known",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5),
-            map_known=True,
-        ),
-    ),
-    # ── seek_coordinator=False ──
-    (
-        "1S/1C/3R unknown no-seek",
-        _default_agents(scout_behavior=ScoutBehaviorParams(seek_coordinator=False)),
-    ),
-    (
-        "1S/1C/3R map_known no-seek",
-        _default_agents(scout_behavior=ScoutBehaviorParams(seek_coordinator=False), map_known=True),
-    ),
-    # ── v3/c3: all agents with vision_radius=3, communication_radius=3 ──
-    (
-        "1S/1C/3R unknown v3c3",
-        _default_agents(
-            scouts=ScoutParams(vision_radius=3, communication_radius=3),
-            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
-            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
-        ),
-    ),
-    (
-        "1S/1C/3R map_known v3c3",
-        _default_agents(
-            scouts=ScoutParams(vision_radius=3, communication_radius=3),
-            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
-            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
-            map_known=True,
-        ),
-    ),
-    (
-        "0S/0C/5R unknown v3c3",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=3),
-        ),
-    ),
-    (
-        "0S/0C/5R map_known v3c3",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=3),
-            map_known=True,
-        ),
-    ),
-    (
-        "1S/1C/3R unknown no-seek v3c3",
-        _default_agents(
-            scouts=ScoutParams(vision_radius=3, communication_radius=3),
-            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
-            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
-            scout_behavior=ScoutBehaviorParams(seek_coordinator=False),
-        ),
-    ),
-    (
-        "1S/1C/3R map_known no-seek v3c3",
-        _default_agents(
-            scouts=ScoutParams(vision_radius=3, communication_radius=3),
-            coordinators=CoordinatorParams(vision_radius=3, communication_radius=3),
-            retrievers=RetrieverParams(count=3, vision_radius=3, communication_radius=3),
-            scout_behavior=ScoutBehaviorParams(seek_coordinator=False),
-            map_known=True,
-        ),
-    ),
-    (
-        "0S/0C/5R map_unknown v3c2",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=2),
-            map_known=False,
-        ),
-    ),
-    (
-        "0S/0C/5R map_known v3c2",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=2),
-            map_known=True,
-        ),
-    ),
-    (
-        "0S/0C/5R map_unknown v3c1",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=1),
-            map_known=False,
-        ),
-    ),
-    (
-        "0S/0C/5R map_known v3c1",
-        _default_agents(
-            scouts=ScoutParams(count=0),
-            coordinators=CoordinatorParams(count=0),
-            retrievers=RetrieverParams(count=5, vision_radius=3, communication_radius=1),
-            map_known=True,
-        ),
-    ),
-]
-
-GRID_FILES = ["configs/A.json", "configs/B.json"]
-
-
-# ── Chart generation ─────────────────────────────────────────────────────────
-
-CHART_DEFS = [
-    {
-        "key": "retrieval",
-        "title": "Objects Retrieved vs Step",
-        "y_label": "Objects Retrieved",
-        "extract": lambda sn: sn["objects_retrieved"],
-    },
-    {
-        "key": "energy",
-        "title": "Average Agent Energy vs Step",
-        "y_label": "Avg Energy",
-        "extract": lambda sn: sn["average_energy"],
-    },
-    {
-        "key": "efficiency",
-        "title": "Retrieval Efficiency vs Step",
-        "y_label": "Obj / 100 steps",
-        "extract": lambda sn: (sn["objects_retrieved"] / sn["step"] * 100) if sn["step"] > 0 else 0,
-    },
-    {
-        "key": "messages",
-        "title": "Messages Sent vs Step",
-        "y_label": "Messages",
-        "extract": lambda sn: sn["messages_sent"],
-    },
-]
-
-
-def _downsample(data: list[dict], max_pts: int = 300) -> list[dict]:
-    if len(data) <= max_pts:
-        return data
-    step = max(1, len(data) // max_pts)
-    out = [data[i] for i in range(0, len(data), step)]
-    if out[-1] is not data[-1]:
-        out.append(data[-1])
-    return out
-
-
-def _generate_charts(
-    map_name: str,
-    results: list[tuple[str, int, list[dict], object, TrailHistory]],
-    out_dir: str,
-    *,
-    bench: bool = True,
-    snaps: bool = True,
-):
-    """Generate PNG charts and/or final snapshots for one map and save to out_dir."""
-    os.makedirs(out_dir, exist_ok=True)
-
-    if bench:
-        # 1) Line charts (one per metric, all configs overlaid)
-        for cdef in CHART_DEFS:
-            series = []
-            for i, (name, _steps, snapshots, _mdl, _trails) in enumerate(results):
-                ds = _downsample(snapshots)
+        # 3) Line chart: objects retrieved over time (mean ± std across seeds)
+        series = []
+        for i, cfg in enumerate(config_names):
+            x_vals, means, stds = _downsample_step_data(
+                cfg_results[cfg], metric="objects_retrieved"
+            )
+            if x_vals:
                 series.append(
                     {
-                        "label": name,
+                        "label": cfg,
                         "color": _pick_color(i),
-                        "data": [{"x": sn["step"], "y": cdef["extract"](sn)} for sn in ds],
+                        "x": x_vals,
+                        "mean": means,
+                        "std": stds,
                     }
                 )
-            _save_line_chart(
-                os.path.join(out_dir, f"{cdef['key']}.png"),
-                f"{cdef['title']}  —  {map_name}",
+        if series:
+            _save_line_chart_ci(
+                os.path.join(inst_dir, "retrieval_ci.png"),
+                f"Objects Retrieved (mean ± std) — {grid_str} {density} {distribution}",
                 series,
-                cdef["y_label"],
+                "Objects Retrieved",
             )
 
-        # 2) Bar chart — total steps comparison
-        labels = [name for name, _, _, _, _ in results]
-        values = [steps for _, steps, _, _, _ in results]
-        colors = [_pick_color(i) for i in range(len(results))]
-        _save_bar_chart(
-            os.path.join(out_dir, "steps_comparison.png"),
-            f"Total Steps Comparison  —  {map_name}",
-            labels,
-            values,
+        # 4) Line chart: average energy over time
+        series_energy = []
+        for i, cfg in enumerate(config_names):
+            x_vals, means, stds = _downsample_step_data(cfg_results[cfg], metric="average_energy")
+            if x_vals:
+                series_energy.append(
+                    {
+                        "label": cfg,
+                        "color": _pick_color(i),
+                        "x": x_vals,
+                        "mean": means,
+                        "std": stds,
+                    }
+                )
+        if series_energy:
+            _save_line_chart_ci(
+                os.path.join(inst_dir, "energy_ci.png"),
+                f"Average Energy (mean ± std) — {grid_str} {density} {distribution}",
+                series_energy,
+                "Avg Energy",
+            )
+
+        # 5) Line chart: efficiency (obj/100 steps) over time
+        series_eff = []
+        for i, cfg in enumerate(config_names):
+            x_vals, means, stds = _downsample_step_data(cfg_results[cfg], metric="efficiency")
+            if x_vals:
+                series_eff.append(
+                    {
+                        "label": cfg,
+                        "color": _pick_color(i),
+                        "x": x_vals,
+                        "mean": means,
+                        "std": stds,
+                    }
+                )
+        if series_eff:
+            _save_line_chart_ci(
+                os.path.join(inst_dir, "efficiency_ci.png"),
+                f"Retrieval Efficiency (mean ± std) — {grid_str} {density} {distribution}",
+                series_eff,
+                "Obj / 100 steps",
+            )
+
+        # 6) Line chart: messages sent over time
+        series_msgs = []
+        for i, cfg in enumerate(config_names):
+            x_vals, means, stds = _downsample_step_data(cfg_results[cfg], metric="messages_sent")
+            if x_vals:
+                series_msgs.append(
+                    {
+                        "label": cfg,
+                        "color": _pick_color(i),
+                        "x": x_vals,
+                        "mean": means,
+                        "std": stds,
+                    }
+                )
+        if series_msgs:
+            _save_line_chart_ci(
+                os.path.join(inst_dir, "messages_ci.png"),
+                f"Messages Sent (mean ± std) — {grid_str} {density} {distribution}",
+                series_msgs,
+                "Messages",
+            )
+
+        # 7) Bar chart: completion rate
+        means_completion = []
+        stds_completion = []
+        for cfg in config_names:
+            rates = [
+                r["objects_retrieved"] / r["total_objects"] * 100
+                for r in cfg_results[cfg]
+                if r["total_objects"] > 0
+            ]
+            means_completion.append(float(np.mean(rates)) if rates else 0)
+            stds_completion.append(float(np.std(rates)) if rates else 0)
+
+        _save_bar_chart_mean_std(
+            os.path.join(inst_dir, "completion_rate.png"),
+            f"Completion Rate % (mean ± std) — {grid_str} {density} {distribution}",
+            config_names,
+            means_completion,
+            stds_completion,
             colors,
+            y_label="Completion %",
         )
 
-        # 3) Summary table
-        headers = [
-            "Config",
-            "Steps",
-            "Retrieved",
-            "Completion",
-            "Efficiency",
-            "Avg Energy",
-            "Messages",
-        ]
+        # 8) Summary table
+        headers = ["Config", "Steps", "Completion%", "Efficiency", "Avg Energy", "Messages"]
         rows = []
-        for name, steps, snapshots, _model, _trails in results:
-            last = snapshots[-1] if snapshots else {}
-            retrieved = last.get("objects_retrieved", 0)
-            total = last.get("total_objects", 0)
-            pct = f"{(retrieved / total * 100):.1f}%" if total else "—"
-            eff = f"{(retrieved / steps * 100):.2f}" if steps > 0 else "—"
-            avg_e = f"{last.get('average_energy', 0):.0f}"
-            msgs = str(last.get("messages_sent", 0))
-            rows.append([name, str(steps), f"{retrieved}/{total}", pct, eff, avg_e, msgs])
+        for cfg in config_names:
+            runs = cfg_results[cfg]
+            steps_arr = [r["steps"] for r in runs]
+            compl_arr = [
+                r["objects_retrieved"] / r["total_objects"] * 100
+                for r in runs
+                if r["total_objects"] > 0
+            ]
+            energy_arr = [r["avg_energy_final"] for r in runs]
+            msgs_arr = [r["messages_sent"] for r in runs]
+            last_step = np.mean(steps_arr)
+            mean_retrieved = np.mean([r["objects_retrieved"] for r in runs])
+            eff = (mean_retrieved / last_step * 100) if last_step > 0 else 0
+            rows.append(
+                [
+                    cfg,
+                    f"{np.mean(steps_arr):.0f} ± {np.std(steps_arr):.0f}",
+                    f"{np.mean(compl_arr):.1f}% ± {np.std(compl_arr):.1f}",
+                    f"{eff:.2f} obj/100s",
+                    f"{np.mean(energy_arr):.1f}",
+                    f"{np.mean(msgs_arr):.0f}",
+                ]
+            )
         _save_table(
-            os.path.join(out_dir, "summary_table.png"),
-            f"Summary  —  {map_name}",
+            os.path.join(inst_dir, "summary_table.png"),
+            f"Summary — {grid_str} {density} {distribution}",
             headers,
             rows,
             colors,
         )
 
-    if snaps:
-        # 4) Final grid snapshots (one per config)
-        for i, (name, _steps, _snapshots, mdl, tr) in enumerate(results):
-            safe = name.replace("/", "-").replace(" ", "_").strip("_")
-            _save_grid_snapshot(
-                os.path.join(out_dir, f"snapshot_{safe}.png"),
-                mdl,
-                f"{name}  \u2014  {map_name}",
-                tr,
+    # ── Aggregate summary across all instances ──
+    # Group by grid_size for aggregate comparison
+    by_grid: dict[str, dict[str, list[float]]] = {}
+    by_grid_completion: dict[str, dict[str, list[float]]] = {}
+    for inst_name, cfg_results in results.items():
+        parts = inst_name.split("_")
+        grid_str = parts[1] if len(parts) > 1 else "unknown"
+        for cfg_name, runs in cfg_results.items():
+            by_grid.setdefault(grid_str, {}).setdefault(cfg_name, []).extend(
+                [r["steps"] for r in runs]
             )
+            by_grid_completion.setdefault(grid_str, {}).setdefault(cfg_name, []).extend(
+                [
+                    r["objects_retrieved"] / r["total_objects"] * 100
+                    for r in runs
+                    if r["total_objects"] > 0
+                ]
+            )
+
+    for grid_str, cfg_data in by_grid.items():
+        agg_dir = os.path.join(out_base, grid_str)
+        os.makedirs(agg_dir, exist_ok=True)
+        config_names = list(cfg_data.keys())
+        colors = [_pick_color(i) for i in range(len(config_names))]
+
+        # Steps aggregates — only if there's variance
+        all_steps = [v for c in config_names for v in cfg_data[c]]
+        has_variance = len(set(all_steps)) > 1
+
+        if has_variance:
+            means = [float(np.mean(cfg_data[c])) for c in config_names]
+            stds = [float(np.std(cfg_data[c])) for c in config_names]
+
+            _save_bar_chart_mean_std(
+                os.path.join(agg_dir, "aggregate_steps.png"),
+                f"Aggregate Steps (all instances) — {grid_str}",
+                config_names,
+                means,
+                stds,
+                colors,
+            )
+
+            data_arrays = [cfg_data[c] for c in config_names]
+            _save_box_plot(
+                os.path.join(agg_dir, "aggregate_boxplot.png"),
+                f"Aggregate Steps Distribution — {grid_str}",
+                config_names,
+                data_arrays,
+                colors,
+            )
+
+        # Completion rate aggregates — always meaningful
+        compl_data = by_grid_completion.get(grid_str, {})
+        if compl_data:
+            compl_names = list(compl_data.keys())
+            compl_means = [float(np.mean(compl_data[c])) for c in compl_names]
+            compl_stds = [float(np.std(compl_data[c])) for c in compl_names]
+
+            _save_bar_chart_mean_std(
+                os.path.join(agg_dir, "aggregate_completion.png"),
+                f"Aggregate Completion % (all instances) — {grid_str}",
+                compl_names,
+                compl_means,
+                compl_stds,
+                colors,
+                y_label="Completion %",
+            )
+
+            compl_arrays = [compl_data[c] for c in compl_names]
+            _save_box_plot(
+                os.path.join(agg_dir, "aggregate_completion_boxplot.png"),
+                f"Aggregate Completion % Distribution — {grid_str}",
+                compl_names,
+                compl_arrays,
+                colors,
+                y_label="Completion %",
+            )
+
+    print(f"  Plots saved to {out_base}/")
+
+
+# ── JSON export ──────────────────────────────────────────────────────────────
+
+
+def export_results_json(
+    results: dict[str, dict[str, list[dict]]],
+    path: str,
+) -> None:
+    """Export benchmark results to a JSON file (without bulky step_data)."""
+    export: dict[str, Any] = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "instances": {},
+    }
+
+    for inst_name in sorted(results.keys()):
+        cfg_results = results[inst_name]
+        inst_export: dict[str, Any] = {}
+
+        for cfg_name, runs in cfg_results.items():
+            steps_arr = [r["steps"] for r in runs]
+            compl_arr = [
+                r["objects_retrieved"] / r["total_objects"] * 100
+                for r in runs
+                if r["total_objects"] > 0
+            ]
+            energy_arr = [r["avg_energy_final"] for r in runs]
+            msgs_arr = [r["messages_sent"] for r in runs]
+
+            inst_export[cfg_name] = {
+                "runs": len(runs),
+                "steps": {
+                    "mean": float(np.mean(steps_arr)),
+                    "std": float(np.std(steps_arr)),
+                    "min": int(min(steps_arr)),
+                    "max": int(max(steps_arr)),
+                },
+                "completion_pct": {
+                    "mean": float(np.mean(compl_arr)) if compl_arr else 0,
+                    "std": float(np.std(compl_arr)) if compl_arr else 0,
+                },
+                "avg_energy_final": {
+                    "mean": float(np.mean(energy_arr)),
+                    "std": float(np.std(energy_arr)),
+                },
+                "messages_sent": {
+                    "mean": float(np.mean(msgs_arr)),
+                    "std": float(np.std(msgs_arr)),
+                },
+                "seeds": [r["seed"] for r in runs],
+            }
+
+        export["instances"][inst_name] = inst_export
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(export, f, indent=2)
+
+
+# ── Summary table printer ────────────────────────────────────────────────────
+
+
+def print_summary(results: dict[str, dict[str, list[dict]]]) -> None:
+    """Print a text summary table to stdout."""
+    print()
+    print("=" * 100)
+    print(
+        f"  {'Instance':<45s} {'Config':<20s} {'Mean Steps':>10s} {'Std':>7s} "
+        f"{'Compl%':>7s} {'AvgE':>6s}"
+    )
+    print("-" * 100)
+
+    for inst_name in sorted(results.keys()):
+        cfg_results = results[inst_name]
+        for cfg_name, runs in cfg_results.items():
+            steps_arr = [r["steps"] for r in runs]
+            compl_arr = [
+                r["objects_retrieved"] / r["total_objects"] * 100
+                for r in runs
+                if r["total_objects"] > 0
+            ]
+            energy_arr = [r["avg_energy_final"] for r in runs]
+
+            mean_s = np.mean(steps_arr)
+            std_s = np.std(steps_arr)
+            mean_c = np.mean(compl_arr) if compl_arr else 0
+            mean_e = np.mean(energy_arr)
+
+            print(
+                f"  {inst_name:<45s} {cfg_name:<20s} {mean_s:>10.1f} {std_s:>7.1f} "
+                f"{mean_c:>6.1f}% {mean_e:>6.1f}"
+            )
+    print("=" * 100)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
+def _load_config_file(path: str) -> dict[str, Any]:
+    """Load a benchmark config JSON and return its contents as a dict."""
+    with open(path) as f:
+        return json.load(f)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Run benchmark test suite with optional image export.",
+        description="Multi-seed benchmark with MAPD logistics-grid instances.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show agent log lines")
     parser.add_argument(
-        "--imgs",
-        nargs="?",
-        const="all",
-        default=None,
-        choices=["all", "bench", "snaps"],
-        metavar="MODE",
-        help="Generate images: 'bench' (charts only), 'snaps' (snapshots only), or omit MODE for both",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        metavar="N",
-        help="Override the random seed for all maps",
-    )
-    parser.add_argument(
-        "--maps",
-        nargs="+",
-        metavar="MAP",
-        help="Maps to run, e.g. A B (defaults to all)",
-    )
-    parser.add_argument(
-        "--mode",
-        nargs="+",
-        choices=["known", "unknown"],
-        metavar="MODE",
-        help="Map modes to test: known and/or unknown (defaults to all)",
-    )
-    parser.add_argument(
-        "--seed-mine",
+        "--config",
         type=str,
-        metavar="N1-N2",
-        help="Search best seed in range N1-N2 (e.g. 0-99)",
-    )
-    parser.add_argument(
-        "--logistic",
-        action="store_true",
-        help="Run multi-seed benchmark with MAPD logistics-grid instances (see evaluation_logistic.py)",
+        metavar="PATH",
+        help="Path to a JSON config file (CLI args override config values)",
     )
     parser.add_argument(
         "--seeds",
         type=int,
-        default=30,
+        default=None,
         metavar="N",
-        help="Number of seeds for --logistic mode (default: 30)",
+        help="Number of seeds to run per config (default: 30)",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=None,
         metavar="N",
-        help="Number of parallel workers for --logistic mode (default: cpu_count - 1)",
+        help="Number of parallel workers (default: cpu_count - 1)",
     )
     parser.add_argument(
         "--instances",
         nargs="+",
         metavar="FILTER",
-        help="Filter MAPD instances for --logistic mode (e.g. '50x50', 'medium', 'border')",
+        help="Filter instances by substring (e.g. '50x50', 'medium', 'border')",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default=None,
+        help="Output directory for plots and JSON (default: docs/benchmarks/logistic)",
     )
     parser.add_argument(
         "--no-plots",
         action="store_true",
-        help="Skip plot generation in --logistic mode (just print summary)",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        metavar="PATH",
-        help="Path to a JSON config file for --logistic mode (CLI args override config values)",
+        help="Skip plot generation (just print summary)",
     )
     parser.add_argument(
         "--no-json",
         action="store_true",
-        help="Skip JSON results export in --logistic mode",
+        help="Skip JSON results export",
     )
     parser.add_argument(
         "--unlimited-energy",
         action="store_true",
-        help="Give agents unlimited energy in --logistic mode",
+        help="Give agents unlimited energy (999999) so they never die",
     )
     args = parser.parse_args()
 
-    # ── Dispatch to logistic multi-benchmark if requested ─────────────────
-    if args.logistic:
-        from evaluation_logistic import main as logistic_main
+    # ── Merge config file + CLI args (CLI takes priority) ─────────────────
+    cfg: dict[str, Any] = {}
+    if args.config:
+        cfg = _load_config_file(args.config)
 
-        # Rebuild sys.argv for the sub-script
-        sys.argv = ["evaluation_logistic.py"]
-        if args.verbose:
-            sys.argv.append("-v")
-        if args.seeds != 30:
-            sys.argv.extend(["--seeds", str(args.seeds)])
-        if args.workers is not None:
-            sys.argv.extend(["--workers", str(args.workers)])
-        if args.instances:
-            sys.argv.extend(["--instances"] + args.instances)
-        if args.mode:
-            sys.argv.extend(["--mode"] + args.mode)
-        if getattr(args, "no_plots", False):
-            sys.argv.append("--no-plots")
-        if getattr(args, "config", None):
-            sys.argv.extend(["--config", args.config])
-        if getattr(args, "no_json", False):
-            sys.argv.append("--no-json")
-        if getattr(args, "unlimited_energy", False):
-            sys.argv.append("--unlimited-energy")
-        logistic_main()
-        return
+    # Resolve final values: CLI > config file > defaults
+    seeds = args.seeds if args.seeds is not None else cfg.get("seeds", 30)
+    workers = args.workers if args.workers is not None else cfg.get("workers", None)
+    instances_filter = args.instances if args.instances is not None else cfg.get("instances", None)
+    out_dir = args.out if args.out is not None else cfg.get("out", "docs/benchmarks/logistic")
+    verbose = args.verbose or cfg.get("verbose", False)
+    no_plots = args.no_plots or cfg.get("no_plots", False)
+    no_json = args.no_json or cfg.get("no_json", False)
+    unlimited_energy = args.unlimited_energy or cfg.get("unlimited_energy", False)
 
-    verbose = args.verbose
-    img_mode = args.imgs  # None | "all" | "bench" | "snaps"
-    generate_bench = img_mode in ("all", "bench")
-    generate_snaps = img_mode in ("all", "snaps")
-    import builtins
+    # Find instances
+    instances = list_instances(instances_filter)
+    if not instances:
+        print(f"ERROR: no instances match filters {instances_filter}")
+        print(f"  Available in {INSTANCES_DIR}:")
+        for f in sorted(INSTANCES_DIR.glob("mapd_*.json")):
+            print(f"    {f.stem}")
+        sys.exit(1)
 
-    _real_print = builtins.print
+    print("=" * 80)
+    print("  MULTI-SEED BENCHMARK — MAPD Logistics Grid Instances")
+    print("=" * 80)
+    print(f"  Instances: {len(instances)}")
+    for inst in instances:
+        print(f"    • {inst.stem}")
+    print(f"  Seeds: {seeds}")
+    print(f"  Mode: hybrid")
+    if unlimited_energy:
+        print("  Energy: UNLIMITED (999999)")
+    else:
+        print(f"  Energy formula: ceil(total_energy / {NUM_AGENTS} agents)")
 
-    # ── Apply --maps filter ───────────────────────────────────────────────
-    grid_files = GRID_FILES
-    if args.maps:
-        requested = {m.upper() for m in args.maps}
-        grid_files = [
-            f for f in GRID_FILES if os.path.splitext(os.path.basename(f))[0].upper() in requested
-        ]
-        if not grid_files:
-            _real_print(f"ERROR: no matching maps found for {args.maps}. Available: A, B")
-            sys.exit(1)
+    # Show per-grid energy
+    grid_sizes_seen = set()
+    for inst in instances:
+        data = json.loads(inst.read_text())
+        gs = data["metadata"]["grid_size"]
+        if gs not in grid_sizes_seen:
+            grid_sizes_seen.add(gs)
+            if unlimited_energy:
+                print(f"    {gs}x{gs}: unlimited energy")
+            else:
+                energy = compute_energy_per_agent(gs)
+                print(f"    {gs}x{gs}: {energy} energy/agent (total budget: {_TOTAL_ENERGY[gs]})")
+    print()
 
-    # ── Apply --mode filter ───────────────────────────────────────────────
-    configs = CONFIGS
-    if args.mode:
-        modes = set(args.mode)
+    # Run benchmark
+    results = run_multiseed_benchmark(
+        instances=instances,
+        num_seeds=seeds,
+        num_workers=workers,
+        verbose=verbose,
+        unlimited_energy=unlimited_energy,
+    )
 
-        def _matches_mode(cfg_name: str) -> bool:
-            is_known = "map_known" in cfg_name
-            return ("known" in modes and is_known) or ("unknown" in modes and not is_known)
+    # Print summary
+    print_summary(results)
 
-        configs = [(n, a) for n, a in CONFIGS if _matches_mode(n)]
-        if not configs:
-            _real_print(f"ERROR: no configs match mode(s) {args.mode}")
-            sys.exit(1)
+    # Export JSON results
+    if not no_json:
+        json_path = os.path.join(out_dir, "results.json")
+        os.makedirs(out_dir, exist_ok=True)
+        export_results_json(results, json_path)
+        print(f"\n  Results JSON saved to {json_path}")
 
-    # ── Seed mining mode ─────────────────────────────────────────────────
-    if args.seed_mine:
-        from tqdm import tqdm
+    # Generate plots
+    if not no_plots:
+        print()
+        generate_plots(results, out_dir)
 
-        parts = args.seed_mine.split("-")
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
-            _real_print("ERROR: --seed-mine expects N1-N2 (e.g. 0-99)")
-            sys.exit(1)
-        s_start, s_end = int(parts[0]), int(parts[1])
-
-        # Collect per-seed results: {seed: {map: {config: steps}}}
-        seed_totals: dict[int, int] = {}
-        seed_details: dict[int, dict[str, dict[str, int]]] = {}
-
-        total_runs = (s_end - s_start + 1) * len(grid_files) * len(configs)
-        pbar = tqdm(total=total_runs, desc="Seed mining", unit="run")
-
-        for seed in range(s_start, s_end + 1):
-            grand_total = 0
-            seed_details[seed] = {}
-            for grid_file in grid_files:
-                with open(grid_file) as f:
-                    grid_cfg = GridScenarioConfig(**json.load(f))
-                grid_cfg_s = copy.deepcopy(grid_cfg)
-                grid_cfg_s.metadata.seed = seed
-                map_name = os.path.splitext(os.path.basename(grid_file))[0]
-                seed_details[seed][map_name] = {}
-
-                builtins.print = lambda *a, **kw: None
-                for name, agents_cfg in configs:
-                    steps, _, _, _ = _run(name, grid_cfg_s, agents_cfg)
-                    seed_details[seed][map_name][name] = steps
-                    grand_total += steps
-                    pbar.update(1)
-                builtins.print = _real_print
-
-            seed_totals[seed] = grand_total
-
-        pbar.close()
-
-        # ── Rank seeds ───────────────────────────────────────────────────
-        def _known_better(seed: int) -> bool:
-            """True when every map_known config beats its unknown counterpart."""
-            det = seed_details[seed]
-            for m in det:
-                for name_k, steps_k in det[m].items():
-                    if "map_known" not in name_k:
-                        continue
-                    name_u = name_k.replace("map_known", "unknown")
-                    steps_u = det[m].get(name_u)
-                    if steps_u is not None and steps_k >= steps_u:
-                        return False
-            return True
-
-        ranked = sorted(
-            seed_totals.keys(),
-            key=lambda s: (not _known_better(s), seed_totals[s]),
-        )
-
-        _real_print("\n" + "=" * 80)
-        _real_print("  SEED MINING RESULTS")
-        _real_print("=" * 80)
-        _real_print(f"  {'Seed':>6s}  {'Total':>7s}  {'known<unknown':>14s}")
-        _real_print("-" * 80)
-        for s in ranked[:20]:
-            flag = "  ✓" if _known_better(s) else "  ✗"
-            _real_print(f"  {s:6d}  {seed_totals[s]:7d} {flag}")
-        _real_print("-" * 80)
-        best = ranked[0]
-        _real_print(f"  ★ Best seed: {best}  (total steps: {seed_totals[best]})")
-
-        # Detail for best seed
-        _real_print()
-        for m in sorted(seed_details[best]):
-            _real_print(f"  Map {m}:")
-            for cfg_name, st in seed_details[best][m].items():
-                _real_print(f"    {cfg_name:30s}  {st:4d} steps")
-        _real_print("=" * 80)
-        return
-
-    # ── Normal evaluation mode ───────────────────────────────────────────
-    for grid_file in grid_files:
-        with open(grid_file) as f:
-            grid_cfg = GridScenarioConfig(**json.load(f))
-
-        if args.seed is not None:
-            grid_cfg.metadata.seed = args.seed
-
-        map_name = os.path.splitext(os.path.basename(grid_file))[0]  # "A" or "B"
-        meta = grid_cfg.metadata
-
-        _real_print("=" * 80)
-        _real_print(
-            f"  TEST SUITE — {grid_file} "
-            f"({meta.grid_size}×{meta.grid_size}, {meta.num_objects} objects, "
-            f"max {meta.max_steps} steps, seed={meta.seed})"
-        )
-        _real_print("=" * 80)
-
-        results: list[tuple[str, int, list[dict], object, TrailHistory]] = []
-        for name, agents_cfg in configs:
-            if not verbose:
-                builtins.print = lambda *a, **kw: None
-            steps, snapshots, model, trails = _run(name, grid_cfg, agents_cfg)
-            if not verbose:
-                builtins.print = _real_print
-                _real_print(f"  [{name:32s}]  => {steps:4d} steps")
-            results.append((name, steps, snapshots, model, trails))
-
-        _real_print("-" * 80)
-        _real_print(f"  Total steps: {sum(s for _, s, _, _, _ in results)}")
-
-        # Generate charts & snapshots
-        if generate_bench or generate_snaps:
-            out_dir = os.path.join("docs", "benchmarks", map_name)
-            _generate_charts(map_name, results, out_dir, bench=generate_bench, snaps=generate_snaps)
-            parts = [
-                p
-                for p in (["charts"] if generate_bench else [])
-                + (["snapshots"] if generate_snaps else [])
-            ]
-            _real_print(f"  {' & '.join(parts).capitalize()} saved to {out_dir}/")
-        else:
-            _real_print("  Image generation skipped (use --imgs to enable)")
-        _real_print("=" * 80)
-        _real_print()
+    print()
+    print("Done.")
 
 
 if __name__ == "__main__":

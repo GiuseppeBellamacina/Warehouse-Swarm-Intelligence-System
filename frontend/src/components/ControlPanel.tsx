@@ -59,7 +59,7 @@ function extractOverrides(
   return {
     simulationSeed: config.metadata?.seed ?? 42,
     simulationMaxSteps: config.metadata?.max_steps ?? 500,
-    mapKnown: def.map_known ?? false,
+    mapKnown: def.map_hybrid ?? false,
     scouts: {
       count: def.scouts.count,
       vision_radius: def.scouts.vision_radius,
@@ -295,6 +295,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 }) => {
   const [configName, setConfigName] = useState<string>("");
   const [availableConfigs, setAvailableConfigs] = useState<string[]>([]);
+  const [legacyConfigs, setLegacyConfigs] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<SimulationAgentsConfig | null>(null);
   const defaultsRef = useRef<SimulationAgentsConfig | null>(null);
   const [rawConfig, setRawConfig] = useState<GridScenarioConfig | null>(null);
@@ -323,14 +324,24 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         const [defRes, cfgRes] = await Promise.all([
           fetchAgentDefaults(BACKEND_URL),
           fetch(`${BACKEND_URL}/api/configs`)
-            .then((r) => (r.ok ? r.json() : { configs: [] }))
-            .catch(() => ({ configs: [] })),
+            .then((r) => (r.ok ? r.json() : { configs: [], logistics: [] }))
+            .catch(() => ({ configs: [], logistics: [] })),
         ]);
         setDefaults(defRes);
         defaultsRef.current = defRes;
-        const cfgs: string[] = cfgRes.configs ?? [];
-        setAvailableConfigs(cfgs);
-        if (cfgs.length > 0) setConfigName(cfgs[0]);
+
+        const legacy: string[] = cfgRes.configs ?? [];
+        const logistics: string[] = cfgRes.logistics ?? [];
+        setLegacyConfigs(legacy);
+        setAvailableConfigs(logistics);
+
+        // Default to the simplest 50x50 instance (few obstacles, random objects)
+        const defaultCfg =
+          logistics.find((c: string) => c.includes("50x50_few_random")) ??
+          logistics[0] ??
+          legacy[0] ??
+          "";
+        setConfigName(defaultCfg);
       } catch {
         /* backend not ready yet */
       }
@@ -434,7 +445,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
       scout_behavior: overrides.scoutBehavior,
       coordinator_behavior: overrides.coordinatorBehavior,
       retriever_behavior: overrides.retrieverBehavior,
-      map_known: overrides.mapKnown,
+      map_hybrid: overrides.mapKnown,
     };
     onLoad(scenario, agents);
     setDirty(false);
@@ -499,12 +510,31 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                      focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 focus:outline-none
                      disabled:opacity-40 transition-colors"
         >
-          {availableConfigs.length > 0 ? (
-            availableConfigs.map((c) => (
-              <option key={c} value={c}>
-                {c.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
-              </option>
-            ))
+          {availableConfigs.length > 0 || legacyConfigs.length > 0 ? (
+            <>
+              {availableConfigs.length > 0 && (
+                <optgroup label="MAPD Logistics">
+                  {availableConfigs.map((c) => (
+                    <option key={c} value={c}>
+                      {c
+                        .replace("mapd_", "")
+                        .replace(/_/g, " ")
+                        .replace("objects", "· ")
+                        .replace("seed", "seed ")}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {legacyConfigs.length > 0 && (
+                <optgroup label="Legacy (A/B)">
+                  {legacyConfigs.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </>
           ) : (
             <option value="">Loading…</option>
           )}
@@ -582,8 +612,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   disabled={isRunning}
                 />
                 <Toggle
-                  label="Map known"
-                  tip="All agents start with full terrain & warehouse knowledge. Only object locations remain hidden."
+                  label="Hybrid mode"
+                  tip="Agents know topology (obstacles + warehouses) for pathfinding, but must explore to find objects."
                   value={overrides.mapKnown}
                   onChange={(v) => setOvr({ mapKnown: v })}
                   disabled={isRunning}

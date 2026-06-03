@@ -433,6 +433,33 @@ export const GridCanvas = forwardRef<GridCanvasHandle, GridCanvasProps>(
           }
         }
 
+        // ── Hybrid mode: highlight pre-known obstacles through the fog ──
+        // In hybrid mode the agents know the topology (walls) even if they
+        // haven't visually explored those cells yet. We render a subtle
+        // outline on unexplored obstacle cells to convey this knowledge.
+        if (state.map_hybrid && state.pre_known_obstacles && fogMask) {
+          ctx.strokeStyle = "rgba(120, 120, 160, 0.55)";
+          ctx.lineWidth = 1;
+          state.pre_known_obstacles.forEach((cell) => {
+            if (!isExplored(cell.x, cell.y)) {
+              // Subtle fill to show "known but not seen" obstacle
+              ctx.fillStyle = "rgba(80, 80, 110, 0.4)";
+              ctx.fillRect(
+                cell.x * cellWidth,
+                cell.y * cellHeight,
+                cellWidth,
+                cellHeight,
+              );
+              ctx.strokeRect(
+                cell.x * cellWidth + 0.5,
+                cell.y * cellHeight + 0.5,
+                cellWidth - 1,
+                cellHeight - 1,
+              );
+            }
+          });
+        }
+
         // ── Per-agent known warehouses (when an agent is selected) ──
         if (selectedAgent && selectedAgent.known_warehouses) {
           ctx.strokeStyle = "rgba(59, 130, 246, 1)";

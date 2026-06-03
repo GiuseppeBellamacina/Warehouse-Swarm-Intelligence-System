@@ -386,3 +386,7 @@ class SimulationAgentsConfig(BaseModel):
         default=False,
         description="When True, all agents start with full map knowledge (terrain + warehouses). Only object locations remain hidden.",
     )
+    map_hybrid: bool = Field(
+        default=False,
+        description="When True, agents know topology (obstacles + warehouses) for pathfinding but explore like unknown mode. Ignored if map_known=True.",
+    )
