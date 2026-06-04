@@ -3,7 +3,7 @@
   "workers": 1,
   "instances": null,
   "out": "docs/benchmarks/logistic",
-  "unlimited_energy": true,
+  "unlimited_energy": false,
   "no_plots": false,
   "no_json": false,
   "verbose": false

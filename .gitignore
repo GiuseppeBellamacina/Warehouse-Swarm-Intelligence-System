@@ -75,4 +75,4 @@ simulation_logs/
 .env*.local
 
 # Benchmark results
-docs/benchmarks/logistic/
+docs/benchmarks/logistic*/
