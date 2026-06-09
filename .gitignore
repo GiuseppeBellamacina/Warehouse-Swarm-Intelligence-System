@@ -73,3 +73,6 @@ simulation_logs/
 # Vercel
 .vercel
 .env*.local
+
+# Benchmarks
+docs/benchmarks/logistic*/
