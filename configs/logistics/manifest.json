@@ -1,0 +1,832 @@
+{
+  "grid_sizes": [
+    50,
+    75,
+    100
+  ],
+  "obstacle_densities": [
+    "few",
+    "medium",
+    "full"
+  ],
+  "object_distributions": [
+    "random",
+    "border"
+  ],
+  "num_objects": 25,
+  "object_ratio": null,
+  "seed": 42,
+  "overview_plot": "plots/all_environments.png",
+  "instances": [
+    {
+      "file": "mapd_50x50_few_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_50x50_few_random_objects25_seed42",
+        "grid_size": 50,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "few",
+        "obstacle_preset": {
+          "label": "few",
+          "shelf_width": 2,
+          "shelf_height": 2,
+          "corridor_h": 5,
+          "corridor_v": 5,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "random",
+        "object_border_width": 8,
+        "cell_counts": {
+          "empty": 2183,
+          "wall": 293,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.1172,
+        "free_cell_ratio": 0.8732
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 2183,
+          "wall": 293,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 2207,
+        "reachable_cells": 2207
+      },
+      "plot_file": "plots/mapd_50x50_few_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_50x50_few_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_50x50_few_border_objects25_seed42",
+        "grid_size": 50,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "few",
+        "obstacle_preset": {
+          "label": "few",
+          "shelf_width": 2,
+          "shelf_height": 2,
+          "corridor_h": 5,
+          "corridor_v": 5,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "border",
+        "object_border_width": 8,
+        "cell_counts": {
+          "empty": 2183,
+          "wall": 293,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.1172,
+        "free_cell_ratio": 0.8732
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 2183,
+          "wall": 293,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 2207,
+        "reachable_cells": 2207
+      },
+      "plot_file": "plots/mapd_50x50_few_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_50x50_medium_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_50x50_medium_random_objects25_seed42",
+        "grid_size": 50,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "medium",
+        "obstacle_preset": {
+          "label": "medium",
+          "shelf_width": 4,
+          "shelf_height": 3,
+          "corridor_h": 3,
+          "corridor_v": 3,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "random",
+        "object_border_width": 8,
+        "cell_counts": {
+          "empty": 1702,
+          "wall": 774,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.3096,
+        "free_cell_ratio": 0.6808
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 1702,
+          "wall": 774,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 1726,
+        "reachable_cells": 1726
+      },
+      "plot_file": "plots/mapd_50x50_medium_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_50x50_medium_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_50x50_medium_border_objects25_seed42",
+        "grid_size": 50,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "medium",
+        "obstacle_preset": {
+          "label": "medium",
+          "shelf_width": 4,
+          "shelf_height": 3,
+          "corridor_h": 3,
+          "corridor_v": 3,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "border",
+        "object_border_width": 8,
+        "cell_counts": {
+          "empty": 1702,
+          "wall": 774,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.3096,
+        "free_cell_ratio": 0.6808
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 1702,
+          "wall": 774,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 1726,
+        "reachable_cells": 1726
+      },
+      "plot_file": "plots/mapd_50x50_medium_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_50x50_full_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_50x50_full_random_objects25_seed42",
+        "grid_size": 50,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "full",
+        "obstacle_preset": {
+          "label": "full",
+          "shelf_width": 4,
+          "shelf_height": 4,
+          "corridor_h": 1,
+          "corridor_v": 1,
+          "margin": 0,
+          "jitter": 1
+        },
+        "object_distribution": "random",
+        "object_border_width": 8,
+        "cell_counts": {
+          "empty": 1059,
+          "wall": 1417,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.5668,
+        "free_cell_ratio": 0.4236
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 1059,
+          "wall": 1417,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 1083,
+        "reachable_cells": 1083
+      },
+      "plot_file": "plots/mapd_50x50_full_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_50x50_full_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_50x50_full_border_objects25_seed42",
+        "grid_size": 50,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "full",
+        "obstacle_preset": {
+          "label": "full",
+          "shelf_width": 4,
+          "shelf_height": 4,
+          "corridor_h": 1,
+          "corridor_v": 1,
+          "margin": 0,
+          "jitter": 1
+        },
+        "object_distribution": "border",
+        "object_border_width": 8,
+        "cell_counts": {
+          "empty": 1059,
+          "wall": 1417,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.5668,
+        "free_cell_ratio": 0.4236
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 1059,
+          "wall": 1417,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 1083,
+        "reachable_cells": 1083
+      },
+      "plot_file": "plots/mapd_50x50_full_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_75x75_few_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_75x75_few_random_objects25_seed42",
+        "grid_size": 75,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "few",
+        "obstacle_preset": {
+          "label": "few",
+          "shelf_width": 2,
+          "shelf_height": 2,
+          "corridor_h": 5,
+          "corridor_v": 5,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "random",
+        "object_border_width": 11,
+        "cell_counts": {
+          "empty": 4998,
+          "wall": 603,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.1072,
+        "free_cell_ratio": 0.8885
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 4998,
+          "wall": 603,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 5022,
+        "reachable_cells": 5022
+      },
+      "plot_file": "plots/mapd_75x75_few_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_75x75_few_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_75x75_few_border_objects25_seed42",
+        "grid_size": 75,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "few",
+        "obstacle_preset": {
+          "label": "few",
+          "shelf_width": 2,
+          "shelf_height": 2,
+          "corridor_h": 5,
+          "corridor_v": 5,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "border",
+        "object_border_width": 11,
+        "cell_counts": {
+          "empty": 4998,
+          "wall": 603,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.1072,
+        "free_cell_ratio": 0.8885
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 4998,
+          "wall": 603,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 5022,
+        "reachable_cells": 5022
+      },
+      "plot_file": "plots/mapd_75x75_few_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_75x75_medium_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_75x75_medium_random_objects25_seed42",
+        "grid_size": 75,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "medium",
+        "obstacle_preset": {
+          "label": "medium",
+          "shelf_width": 4,
+          "shelf_height": 3,
+          "corridor_h": 3,
+          "corridor_v": 3,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "random",
+        "object_border_width": 11,
+        "cell_counts": {
+          "empty": 3817,
+          "wall": 1784,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.3172,
+        "free_cell_ratio": 0.6786
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 3817,
+          "wall": 1784,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 3841,
+        "reachable_cells": 3841
+      },
+      "plot_file": "plots/mapd_75x75_medium_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_75x75_medium_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_75x75_medium_border_objects25_seed42",
+        "grid_size": 75,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "medium",
+        "obstacle_preset": {
+          "label": "medium",
+          "shelf_width": 4,
+          "shelf_height": 3,
+          "corridor_h": 3,
+          "corridor_v": 3,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "border",
+        "object_border_width": 11,
+        "cell_counts": {
+          "empty": 3817,
+          "wall": 1784,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.3172,
+        "free_cell_ratio": 0.6786
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 3817,
+          "wall": 1784,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 3841,
+        "reachable_cells": 3841
+      },
+      "plot_file": "plots/mapd_75x75_medium_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_75x75_full_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_75x75_full_random_objects25_seed42",
+        "grid_size": 75,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "full",
+        "obstacle_preset": {
+          "label": "full",
+          "shelf_width": 4,
+          "shelf_height": 4,
+          "corridor_h": 1,
+          "corridor_v": 1,
+          "margin": 0,
+          "jitter": 1
+        },
+        "object_distribution": "random",
+        "object_border_width": 11,
+        "cell_counts": {
+          "empty": 2134,
+          "wall": 3467,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.6164,
+        "free_cell_ratio": 0.3794
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 2134,
+          "wall": 3467,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 2158,
+        "reachable_cells": 2158
+      },
+      "plot_file": "plots/mapd_75x75_full_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_75x75_full_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_75x75_full_border_objects25_seed42",
+        "grid_size": 75,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "full",
+        "obstacle_preset": {
+          "label": "full",
+          "shelf_width": 4,
+          "shelf_height": 4,
+          "corridor_h": 1,
+          "corridor_v": 1,
+          "margin": 0,
+          "jitter": 1
+        },
+        "object_distribution": "border",
+        "object_border_width": 11,
+        "cell_counts": {
+          "empty": 2134,
+          "wall": 3467,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.6164,
+        "free_cell_ratio": 0.3794
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 2134,
+          "wall": 3467,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 2158,
+        "reachable_cells": 2158
+      },
+      "plot_file": "plots/mapd_75x75_full_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_100x100_few_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_100x100_few_random_objects25_seed42",
+        "grid_size": 100,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "few",
+        "obstacle_preset": {
+          "label": "few",
+          "shelf_width": 2,
+          "shelf_height": 2,
+          "corridor_h": 5,
+          "corridor_v": 5,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "random",
+        "object_border_width": 15,
+        "cell_counts": {
+          "empty": 9167,
+          "wall": 809,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.0809,
+        "free_cell_ratio": 0.9167
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 9167,
+          "wall": 809,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 9191,
+        "reachable_cells": 9191
+      },
+      "plot_file": "plots/mapd_100x100_few_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_100x100_few_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_100x100_few_border_objects25_seed42",
+        "grid_size": 100,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "few",
+        "obstacle_preset": {
+          "label": "few",
+          "shelf_width": 2,
+          "shelf_height": 2,
+          "corridor_h": 5,
+          "corridor_v": 5,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "border",
+        "object_border_width": 15,
+        "cell_counts": {
+          "empty": 9167,
+          "wall": 809,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.0809,
+        "free_cell_ratio": 0.9167
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 9167,
+          "wall": 809,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 9191,
+        "reachable_cells": 9191
+      },
+      "plot_file": "plots/mapd_100x100_few_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_100x100_medium_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_100x100_medium_random_objects25_seed42",
+        "grid_size": 100,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "medium",
+        "obstacle_preset": {
+          "label": "medium",
+          "shelf_width": 4,
+          "shelf_height": 3,
+          "corridor_h": 3,
+          "corridor_v": 3,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "random",
+        "object_border_width": 15,
+        "cell_counts": {
+          "empty": 7168,
+          "wall": 2808,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.2808,
+        "free_cell_ratio": 0.7168
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 7168,
+          "wall": 2808,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 7192,
+        "reachable_cells": 7192
+      },
+      "plot_file": "plots/mapd_100x100_medium_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_100x100_medium_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_100x100_medium_border_objects25_seed42",
+        "grid_size": 100,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "medium",
+        "obstacle_preset": {
+          "label": "medium",
+          "shelf_width": 4,
+          "shelf_height": 3,
+          "corridor_h": 3,
+          "corridor_v": 3,
+          "margin": 0,
+          "jitter": 2
+        },
+        "object_distribution": "border",
+        "object_border_width": 15,
+        "cell_counts": {
+          "empty": 7168,
+          "wall": 2808,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.2808,
+        "free_cell_ratio": 0.7168
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 7168,
+          "wall": 2808,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 7192,
+        "reachable_cells": 7192
+      },
+      "plot_file": "plots/mapd_100x100_medium_border_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_100x100_full_random_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_100x100_full_random_objects25_seed42",
+        "grid_size": 100,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "full",
+        "obstacle_preset": {
+          "label": "full",
+          "shelf_width": 4,
+          "shelf_height": 4,
+          "corridor_h": 1,
+          "corridor_v": 1,
+          "margin": 0,
+          "jitter": 1
+        },
+        "object_distribution": "random",
+        "object_border_width": 15,
+        "cell_counts": {
+          "empty": 4435,
+          "wall": 5541,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.5541,
+        "free_cell_ratio": 0.4435
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 4435,
+          "wall": 5541,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 4459,
+        "reachable_cells": 4459
+      },
+      "plot_file": "plots/mapd_100x100_full_random_objects25_seed42.png"
+    },
+    {
+      "file": "mapd_100x100_full_border_objects25_seed42.json",
+      "metadata": {
+        "instance_id": "mapd_100x100_full_border_objects25_seed42",
+        "grid_size": 100,
+        "num_warehouses": 4,
+        "num_objects": 25,
+        "seed": 42,
+        "obstacle_density": "full",
+        "obstacle_preset": {
+          "label": "full",
+          "shelf_width": 4,
+          "shelf_height": 4,
+          "corridor_h": 1,
+          "corridor_v": 1,
+          "margin": 0,
+          "jitter": 1
+        },
+        "object_distribution": "border",
+        "object_border_width": 15,
+        "cell_counts": {
+          "empty": 4435,
+          "wall": 5541,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "obstacle_ratio": 0.5541,
+        "free_cell_ratio": 0.4435
+      },
+      "validation": {
+        "valid": true,
+        "errors": [],
+        "cell_counts": {
+          "empty": 4435,
+          "wall": 5541,
+          "warehouse": 16,
+          "entrance": 4,
+          "exit": 4
+        },
+        "traversable_cells": 4459,
+        "reachable_cells": 4459
+      },
+      "plot_file": "plots/mapd_100x100_full_border_objects25_seed42.png"
+    }
+  ]
+}

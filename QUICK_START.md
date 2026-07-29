@@ -128,16 +128,17 @@ Open your browser to: `http://localhost:3000`
 
 ### 2. Load a Configuration
 
-#### Option A: Use Example Scenarios
+#### Option A: Use the dropdown
 
-- Select "Simple" or "Complex" from the dropdown
-- Click "Load" button
+- Select a MAPD logistics instance from the "MAPD Logistics" group (default: 50×50 few random)
+- Legacy maps A/B are still available in the "Legacy" group
+- Click "Load"
 
 #### Option B: Upload Custom JSON
 
-- Click "Choose File"
-- Select a JSON configuration file
-- Click "Upload & Start"
+- Click "📂 Or pick a JSON file…"
+- Select a MAPD instance JSON file
+- The config will load automatically
 
 ### 3. Control the Simulation
 
@@ -166,51 +167,38 @@ The interface displays:
 
 ## Configuration Files
 
-Example configurations are in `configs/`:
+MAPD logistics instances are in `configs/logistics/`. Each defines a complete grid scenario:
 
-### simple_scenario.json
+### Instance naming: `mapd_{size}_{density}_{distribution}_objects{N}_seed{S}`
 
-- Grid: 50x50
-- Agents: 3 scouts, 1 coordinator, 2 retrievers
-- Objects: 10
-- Difficulty: Easy
+- **size**: `50x50`, `75x75`, `100x100`
+- **density**: `few`, `medium`, `full` (obstacle coverage)
+- **distribution**: `random`, `border` (object placement)
 
-### complex_scenario.json
+Example: `mapd_50x50_few_random_objects25_seed42.json`
 
-- Grid: 100x100
-- Agents: 5 scouts, 2 coordinators, 4 retrievers
-- Objects: 30
-- Difficulty: Hard with maze-like obstacles
+Legacy configs (`configs/A.json`, `configs/B.json`) are kept for reference from the earlier project phase.
 
-## Creating Custom Configurations
-
-See `configs/simple_scenario.json` as a template. Key sections:
+## MAPD Instance Format
 
 ```json
 {
-  "simulation": {
-    "grid_width": 50,
-    "grid_height": 50,
-    "max_steps": 5000
+  "metadata": {
+    "instance_id": "mapd_50x50_few_random_objects25_seed42",
+    "grid_size": 50,
+    "num_warehouses": 4,
+    "num_objects": 25,
+    "seed": 42,
+    "obstacle_density": "few",
+    "object_distribution": "random"
   },
-  "warehouse": {
-    "position": {"x": 2, "y": 2},
-    "width": 8,
-    "height": 8,
-    "entrances": [...]
-  },
-  "obstacles": [...],
-  "objects": {
-    "count": 10,
-    "spawn_zones": [...]
-  },
-  "agents": {
-    "scouts": {...},
-    "coordinators": {...},
-    "retrievers": {...}
-  }
+  "grid": [[0, 0, 1, ...], ...],
+  "warehouses": [{"cells": [...], "entrances": [...], "exits": [...]}],
+  "objects": [[row, col], ...]
 }
 ```
+
+Grid cell values: `0`=free, `1`=wall, `2`=warehouse, `3`=entrance, `4`=exit.
 
 ## Troubleshooting
 

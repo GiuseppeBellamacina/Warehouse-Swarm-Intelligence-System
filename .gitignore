@@ -74,5 +74,9 @@ simulation_logs/
 .vercel
 .env*.local
 
-# Benchmarks
-docs/benchmarks/logistic*/
+# Benchmark results
+docs/benchmarks/logistic/*/*.png
+docs/benchmarks/logistic/*/*/*.png
+
+docs/benchmarks/logistic-unlimited/*/*.png
+docs/benchmarks/logistic-unlimited/*/*/*.png
