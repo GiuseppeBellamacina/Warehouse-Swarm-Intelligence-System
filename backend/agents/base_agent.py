@@ -129,6 +129,8 @@ class BaseAgent(Agent):
         self.local_map = np.zeros((grid_height, grid_width), dtype=np.int8)
         # Cells actually seen via vision (for object-scan fog when map is pre-known)
         self.vision_explored = np.zeros((grid_height, grid_width), dtype=np.uint8)
+        # Step at which each cell was last seen via vision (for stale-coverage sweep)
+        self.last_seen_step = np.zeros((grid_height, grid_width), dtype=np.int32)
 
         # Navigation map for A* pathfinding.
         # - map_unknown: None → A* uses self.local_map (optimistic about unknowns).
@@ -314,6 +316,7 @@ class BaseAgent(Agent):
         _path_invalidated = False
 
         changed = False
+        _cs = self.model.current_step
         for x, y, cell_type in visible_cells:
             if 0 <= y < self.local_map.shape[0] and 0 <= x < self.local_map.shape[1]:
                 old_type = int(self.local_map[y, x])
@@ -321,6 +324,7 @@ class BaseAgent(Agent):
                     changed = True
                 self.local_map[y, x] = cell_type
                 self.vision_explored[y, x] = 1
+                self.last_seen_step[y, x] = _cs
 
                 # Path invalidation: if a cell that was UNKNOWN (or FREE)
                 # turns out to be an OBSTACLE and our cached A* path goes
@@ -930,13 +934,31 @@ class BaseAgent(Agent):
             # Case 4: external navigation — never shortcut through any door
             forbidden_types = _DOOR_TYPES
 
-        # If waiting due to temporary blockage, decrement wait counter
+        # If waiting due to temporary blockage, decrement wait counter.
+        # Skip the step ONLY while the waypoint ahead is still occupied by
+        # another agent; otherwise fall through so the agent can move /
+        # replan / sidestep instead of wasting a whole step in corridors.
         if self.wait_counter > 0:
             self.wait_counter -= 1
-            return False  # Don't move, just wait
+            if self.path and len(self.path) > 0:
+                ahead = self.path[0]
+                still_blocked = any(
+                    agent.unique_id != self.unique_id
+                    and agent.pos is not None
+                    and pos_to_tuple(agent.pos) == ahead
+                    for agent in self.model.agents
+                )
+                if still_blocked:
+                    return False  # Blocker still there — keep waiting
+            # Otherwise: blocker moved away — proceed with normal flow.
 
         # Track if we moved
         moved = False
+
+        # Whether this step's move consumed the planned path[0] waypoint.
+        # Only genuine path-following resets the NO-PROGRESS counter below;
+        # swap/negotiate detours (which clear self.path) keep counting.
+        was_following_path = False
 
         # Get positions of other agents to avoid collisions
         other_agent_positions = set()
@@ -1018,6 +1040,9 @@ class BaseAgent(Agent):
                     # (even assuming unknown cells are walkable).
                     print(f"{self.tag} PATH: No path found to {target}, target unreachable")
                     self.unreachable_targets[target] = self.model.current_step
+                    # Release any claim we hold on the abandoned target so peers can take over
+                    if hasattr(self.model, "comm_manager"):
+                        self.model.comm_manager.release_claim(target, self.unique_id)
                     self.target_position = None
                     self.stuck_counter = 0
                     return False
@@ -1042,6 +1067,7 @@ class BaseAgent(Agent):
                         if self.path:
                             self.path.pop(0)  # Remove reached waypoint
                         moved = True
+                        was_following_path = True
                     else:
                         # Position temporarily occupied by another agent
                         blocking_agent = None
@@ -1172,14 +1198,20 @@ class BaseAgent(Agent):
             # the agent is actually getting closer to its target.  If not,
             # abandon after _no_progress_limit steps.
             if self.target_position is not None:
-                cur_dist = abs(current_pos[0] - self.target_position[0]) + abs(
-                    current_pos[1] - self.target_position[1]
-                )
-                if cur_dist < self._progress_best_dist:
-                    self._progress_best_dist = cur_dist
+                if was_following_path:
+                    # Following a planned A* path: lateral detours are
+                    # expected, so they don't count as no-progress.  Keep
+                    # _progress_best_dist unchanged.
                     self._progress_steps = 0
                 else:
-                    self._progress_steps += 1
+                    cur_dist = abs(current_pos[0] - self.target_position[0]) + abs(
+                        current_pos[1] - self.target_position[1]
+                    )
+                    if cur_dist < self._progress_best_dist:
+                        self._progress_best_dist = cur_dist
+                        self._progress_steps = 0
+                    else:
+                        self._progress_steps += 1
                 if self._progress_steps >= self._no_progress_limit:
                     print(
                         f"{self.tag} NO-PROGRESS: no distance improvement in "
@@ -1188,6 +1220,11 @@ class BaseAgent(Agent):
                     )
                     if self.target_position is not None:
                         self.unreachable_targets[self.target_position] = self.model.current_step
+                        # Release any claim we hold on the abandoned target so peers can take over
+                        if hasattr(self.model, "comm_manager"):
+                            self.model.comm_manager.release_claim(
+                                self.target_position, self.unique_id
+                            )
                     self.target_position = None
                     self.path = []
                     self.stuck_counter = 0
@@ -1206,6 +1243,11 @@ class BaseAgent(Agent):
                     # Blacklist the stuck target so step_decide doesn't immediately re-assign it
                     if self.target_position is not None:
                         self.unreachable_targets[self.target_position] = self.model.current_step
+                        # Release any claim we hold on the abandoned target so peers can take over
+                        if hasattr(self.model, "comm_manager"):
+                            self.model.comm_manager.release_claim(
+                                self.target_position, self.unique_id
+                            )
                     self.target_position = None
                     self.path = []
                     self.stuck_counter = 0
@@ -1231,6 +1273,9 @@ class BaseAgent(Agent):
                         f"abandoning target {self.target_position}"
                     )
                     self.unreachable_targets[self.target_position] = self.model.current_step
+                    # Release any claim we hold on the abandoned target so peers can take over
+                    if hasattr(self.model, "comm_manager"):
+                        self.model.comm_manager.release_claim(self.target_position, self.unique_id)
                     self.target_position = None
                     self.path = []
                     self.stuck_counter = 0
@@ -1245,6 +1290,9 @@ class BaseAgent(Agent):
                 # Blacklist the stuck target so step_decide doesn't immediately re-assign it
                 if self.target_position is not None:
                     self.unreachable_targets[self.target_position] = self.model.current_step
+                    # Release any claim we hold on the abandoned target so peers can take over
+                    if hasattr(self.model, "comm_manager"):
+                        self.model.comm_manager.release_claim(self.target_position, self.unique_id)
                 self.target_position = None
                 self.path = []
                 self.stuck_counter = 0

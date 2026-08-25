@@ -18,6 +18,7 @@ Usage:
     python evaluation.py --no-plots               # skip charts, just JSON + summary
     python evaluation.py --no-json                # skip JSON export
     python evaluation.py --unlimited-energy       # infinite agent energy
+    python evaluation.py --energy-boost 10        # +10% on the 8220 energy budget
     python evaluation.py -v                       # verbose agent logs
 
 See docs/BENCHMARK.md for full documentation.
@@ -55,15 +56,27 @@ from backend.config.schemas import (
 
 INSTANCES_DIR = Path("configs/logistics")
 
-# Total energy budget per grid size (floor(0.8 * medium_traversable_cells))
-# From README: medium traversable counts are 1726, 3841, 7192
+# Professor's spec: total energy budget 8220 (mean of max consumed by agents
+# on 75x75 maps), divided among NUM_AGENTS=10 → 822 per agent, same for ALL grid sizes.
+# Optional boost (e.g. +10%) computed on the 8220 base.
+BASE_TOTAL_ENERGY = 8220
+
+# Same base budget for every grid size; kept as a dict so compute_energy_per_agent
+# still raises a ValueError for unknown grid sizes.
 _TOTAL_ENERGY = {
-    50: 1380,
-    75: 3072,
-    100: 5753,
+    50: BASE_TOTAL_ENERGY,
+    75: BASE_TOTAL_ENERGY,
+    100: BASE_TOTAL_ENERGY,
 }
 
 NUM_AGENTS = 10  # fixed across all configs
+
+# Max simulation steps per grid size (professor's spec).
+_MAX_STEPS = {
+    50: 2000,
+    75: 3000,
+    100: 5000,
+}
 
 # ── Chart styling ─────────────────────────────────────────────────────────────
 
@@ -137,12 +150,19 @@ def _pick_color(i: int) -> str:
 # ── Instance loading ─────────────────────────────────────────────────────────
 
 
-def compute_energy_per_agent(grid_size: int, num_agents: int = NUM_AGENTS) -> int:
-    """Compute per-agent energy budget from README formula."""
+def compute_energy_per_agent(
+    grid_size: int, num_agents: int = NUM_AGENTS, energy_boost: float = 0.0
+) -> int:
+    """Compute per-agent energy budget from the 8220 total (optionally boosted).
+
+    energy_boost is a percentage applied on the 8220 base budget
+    (e.g. 10 → +10%, giving 905 energy/agent for 10 agents).
+    """
     total = _TOTAL_ENERGY.get(grid_size)
     if total is None:
         raise ValueError(f"No energy budget defined for grid_size={grid_size}")
-    return math.ceil(total / num_agents)
+    per_agent = math.ceil(round(BASE_TOTAL_ENERGY * (1 + energy_boost / 100)) / num_agents)
+    return per_agent
 
 
 def load_mapd_instance(path: str | Path) -> GridScenarioConfig:
@@ -150,11 +170,11 @@ def load_mapd_instance(path: str | Path) -> GridScenarioConfig:
     with open(path) as f:
         data = json.load(f)
 
-    # Inject max_steps if missing (grid_size * 10)
+    # Inject max_steps if missing (professor's spec: explicit per-grid-size caps)
     meta = data.get("metadata", {})
     grid_size = meta.get("grid_size", 50)
     if "max_steps" not in meta:
-        meta["max_steps"] = grid_size * 10
+        meta["max_steps"] = _MAX_STEPS.get(grid_size, grid_size * 10)
 
     # Keep only fields GridScenarioConfig expects
     cfg_data = {
@@ -189,7 +209,9 @@ def list_instances(filters: list[str] | None = None) -> list[Path]:
 
 
 def build_configs(
-    grid_size: int, unlimited_energy: bool = False
+    grid_size: int,
+    unlimited_energy: bool = False,
+    energy_boost: float = 0.0,
 ) -> list[tuple[str, SimulationAgentsConfig]]:
     """
     Build the 2 agent configurations for a given grid size.
@@ -201,8 +223,14 @@ def build_configs(
     Both use hybrid mode (topology-aware pathfinding + unknown-style exploration),
     vision_radius=6, communication_radius=4, energy=computed.
     If unlimited_energy is True, agents get 999999 energy (effectively infinite).
+    If energy_boost>0, the per-agent budget is boosted by that percentage over the
+    8220 base total.
     """
-    energy = 999999 if unlimited_energy else compute_energy_per_agent(grid_size, NUM_AGENTS)
+    energy = (
+        999999
+        if unlimited_energy
+        else compute_energy_per_agent(grid_size, NUM_AGENTS, energy_boost=energy_boost)
+    )
 
     configs: list[tuple[str, SimulationAgentsConfig]] = []
 
@@ -304,9 +332,13 @@ def _run_single(args: tuple) -> dict[str, Any]:
         retrieved = model.objects_retrieved
         total = model.total_objects
         avg_energy = float(np.mean([getattr(a, "energy", 0) for a in model.agents]))
+        energy_consumed = float(
+            np.mean([getattr(a, "max_energy", 0) - getattr(a, "energy", 0) for a in model.agents])
+        )
         messages = model.comm_manager.messages_sent
         active = len([a for a in model.agents if getattr(a, "energy", 0) > 0])
         completed = retrieved >= total
+        survival_pct = (active / len(model.agents) * 100) if len(model.agents) > 0 else 0.0
 
         return {
             "instance": str(instance_path),
@@ -316,8 +348,10 @@ def _run_single(args: tuple) -> dict[str, Any]:
             "objects_retrieved": retrieved,
             "total_objects": total,
             "avg_energy_final": avg_energy,
+            "avg_energy_consumed": energy_consumed,
             "messages_sent": messages,
             "active_agents": active,
+            "agent_survival_pct": survival_pct,
             "completed": completed,
             "step_data": step_data,
         }
@@ -334,6 +368,7 @@ def run_multiseed_benchmark(
     num_workers: int | None = None,
     verbose: bool = False,
     unlimited_energy: bool = False,
+    energy_boost: float = 0.0,
 ) -> dict[str, dict[str, list[dict]]]:
     """
     Run all instances × configs × seeds in parallel.
@@ -347,7 +382,9 @@ def run_multiseed_benchmark(
     work: list[tuple] = []
     for inst_path in instances:
         grid_size = json.loads(inst_path.read_text())["metadata"]["grid_size"]
-        configs = build_configs(grid_size, unlimited_energy=unlimited_energy)
+        configs = build_configs(
+            grid_size, unlimited_energy=unlimited_energy, energy_boost=energy_boost
+        )
         for cfg_name, agents_cfg in configs:
             agents_dict = agents_cfg.model_dump()
             # 10R is fully deterministic (no random calls) → single seed
@@ -419,7 +456,8 @@ def _save_bar_chart_mean_std(
     pt, pr, pb, pl = 40 * S, 20 * S, 100 * S, 68 * S
     cw, ch = W - pl - pr, H - pt - pb
 
-    ym = max(m + s for m, s in zip(means, stds)) * 1.15 if means else 1
+    # Guard against ym == 0 (all values zero, e.g. Survival% in energy-limited mode)
+    ym = max((max(m + s for m, s in zip(means, stds)) * 1.15) if means else 1, 1)
 
     def sy(v: float) -> int:
         return pt + ch - int(v / ym * ch)
@@ -505,7 +543,8 @@ def _save_box_plot(
 
     # Compute stats
     all_vals = [v for arr in data_arrays for v in arr]
-    ym = max(all_vals) * 1.1 if all_vals else 1
+    # Guard against ym == 0 (all values zero)
+    ym = max((max(all_vals) * 1.1) if all_vals else 1, 1)
     yn = 0
 
     def sy(v: float) -> int:
@@ -996,8 +1035,53 @@ def generate_plots(
             y_label="Completion %",
         )
 
+        # 7b) Bar chart: energy consumed per agent
+        means_energy_used = []
+        stds_energy_used = []
+        for cfg in config_names:
+            vals = [r.get("avg_energy_consumed", 0) for r in cfg_results[cfg]]
+            means_energy_used.append(float(np.mean(vals)) if vals else 0)
+            stds_energy_used.append(float(np.std(vals)) if vals else 0)
+
+        _save_bar_chart_mean_std(
+            os.path.join(inst_dir, "energy_consumed.png"),
+            f"Energy Consumed per Agent (mean ± std) — {grid_str} {density} {distribution}",
+            config_names,
+            means_energy_used,
+            stds_energy_used,
+            colors,
+            y_label="Energy Used",
+        )
+
+        # 7c) Bar chart: agent survival %
+        means_survival = []
+        stds_survival = []
+        for cfg in config_names:
+            vals = [r.get("agent_survival_pct", 0) for r in cfg_results[cfg]]
+            means_survival.append(float(np.mean(vals)) if vals else 0)
+            stds_survival.append(float(np.std(vals)) if vals else 0)
+
+        _save_bar_chart_mean_std(
+            os.path.join(inst_dir, "agent_survival.png"),
+            f"Agent Survival % (mean ± std) — {grid_str} {density} {distribution}",
+            config_names,
+            means_survival,
+            stds_survival,
+            colors,
+            y_label="Survival %",
+        )
+
         # 8) Summary table
-        headers = ["Config", "Steps", "Completion%", "Efficiency", "Avg Energy", "Messages"]
+        headers = [
+            "Config",
+            "Steps",
+            "Completion%",
+            "Efficiency",
+            "Avg Energy",
+            "Energy Used",
+            "Survival%",
+            "Messages",
+        ]
         rows = []
         for cfg in config_names:
             runs = cfg_results[cfg]
@@ -1008,6 +1092,8 @@ def generate_plots(
                 if r["total_objects"] > 0
             ]
             energy_arr = [r["avg_energy_final"] for r in runs]
+            energy_used_arr = [r["avg_energy_consumed"] for r in runs]
+            survival_arr = [r["agent_survival_pct"] for r in runs]
             msgs_arr = [r["messages_sent"] for r in runs]
             last_step = np.mean(steps_arr)
             mean_retrieved = np.mean([r["objects_retrieved"] for r in runs])
@@ -1019,6 +1105,8 @@ def generate_plots(
                     f"{np.mean(compl_arr):.1f}% ± {np.std(compl_arr):.1f}",
                     f"{eff:.2f} obj/100s",
                     f"{np.mean(energy_arr):.1f}",
+                    f"{np.mean(energy_used_arr):.1f}",
+                    f"{np.mean(survival_arr):.1f}%",
                     f"{np.mean(msgs_arr):.0f}",
                 ]
             )
@@ -1034,6 +1122,8 @@ def generate_plots(
     # Group by grid_size for aggregate comparison
     by_grid: dict[str, dict[str, list[float]]] = {}
     by_grid_completion: dict[str, dict[str, list[float]]] = {}
+    by_grid_energy_used: dict[str, dict[str, list[float]]] = {}
+    by_grid_survival: dict[str, dict[str, list[float]]] = {}
     for inst_name, cfg_results in results.items():
         parts = inst_name.split("_")
         grid_str = parts[1] if len(parts) > 1 else "unknown"
@@ -1047,6 +1137,12 @@ def generate_plots(
                     for r in runs
                     if r["total_objects"] > 0
                 ]
+            )
+            by_grid_energy_used.setdefault(grid_str, {}).setdefault(cfg_name, []).extend(
+                [r.get("avg_energy_consumed", 0) for r in runs]
+            )
+            by_grid_survival.setdefault(grid_str, {}).setdefault(cfg_name, []).extend(
+                [r.get("agent_survival_pct", 0) for r in runs]
             )
 
     for grid_str, cfg_data in by_grid.items():
@@ -1108,6 +1204,40 @@ def generate_plots(
                 y_label="Completion %",
             )
 
+        # Energy consumed aggregates — always meaningful
+        energy_used_data = by_grid_energy_used.get(grid_str, {})
+        if energy_used_data:
+            energy_used_names = list(energy_used_data.keys())
+            energy_used_means = [float(np.mean(energy_used_data[c])) for c in energy_used_names]
+            energy_used_stds = [float(np.std(energy_used_data[c])) for c in energy_used_names]
+
+            _save_bar_chart_mean_std(
+                os.path.join(agg_dir, "aggregate_energy_consumed.png"),
+                f"Aggregate Energy Consumed per Agent (all instances) — {grid_str}",
+                energy_used_names,
+                energy_used_means,
+                energy_used_stds,
+                colors,
+                y_label="Energy Used",
+            )
+
+        # Survival aggregates — always meaningful
+        survival_data = by_grid_survival.get(grid_str, {})
+        if survival_data:
+            survival_names = list(survival_data.keys())
+            survival_means = [float(np.mean(survival_data[c])) for c in survival_names]
+            survival_stds = [float(np.std(survival_data[c])) for c in survival_names]
+
+            _save_bar_chart_mean_std(
+                os.path.join(agg_dir, "aggregate_survival.png"),
+                f"Aggregate Agent Survival % (all instances) — {grid_str}",
+                survival_names,
+                survival_means,
+                survival_stds,
+                colors,
+                y_label="Survival %",
+            )
+
     print(f"  Plots saved to {out_base}/")
 
 
@@ -1136,6 +1266,8 @@ def export_results_json(
                 if r["total_objects"] > 0
             ]
             energy_arr = [r["avg_energy_final"] for r in runs]
+            energy_consumed_arr = [r["avg_energy_consumed"] for r in runs]
+            survival_arr = [r["agent_survival_pct"] for r in runs]
             msgs_arr = [r["messages_sent"] for r in runs]
 
             inst_export[cfg_name] = {
@@ -1153,6 +1285,14 @@ def export_results_json(
                 "avg_energy_final": {
                     "mean": float(np.mean(energy_arr)),
                     "std": float(np.std(energy_arr)),
+                },
+                "avg_energy_consumed": {
+                    "mean": float(np.mean(energy_consumed_arr)),
+                    "std": float(np.std(energy_consumed_arr)),
+                },
+                "agent_survival_pct": {
+                    "mean": float(np.mean(survival_arr)),
+                    "std": float(np.std(survival_arr)),
                 },
                 "messages_sent": {
                     "mean": float(np.mean(msgs_arr)),
@@ -1174,12 +1314,12 @@ def export_results_json(
 def print_summary(results: dict[str, dict[str, list[dict]]]) -> None:
     """Print a text summary table to stdout."""
     print()
-    print("=" * 100)
+    print("=" * 118)
     print(
         f"  {'Instance':<45s} {'Config':<20s} {'Mean Steps':>10s} {'Std':>7s} "
-        f"{'Compl%':>7s} {'AvgE':>6s}"
+        f"{'Compl%':>7s} {'AvgE':>6s} {'ConsE':>6s} {'Surv%':>7s}"
     )
-    print("-" * 100)
+    print("-" * 118)
 
     for inst_name in sorted(results.keys()):
         cfg_results = results[inst_name]
@@ -1191,17 +1331,21 @@ def print_summary(results: dict[str, dict[str, list[dict]]]) -> None:
                 if r["total_objects"] > 0
             ]
             energy_arr = [r["avg_energy_final"] for r in runs]
+            energy_consumed_arr = [r["avg_energy_consumed"] for r in runs]
+            survival_arr = [r["agent_survival_pct"] for r in runs]
 
             mean_s = np.mean(steps_arr)
             std_s = np.std(steps_arr)
             mean_c = np.mean(compl_arr) if compl_arr else 0
             mean_e = np.mean(energy_arr)
+            mean_ce = np.mean(energy_consumed_arr)
+            mean_surv = np.mean(survival_arr)
 
             print(
                 f"  {inst_name:<45s} {cfg_name:<20s} {mean_s:>10.1f} {std_s:>7.1f} "
-                f"{mean_c:>6.1f}% {mean_e:>6.1f}"
+                f"{mean_c:>6.1f}% {mean_e:>6.1f} {mean_ce:>6.1f} {mean_surv:>6.1f}%"
             )
-    print("=" * 100)
+    print("=" * 118)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -1265,6 +1409,13 @@ def main():
         action="store_true",
         help="Give agents unlimited energy (999999) so they never die",
     )
+    parser.add_argument(
+        "--energy-boost",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="Percentage boost on the 8220 base energy budget (e.g. 10 -> +10%%, default: 0.0)",
+    )
     args = parser.parse_args()
 
     # ── Merge config file + CLI args (CLI takes priority) ─────────────────
@@ -1281,6 +1432,9 @@ def main():
     no_plots = args.no_plots or cfg.get("no_plots", False)
     no_json = args.no_json or cfg.get("no_json", False)
     unlimited_energy = args.unlimited_energy or cfg.get("unlimited_energy", False)
+    energy_boost = (
+        args.energy_boost if args.energy_boost is not None else cfg.get("energy_boost", 0.0)
+    )
 
     # Find instances
     instances = list_instances(instances_filter)
@@ -1302,7 +1456,10 @@ def main():
     if unlimited_energy:
         print("  Energy: UNLIMITED (999999)")
     else:
-        print(f"  Energy formula: ceil(total_energy / {NUM_AGENTS} agents)")
+        print(
+            f"  Energy formula: {compute_energy_per_agent(50, energy_boost=energy_boost)} "
+            f"energy/agent (total budget {BASE_TOTAL_ENERGY}, boost +{energy_boost}%)"
+        )
 
     # Show per-grid energy
     grid_sizes_seen = set()
@@ -1314,8 +1471,8 @@ def main():
             if unlimited_energy:
                 print(f"    {gs}x{gs}: unlimited energy")
             else:
-                energy = compute_energy_per_agent(gs)
-                print(f"    {gs}x{gs}: {energy} energy/agent (total budget: {_TOTAL_ENERGY[gs]})")
+                energy = compute_energy_per_agent(gs, energy_boost=energy_boost)
+                print(f"    {gs}x{gs}: {energy} energy/agent (total budget: {BASE_TOTAL_ENERGY})")
     print()
 
     # Run benchmark
@@ -1325,6 +1482,7 @@ def main():
         num_workers=workers,
         verbose=verbose,
         unlimited_energy=unlimited_energy,
+        energy_boost=energy_boost,
     )
 
     # Print summary

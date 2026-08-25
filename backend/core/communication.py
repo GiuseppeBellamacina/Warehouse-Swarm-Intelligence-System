@@ -275,7 +275,8 @@ class CommunicationManager:
 
         # Check if we're better: consider energy and how long ago it was claimed
         age = timestamp - claim_time
-        if age > 50:  # Stale claim, take over
+        # Takeover threshold aligned with retrievers' _STALE_CLAIM_AGE (45)
+        if age > 45:  # Stale claim, take over
             self.claimed_objects[object_pos] = (agent_id, timestamp, energy)
             return True
 

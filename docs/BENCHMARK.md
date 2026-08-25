@@ -152,21 +152,29 @@ Generated in `<out_dir>/<grid>/`:
 
 ## Energy Budget
 
-Energy per agent is computed from the README formula:
+Energy per agent is computed from the professor's spec: a fixed total budget of
+**8220** for all grid sizes — the mean of the maximum energy consumed by agents on
+75×75 maps — divided equally among the 10 agents:
 
 ```
-total_energy = floor(0.8 × medium_traversable_cells)
+total_energy = 8220
 per_agent = ceil(total_energy / N_agents)
 ```
 
-| Grid    | Traversable (medium) | Total Budget | Per Agent (10 agents) |
-| ------- | -------------------- | ------------ | --------------------- |
-| 50×50   | 1726                 | 1380         | 138                   |
-| 75×75   | 3841                 | 3072         | 308                   |
-| 100×100 | 7192                 | 5753         | 576                   |
+| Grid    | Total Budget | Per Agent (10 agents) |
+| ------- | ------------ | --------------------- |
+| 50×50   | 8220         | 822                   |
+| 75×75   | 8220         | 822                   |
+| 100×100 | 8220         | 822                   |
+
+An optional percentage boost can be applied on the base budget with
+`--energy-boost PCT` (e.g. `--energy-boost 10` → total budget 9042, i.e.
+905 energy/agent).
 
 Each cell moved costs 1 energy. Scouts with speed=2 consume 2 energy per tick.
 Agents that run out of energy die and become obstacles.
+Simulations stop at `max_steps`, when all 25 objects are delivered, or when all
+agents are dead. Step limits: **2000 (50×50), 3000 (75×75), 5000 (100×100)**.
 
 ---
 

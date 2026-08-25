@@ -20,13 +20,13 @@ DENSITIES = ["few", "medium", "full"]
 DISTRIBUTIONS = ["border", "random"]
 GRID_SIZES = ["50x50", "75x75", "100x100"]
 
-# Per-agent max energy by grid size (from evaluation.py _TOTAL_ENERGY / NUM_AGENTS)
-# Logistic: ceil(total_budget / 10 agents), Unlimited: 999999
-LOGISTIC_MAX_ENERGY_PER_AGENT = {"50x50": 138, "75x75": 308, "100x100": 576}
+# Per-agent max energy by grid size (from evaluation.py BASE_TOTAL_ENERGY / NUM_AGENTS)
+# Logistic: ceil(8220 / 10 agents) = 822 for ALL grid sizes, Unlimited: 999999
+LOGISTIC_MAX_ENERGY_PER_AGENT = {"50x50": 822, "75x75": 822, "100x100": 822}
 UNLIMITED_MAX_ENERGY_PER_AGENT = {"50x50": 999999, "75x75": 999999, "100x100": 999999}
 
-# Max steps per grid size (= grid_size × 10, from evaluation.py)
-MAX_STEPS = {"50x50": 500, "75x75": 750, "100x100": 1000}
+# Max steps per grid size (explicit limits, from evaluation.py _MAX_STEPS)
+MAX_STEPS = {"50x50": 2000, "75x75": 3000, "100x100": 5000}
 
 # Cap detection thresholds
 ENERGY_CAP_THRESHOLD = 0.99  # energy_spent_pct >= 99% → at energy cap
@@ -330,7 +330,7 @@ def plot_cross_by_agent_config(df_log: dict, df_unl: dict, output_dir: Path):
     fig, axes = plt.subplots(2, 3, figsize=(22, 12))
     fig.suptitle(
         f"Agent Config Comparison — {metric_title}\n"
-        f"Logistic (cap: 138–576) vs Unlimited (cap: 999,999) — hatched bars = at energy cap",
+        f"Logistic (cap: 822) vs Unlimited (cap: 999,999) — hatched bars = at energy cap",
         fontsize=16,
         fontweight="bold",
     )
@@ -707,7 +707,7 @@ def plot_cross_comparison(df_log: dict, df_unl: dict, output_dir: Path):
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
     fig.suptitle(
         "Cross-Comparison: Logistic vs Unlimited — Energy Consumed\n"
-        "Logistic (138–576) · Unlimited (~200–1200)",
+        "Logistic (822) · Unlimited (~200–5000)",
         fontsize=15,
         fontweight="bold",
     )

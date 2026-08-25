@@ -467,18 +467,32 @@ class ScoutAgent(BaseAgent):
             p = _filt_vis[y0:y1, x0:x1] if _is_map_known else _filt_map[y0:y1, x0:x1]
             return int(np.count_nonzero(p)) / p.size if p.size else 1.0
 
-        valid_frontiers = []
-        for frontier_pos, cluster_size in frontiers:
-            if frontier_pos in self.unreachable_targets:
-                continue
-            if frontier_pos in self._recent_targets:
-                continue
-            if not self.model.grid.is_walkable(*frontier_pos):
-                continue
-            # Reject frontiers in well-explored zones
-            if _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
-                continue
-            valid_frontiers.append((frontier_pos, cluster_size))
+        def _filter_frontiers(allow_blacklist_cooldown: bool = False):
+            """Return usable frontiers.  With allow_blacklist_cooldown, entries
+            blacklisted more than 30 steps ago are permitted so the scout does
+            not stagnate when the blacklist covers every frontier."""
+            out = []
+            for frontier_pos, cluster_size in frontiers:
+                if frontier_pos in self.unreachable_targets:
+                    if not allow_blacklist_cooldown:
+                        continue
+                    if current_step - self.unreachable_targets[frontier_pos] <= 30:
+                        continue
+                if frontier_pos in self._recent_targets:
+                    continue
+                if not self.model.grid.is_walkable(*frontier_pos):
+                    continue
+                # Reject frontiers in well-explored zones
+                if _zone_ratio(frontier_pos[0], frontier_pos[1]) > 0.85:
+                    continue
+                out.append((frontier_pos, cluster_size))
+            return out
+
+        valid_frontiers = _filter_frontiers()
+        # Stagnation fallback: if the blacklist filtered out every frontier,
+        # retry with a short cooldown instead of the absolute exclusion.
+        if not valid_frontiers:
+            valid_frontiers = _filter_frontiers(allow_blacklist_cooldown=True)
 
         # Filter tiny frontiers (size 1-2) when larger ones (≥5) exist.
         # Tiny frontiers are often isolated single-cell corners that waste

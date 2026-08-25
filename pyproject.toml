@@ -30,6 +30,10 @@ dev = [
     "ruff>=0.2.0",
     "isort>=8.0.0",
 ]
+plots = [
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+]
 
 [build-system]
 requires = ["hatchling"]

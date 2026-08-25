@@ -130,6 +130,14 @@ class RetrieverAgent(BaseAgent):
         # coordinator/peer to exchange map data.
         self._fruitless_explore_steps: int = 0
         self._SEEK_INFO_INTERVAL: int = 40
+        # Steps since last productive event (pickup/delivery/task assign). Drives the
+        # stale-coverage sweep valve — unlike _fruitless_explore_steps it is NEVER
+        # reset by mere peer contact.
+        self._no_pickup_steps: int = 0
+        # 500 stays above the max healthy inter-pickup gap observed on
+        # productive instances (~280 steps on 100x100 few) so the valve only
+        # fires during true coverage stalls, not mid-run dry spells.
+        self._SWEEP_AFTER: int = 500
         # Guard against seek-info infinite loops: count consecutive seeks
         # without productive outcome.  After _MAX_SEEK_ATTEMPTS, force
         # the retriever back to frontier exploration for one full interval.
@@ -153,6 +161,10 @@ class RetrieverAgent(BaseAgent):
         # these with a distinct "going to check" symbol instead of the normal
         # confirmed-object marker.
         self._dubious_being_verified: Set[Tuple[int, int]] = set()
+
+        # Guard so claims are released exactly once when the retriever dies
+        # (energy depleted); without it the agent would re-release every step.
+        self._claims_released_on_death: bool = False
 
     # ------------------------------------------------------------------
     # Sense
@@ -309,6 +321,7 @@ class RetrieverAgent(BaseAgent):
                     ):
                         self.task_queue.append(target)
                         self._fruitless_explore_steps = 0
+                        self._no_pickup_steps = 0
                         print(
                             f"{self.tag} <- {agent_tag('coordinator', message.sender_id)}: "
                             f"queued task {target} "
@@ -492,12 +505,17 @@ class RetrieverAgent(BaseAgent):
             # Loop/stuck detection blacklists positions into unreachable_targets.
             # Re-queue them only after a cooldown so the agent doesn't oscillate.
             _UNREACHABLE_COOLDOWN = 20
-            self.task_queue = [
-                t
-                for t in self.task_queue
-                if t not in self.unreachable_targets
-                or self.model.current_step - self.unreachable_targets[t] > _UNREACHABLE_COOLDOWN
-            ]
+            kept = []
+            for t in self.task_queue:
+                if t not in self.unreachable_targets or (
+                    self.model.current_step - self.unreachable_targets[t] > _UNREACHABLE_COOLDOWN
+                ):
+                    kept.append(t)
+                else:
+                    # Blacklisted task purged — release our claim on it so
+                    # peers can take over instead of waiting out the timeout.
+                    self.model.comm_manager.release_claim(t, self.unique_id)
+            self.task_queue = kept
             if self.task_queue:
                 next_target = self.task_queue[0]
                 # Skip if object is no longer in our knowledge base
@@ -555,6 +573,7 @@ class RetrieverAgent(BaseAgent):
         if self._wh_step is None:
             if (self._SELF_ASSIGN or self._AUTONOMOUS_PICKUP) and self._try_self_assign_visible():
                 self._fruitless_explore_steps = 0
+                self._no_pickup_steps = 0
                 return  # claimed something, P3 will handle it next step
 
             # ---- P4b: Check dubious objects when completely idle ----
@@ -573,9 +592,20 @@ class RetrieverAgent(BaseAgent):
             }
             if self.dubious_objects and self.carrying_objects == 0:
                 dub_pos = pos_to_tuple(self.pos) if self.pos else (0, 0)
+                # Prefer non-blacklisted dubious objects: exclude freshly
+                # abandoned positions (20-step cooldown) from the closest-pick,
+                # but if ALL dubious entries are blacklisted fall back to the
+                # full set so verification is never blocked.
+                _not_blacklisted = [
+                    p
+                    for p in self.dubious_objects.keys()
+                    if p not in self.unreachable_targets
+                    or self.model.current_step - self.unreachable_targets[p] > 20
+                ]
+                _dub_pool = _not_blacklisted or list(self.dubious_objects.keys())
                 # Pick the closest dubious object
                 closest_dub = min(
-                    self.dubious_objects.keys(),
+                    _dub_pool,
                     key=lambda p: abs(p[0] - dub_pos[0]) + abs(p[1] - dub_pos[1]),
                 )
                 dub_dist = abs(closest_dub[0] - dub_pos[0]) + abs(closest_dub[1] - dub_pos[1])
@@ -594,6 +624,7 @@ class RetrieverAgent(BaseAgent):
                     self.task_queue.append(closest_dub)
                     self._dubious_being_verified.add(closest_dub)
                     self._fruitless_explore_steps = 0
+                    self._no_pickup_steps = 0
                     print(
                         f"{self.tag} DUBIOUS-CHECK: verifying {closest_dub} "
                         f"dist={dub_dist} (no other tasks)"
@@ -709,6 +740,12 @@ class RetrieverAgent(BaseAgent):
         for obj_pos in list(self.known_objects.keys()):
             if obj_pos in self.task_queue:
                 continue
+            # Skip freshly-blacklisted objects (NO-PROGRESS / LOOP / STUCK
+            # abandonment); they stay out of self-assign for a 20-step cooldown.
+            if obj_pos in self.unreachable_targets and (
+                self.model.current_step - self.unreachable_targets[obj_pos] <= 20
+            ):
+                continue
             # layer 1: global claim check — skip only if the claim is FRESH.
             # A stale claim (>= 45 steps old with no refresh) indicates the
             # original claimer died, got stuck, or was reassigned.  In that case
@@ -808,13 +845,22 @@ class RetrieverAgent(BaseAgent):
         )
 
     def _count_agents_heading_to(self, entrance: Tuple[int, int]) -> int:
-        """Count retriever agents whose warehouse target entrance matches *entrance*."""
+        """Count retriever agents heading toward *entrance*.
+
+        Includes retrievers with an active warehouse sub-sequence at this
+        entrance, plus any retriever whose current target_position lies within
+        Manhattan distance 3 of the door (already approaching the queue).
+        """
         count = 0
         for agent in self.model.agents:
             if getattr(agent, "role", None) != "retriever":
                 continue
             wh = getattr(agent, "_wh_station", None)
             if wh and wh.get("entrance") == entrance:
+                count += 1
+                continue
+            tgt = getattr(agent, "target_position", None)
+            if tgt is not None and abs(tgt[0] - entrance[0]) + abs(tgt[1] - entrance[1]) <= 3:
                 count += 1
         return count
 
@@ -913,6 +959,7 @@ class RetrieverAgent(BaseAgent):
         # Pick a new target every N steps or when we don't have one
         self._explore_steps += 1
         self._fruitless_explore_steps += 1
+        self._no_pickup_steps += 1
         if self._explore_target is None or self._explore_steps > self._EXPLORE_RETARGET:
             self._explore_steps = 0
 
@@ -944,6 +991,12 @@ class RetrieverAgent(BaseAgent):
             # should deliver cargo, not wander looking for info.
             # Also skip after too many consecutive seek attempts to break
             # the loop where the seek target moves away repeatedly.
+
+            # Stale-coverage valve: after prolonged unproductiveness, disable
+            # seek-info for this round so it cannot steal the retarget below.
+            if self._no_pickup_steps > self._SWEEP_AFTER:
+                self._seek_info_attempts = self._MAX_SEEK_ATTEMPTS
+
             if (
                 self._fruitless_explore_steps > _seek_interval
                 and self.carrying_objects == 0
@@ -1043,6 +1096,10 @@ class RetrieverAgent(BaseAgent):
                     )
                     _FRONTIER_COOLDOWN = 10
                     _cs = self.model.current_step
+                    # Note: blacklisted frontiers are only excluded while
+                    # their cooldown (_FRONTIER_COOLDOWN) is active; an
+                    # additional absolute exclusion here would cancel the
+                    # cooldown and stall exploration on fresh frontiers.
                     valid = [
                         f
                         for f in frontiers
@@ -1052,8 +1109,45 @@ class RetrieverAgent(BaseAgent):
                             f[0] not in self.unreachable_targets
                             or _cs - self.unreachable_targets[f[0]] > _FRONTIER_COOLDOWN
                         )
-                        and f[0] not in self.unreachable_targets
                     ]
+
+                    # ── Stale-coverage sweep valve ─────────────────────────────
+                    # After _SWEEP_AFTER steps without pickup/delivery/assignment, pick the
+                    # frontier with the OLDEST scan history (bypassing utility/momentum, the
+                    # local-optimum trap). Never resets on arrival: the next activation jumps
+                    # to the next-stalest frontier → chained patrol until a productive event.
+                    if self._no_pickup_steps > self._SWEEP_AFTER and valid:
+                        _cs2 = self.model.current_step
+                        _r = 6
+
+                        def _sweep_key(f):
+                            fx, fy = f[0]
+                            y0, y1 = max(0, fy - _r), min(self.local_map.shape[0], fy + _r + 1)
+                            x0, x1 = max(0, fx - _r), min(self.local_map.shape[1], fx + _r + 1)
+                            ve = self.vision_explored[y0:y1, x0:x1]
+                            if (ve == 0).any():
+                                age = _cs2  # window contains never-scanned cells → top priority
+                            else:
+                                age = _cs2 - int(self.last_seen_step[y0:y1, x0:x1].min())
+                            unscanned = int((ve == 0).sum())
+                            return (
+                                age,
+                                unscanned,
+                                -(abs(fx - pos_tuple[0]) + abs(fy - pos_tuple[1])),
+                            )
+
+                        sweep = max(valid, key=_sweep_key)
+                        sweep_pos = sweep[0]  # valid entries are (pos, cluster_size)
+                        self._explore_target = sweep_pos
+                        self.target_position = sweep_pos
+                        self.path = []
+                        self.state = AgentState.EXPLORING
+                        print(
+                            f"{self.tag} SWEEP: stale-coverage valve → {sweep_pos} "
+                            f"(no pickup for {self._no_pickup_steps} steps)"
+                        )
+                        return
+
                     if valid:
                         # Early game: spread retrievers to different map
                         # quadrants.  At step 1 no agent has a target yet,
@@ -1176,10 +1270,17 @@ class RetrieverAgent(BaseAgent):
                                 scanned_w = float(np.sum(vis.astype(np.float32) * walkable))
                                 return scanned_w / total_w
                             else:
-                                # map_unknown: blended vision + communicated terrain
-                                comm = (self.local_map[y0:y1, x0:x1] != 0).astype(np.float32)
-                                blended = np.maximum(vis.astype(np.float32), comm * _comm_weight)
-                                total = blended.size
+                                # map_unknown/hybrid: blended vision + communicated
+                                # terrain, excluding known OBSTACLE cells from both
+                                # numerator and denominator (walls can never contain
+                                # objects; counting them inflates the ratio near dense
+                                # obstacle clusters — same fix as the map_known branch).
+                                lm = self.local_map[y0:y1, x0:x1]
+                                not_wall = lm != int(CellType.OBSTACLE)
+                                comm = ((lm != 0) & not_wall).astype(np.float32)
+                                vis = self.vision_explored[y0:y1, x0:x1].astype(np.float32)
+                                blended = np.maximum(vis, comm * _comm_weight)
+                                total = float(np.sum(not_wall))
                                 return float(np.sum(blended) / total) if total else 1.0
 
                         # In map_known mode, provide unknown_mass_at: the actual
@@ -1372,6 +1473,15 @@ class RetrieverAgent(BaseAgent):
         if self.energy <= 0:
             if self.carrying_objects > 0:
                 self._drop_cargo()
+            # Release every claim this retriever still holds so the objects
+            # it was heading to can be picked up by peers immediately instead
+            # of waiting out the stale-claim timeout.  Runs exactly once.
+            if not self._claims_released_on_death:
+                for _pos in list(self.task_queue):
+                    self.model.comm_manager.release_claim(_pos, self.unique_id)
+                self.task_queue.clear()
+                self._dubious_being_verified.clear()
+                self._claims_released_on_death = True
             return
 
         super().step()
@@ -1442,9 +1552,15 @@ class RetrieverAgent(BaseAgent):
             f"dropped {len(dropped_positions)} objects at {dropped_positions}"
         )
 
-        # Broadcast dropped-object positions to all nearby agents
-        nearby = self.get_nearby_agents(self.communication_radius)
-        target_ids = [a.unique_id for a in nearby if a.unique_id != self.unique_id]
+        # Broadcast dropped-object positions to ALL live agents (not just
+        # nearby ones) so the drop is never missed — if the neighborhood is
+        # empty the cargo would otherwise sit unknown until the stale-claim
+        # timeout.
+        target_ids = [
+            a.unique_id
+            for a in self.model.agents
+            if a.unique_id != self.unique_id and getattr(a, "energy", 0) > 0
+        ]
 
         if target_ids:
             for obj_pos in dropped_positions:
@@ -1694,6 +1810,7 @@ class RetrieverAgent(BaseAgent):
                 self.total_delivered += delivered
                 self.carrying_objects = 0
                 self._fruitless_explore_steps = 0
+                self._no_pickup_steps = 0
                 print(
                     f"{self.tag} DELIVERY: "
                     f"delivered {delivered} → total "
@@ -1800,6 +1917,7 @@ class RetrieverAgent(BaseAgent):
                 )
                 self.pending_events.append("object_picked")
                 self._fruitless_explore_steps = 0
+                self._no_pickup_steps = 0
                 self.model.comm_manager.release_claim(pos_tuple, self.unique_id)
                 # Remove from task queue and tombstone the object so peers
                 # don't re-add it via relay messages.

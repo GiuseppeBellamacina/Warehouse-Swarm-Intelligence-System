@@ -51,8 +51,10 @@ class FrontierExplorer:
             unexp = None
             padded_unexp = None
 
-        # Pad with UNKNOWN (0) so boundary cells have correct neighbours
-        padded = np.pad(local_map, 1, mode="constant", constant_values=0)
+        # Pad with OBSTACLE so boundary cells have correct neighbours:
+        # out-of-bounds is not explorable, so it must NOT count as UNKNOWN —
+        # otherwise FREE cells on the map perimeter would read as frontiers.
+        padded = np.pad(local_map, 1, mode="constant", constant_values=int(CellType.OBSTACLE))
 
         # Boolean mask: cell is FREE in the original map
         is_free = local_map == CellType.FREE
