@@ -1,7 +1,5 @@
 # Warehouse Swarm Intelligence System
 
-**[Live demo](https://warehouse-swarm-intelligence-system.vercel.app)**
-
 **[Relazione PDF](docs/latex/relazione.pdf)**
 
 ![Warehouse](assets/warehouse-swarm.webp)
